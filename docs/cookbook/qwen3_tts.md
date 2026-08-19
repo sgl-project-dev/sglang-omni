@@ -1,20 +1,29 @@
-# Qwen3 TTS
+# Qwen3-TTS
 
-[Qwen3-TTS-12Hz-Base](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a discrete
-multi-codebook text-to-speech model from the Qwen team. It performs fast voice cloning from a
-short reference clip, supports 10 languages, and streams 24 kHz speech with low latency. The
-`12Hz` in the name refers to the codec **frame rate** (12 acoustic frames per second), not the
-playback sample rate. SGLang-Omni serves two checkpoints — `0.6B` and `1.7B` — through the same
-`preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech`
-endpoint.
+[Qwen3-TTS](https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base) is a
+discrete multi-codebook text-to-speech family with voice cloning, 10-language
+generation, and 24 kHz audio output.
 
-## Prerequisites
+## At a glance
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md).
+| Item | Value |
+|---|---|
+| Task | TTS |
+| Checkpoints | `Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-Base`, plus CustomVoice and VoiceDesign variants |
+| Endpoint | `/v1/audio/speech` |
+| Pipeline | preprocessing → TTS engine → vocoder |
+| Input | Text; Base checkpoints also require reference audio |
+| Output | 24 kHz audio |
+| Streaming | Base checkpoints only |
+| Validated hardware | 1× H100 for the 1.7B Base CI configuration |
+| Support status | CI tested for 1.7B Base |
 
-Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.19 stack remains
-in place:
+`12Hz` is the codec frame rate, not the playback sample rate.
+
+## Install
+
+Install SGLang-Omni by following [Installation](../get_started/installation.md).
+Qwen3-TTS uses the upstream `qwen-tts` package and the system `sox` binary:
 
 ```bash
 apt-get update && apt-get install -y sox
@@ -22,260 +31,58 @@ uv pip install --no-deps sox einops
 uv pip install --no-deps qwen-tts==0.1.1
 ```
 
-`--no-deps` is required on **both** lines, for two different reasons.
+Keep `--no-deps` on both commands. Resolving `qwen-tts` would replace the
+project's Transformers 5.12 / SGLang 0.5.16 stack with Transformers 4.57.3;
+resolving `sox` can upgrade NumPy beyond the `numba==0.65.1` ceiling. Do not add
+`onnxruntime`, which is already a project dependency and can trigger the same
+NumPy conflict.
 
-`qwen-tts` pins Transformers 4.57.3, which would replace the project's 5.12.1.
-And resolving `sox` normally pulls `numpy` past the ceiling `numba==0.65.1`
-imposes (numba requires `numpy<=2.4`); the upgraded `numpy` then breaks
-`librosa`, so `import qwen_tts` fails with `Numba needs NumPy 2.4 or less`
-before the server can start.
+SGLang-Omni applies the required Transformers compatibility shim from
+`sglang_omni/models/qwen3_tts/compat.py`. If an upstream API change produces a
+`TypeError`, report it instead of installing `qwen-tts`'s Transformers pin.
 
-Do not add `onnxruntime` to that line either — it is already a SGLang-Omni
-dependency, and resolving it pulls `numpy` the same way.
+## Deploy
 
-> Do **not** install `qwen-tts` with dependencies here. Its declared dependency
-> set can pull a different Transformers/Torch stack than the SGLang-Omni runtime.
+### Recommended configuration
 
-Concretely, `qwen-tts` 0.1.1 pins Transformers 4.57.3, and its model code calls
-APIs that Transformers 5.12 has since renamed or removed — most visibly the mask
-factories (`create_causal_mask` and friends), which now spell `input_embeds` as
-`inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
-differences in
-`sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.19
-stack is therefore the supported configuration, not a workaround.
-
-If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
-installing the package's own Transformers pin — that breaks the rest of the
-runtime. Report it instead, so the shim can cover it.
-
-The Python `sox` package shells out to the system `sox` binary on some paths, so install both.
-
-Download a checkpoint (both repositories are public, no token required):
+Serve the CI-tested 1.7B Base checkpoint with its checked-in configuration:
 
 ```bash
-hf download Qwen/Qwen3-TTS-12Hz-0.6B-Base
-hf download Qwen/Qwen3-TTS-12Hz-1.7B-Base
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --config examples/configs/qwen3_tts_1_7b.yaml \
+  --port 8000
 ```
 
-## Server Configuration
+First startup can take several minutes while the TTS engine captures CUDA
+Graphs.
 
-The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes
-while the `tts_engine` captures CUDA graphs.
+### Other validated configurations
+
+The 0.6B Base checkpoint uses the same pipeline and request format:
 
 ```bash
-# 0.6B
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
   --config examples/configs/qwen3_tts_0_6b.yaml \
   --port 8000
 ```
 
-```bash
-# 1.7B
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --config examples/configs/qwen3_tts_1_7b.yaml \
-  --port 8000
-```
+CustomVoice and VoiceDesign use their own checked-in configs. See
+[TTS model usage](../basic_usage/tts.md) for those launch commands and their
+text-only request fields.
 
-### Deterministic Inference
+## Send a request
 
-Dynamic batching can change Qwen3-TTS codec and waveform outputs even when the
-prompt, reference audio, and seed are unchanged. Both the 0.6B and 1.7B Base
-checkpoints provide an opt-in deterministic mode:
-
-```yaml
-enable_deterministic_inference: true
-```
-
-When enabled, the same prompt, reference audio, and seed produce byte-identical
-PCM across runtime batch sizes. This mode reduces throughput because it
-serializes reference preprocessing and vocoder decoding and disables both the
-initial and follow-up vocoder CUDA Graphs, so it is disabled by default.
-
-### Overload / admission policy
-
-Two SGLang generation-stage knobs bound how the server behaves past saturation:
-
-| Knob | Meaning | Qwen3-TTS default |
-|---|---|---|
-| `--tts_engine.engine.max_running_requests` | Concurrent running slots | `16` |
-| `--tts_engine.engine.max_queued_requests` | Waiting-queue depth before fast-reject | `16` |
-
-Every request enters the waiting queue first, so `max_queued_requests`
-must be **≥ 1**. Capacity is about `running + queued`. Extra arrivals get
-HTTP **503** (`The request queue is full.`) before preprocessing, or later
-if the AR waiting queue or request-build backlog is full. Qwen3-TTS
-defaults to 4 request-build workers with pending depth 16.
-
-### Breakable prefill CUDA graphs
-
-Non-Base checkpoints (CustomVoice, VoiceDesign) default to the breakable
-prefill CUDA-graph backend with a token ladder up to 512:
-
-| Knob | Meaning | Default |
-|---|---|---|
-| `--tts_engine.engine.cuda_graph_backend_prefill` | Prefill graph backend (`breakable` or `disabled`) | `breakable` on CustomVoice, unset elsewhere |
-| `--tts_engine.engine.cuda_graph_bs_prefill` | Prefill token-count ladder to capture | shared ladder through `512`, plus a `1` bucket |
-| `--tts_engine.engine.cuda_graph_max_bs_prefill` | Cap for the ladder | top of the ladder |
-
-The default is the shared ladder with one bucket added. A replay falls
-back to eager when its bucket exceeds twice the real token count, and the
-shared ladder starts at 4, so a 1-token prefill lands in bucket 4 and
-misses. Measured over 3203 prefills at 10 and 20 RPS, 1301 of them (40.6%)
-are exactly one token, and they are the only shapes that fall back: 2 and
-3 already replay inside bucket 4. Adding the single `1` bucket takes the
-fallback rate to zero.
-
-Only CustomVoice takes this default, selected by the checkpoint's
-`tts_model_type`. Base prefills also carry reference audio, so their shape
-distribution differs, and VoiceDesign has not been measured; both keep the
-eager path.
-
-Opt out with `--tts_engine.engine.cuda_graph_backend_prefill disabled`. The
-default costs extra graph capture during startup. Raising
-`cuda_graph_max_bs_prefill` on its own regrows the default ladder to the
-new cap; declaring `cuda_graph_bs_prefill` yourself keeps your list as is.
-
-Raising `max_running_requests` does **not** automatically raise the waiting
-bound. For a ceiling-32 experiment:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --config examples/configs/qwen3_tts_0_6b.yaml \
-  --tts_engine.engine.max_running_requests 32 \
-  --tts_engine.engine.max_queued_requests 16 \
-  --port 8000
-```
-
-Stepped `--concurrencies` is a closed-loop client: it never holds more than
-N in-flight requests, so past-ceiling load is a burst that drains. Keep
-offered load above `max_running_requests + max_queued_requests` for a
-duration with open-loop sustained overshoot:
-
-```bash
-python -m benchmarks.eval.benchmark_tts_seedtts \
-  --generate-only --use-existing-server --stream \
-  --model Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --port 8000 \
-  --max-running-requests 32 \
-  --max-queued-requests 16 \
-  --sustained-overshoot \
-  --overshoot-duration-s 10 \
-  --max-samples 64
-```
-
-Arrivals default to `2 × capacity` (`--request-rate` overrides). Stats are
-on successes only; artifacts land in `<output-dir>/overshoot/`.
-
-A closed-loop `--concurrencies 16,32,48,64` sweep is still available for
-comparing healthy vs past-ceiling points, but it does not hold overshoot. Each
-concurrency writes inspectable artifacts under `<output-dir>/c<N>/`.
-
-### Prefill Admission Coalescing
-
-Under concurrent load, the `tts_engine` stage can coalesce prefill admission:
-instead of admitting each prepared request into its own prefill batch, the
-scheduler can briefly hold admission so that multiple ready requests are
-prefilled together.
-
-A prefill step has a largely fixed scheduler cost, so fuller batches can reduce
-prefill overhead. The end-to-end benefit depends on whether that saving
-outweighs the extra admission delay and any resulting reduction in decode
-occupancy.
-
-Coalescing is **off by default** and opt-in through the `tts_engine` factory
-configuration:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --config examples/configs/qwen3_tts_1_7b.yaml \
-  --tts_engine.factory.prefill_coalesce_requests 2 \
-  --tts_engine.factory.prefill_coalesce_wait_ms 30 \
-  --port 8000
-```
-
-or per-stage in YAML:
-
-```yaml
-stages:
-  tts_engine:
-    factory:
-      prefill_coalesce_requests: 2
-      prefill_coalesce_wait_ms: 30.0
-```
-
-The gate engages only when `prefill_coalesce_requests >= 2`. Once engaged,
-admission is released as soon as any of the following holds:
-
-- decode is idle, so a ready request can start immediately;
-- the waiting queue reaches `prefill_coalesce_requests`;
-- the oldest waiting request has waited `prefill_coalesce_wait_ms`.
-
-`prefill_coalesce_wait_ms` is therefore an upper bound on the added admission
-wait. Admission may be released earlier if the target queue size is reached.
-
-The values above are an example for the Qwen3-TTS workload and are not intended
-as universal defaults. Match both `prefill_coalesce_requests` and
-`prefill_coalesce_wait_ms` to the workload you actually serve. Coalescing is
-most useful when natural prefill batches are small and a short hold can increase
-batching without materially reducing decode occupancy. If the wait is too long,
-the reduced decode occupancy can offset the prefill savings.
-
-Leave coalescing disabled for latency-sensitive traffic or workloads where the
-added wait does not produce enough additional batching.
-
-### Process topology
-
-By default all three stages share one process. Per-request reference
-preprocessing (speech-tokenizer encode, speaker embedding, prompt embedding)
-then competes with the AR scheduler and the vocoder for the same interpreter,
-which caps single-replica throughput once concurrency passes ~32. Moving the
-preprocessing stage to its own process removes that contention: the stage
-loads a prompt-only frontend (embedding tables, text projection, predictor
-codec embeddings, speaker encoder) plus the speech tokenizer, together about
-2.2 GB of GPU memory for the extra process on a 1.7B checkpoint, and ships the
-prepared prompt tensors to the engine through the payload. Every GPU stage must
-then declare a memory fraction, and the engine's static fraction has to agree
-with the one it declares:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --preprocessing.process tts_frontend \
-  --preprocessing.gpu 0 \
-  --preprocessing.gpu_memory_fraction 0.05 \
-  --tts_engine.gpu_memory_fraction 0.75 \
-  --tts_engine.engine.mem_fraction_static 0.75 \
-  --vocoder.gpu_memory_fraction 0.12
-```
-
-`--vocoder.process vocoder` composes with it (lower `tts_engine` to 0.72 and
-give the vocoder 0.15). Six SeedTTS samples at a fixed seed produced identical
-PCM in both layouts; the extra process costs its CUDA context plus the frontend
-weights.
-
-## Synthesizing Speech
-
-### Text-only Requests
-
-Qwen3-TTS Base checkpoints require a reference clip. Text-only requests are supported by CustomVoice and VoiceDesign checkpoints; see [TTS Model Usage](../basic_usage/tts.md) for those launch commands.
-
-### Voice Cloning
-
-The `references` field accepts `audio_path` (a local path or HTTP URL) and `text` (the
-transcript of that clip). Supplying the transcript enables in-context-learning (ICL) mode and
-materially improves cloning quality; omitting it falls back to speaker-embedding (x-vector)
-mode.
+Base checkpoints clone a voice from `references[0]`. Include the reference
+transcript to use in-context-learning mode, which gives better speaker
+similarity than speaker-embedding-only mode.
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
     "voice": "default",
     "input": "SGLang-Omni is a great project!",
     "references": [{
@@ -286,129 +93,58 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-`ref_audio` and `ref_text` are accepted as shorthand for `references[0].audio_path` and
-`references[0].text`.
+`ref_audio` and `ref_text` are shorthand for the first reference object's
+`audio_path` and `text` fields.
 
-#### Python
+## Model capabilities
 
-```python
-import requests
+### Checkpoint modes
 
-resp = requests.post(
-    "http://localhost:8000/v1/audio/speech",
-    json={
-        "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-        "voice": "default",
-        "input": "Get the trust fund to the bank early.",
-        "references": [{
-            "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-            "text": "We asked over twenty different people, and they all said it was his.",
-        }],
-    },
-)
-resp.raise_for_status()
-with open("output.wav", "wb") as f:
-    f.write(resp.content)
-```
+| Mode | Conditioning | Streaming |
+|---|---|---|
+| Base | Reference audio; transcript recommended | Yes |
+| CustomVoice | Checkpoint speaker selected by `voice` | No |
+| VoiceDesign | Text plus non-empty `instructions` | No |
 
-Non-streaming responses include `X-Finish-Reason: stop` after codec EOS or
-`X-Finish-Reason: length` when generation reaches `max_new_tokens`. A `length`
-response still contains decodable audio, but the utterance may be incomplete.
-Batch responses expose the same value as each item's `finish_reason`.
+### Language hints
 
-### Language Hint
-
-`language` biases the model toward a target language. It defaults to `auto` (let the model
-detect). Supported languages are Chinese, English, Japanese, Korean, German, French, Russian,
-Portuguese, Spanish, and Italian.
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    "voice": "default",
-    "input": "今天天气不错，就该出去晒晒太阳。",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "language": "Chinese"
-  }' \
-  --output output.wav
-```
+`language` defaults to `auto`. You can explicitly select Chinese, English,
+Japanese, Korean, German, French, Russian, Portuguese, Spanish, or Italian.
+Use an explicit hint for short or code-switched input when automatic detection
+is unreliable.
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive raw PCM audio
-chunks in real time:
+Set `"stream": true` and `"response_format": "pcm"` to receive incremental
+16-bit mono PCM. Base checkpoints stream through both the HTTP speech endpoint
+and `/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`.
 
-```bash
-curl -N -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
-    "voice": "default",
-    "input": "Get the trust fund to the bank early.",
-    "references": [{
-      "audio_path": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
-      "text": "We asked over twenty different people, and they all said it was his."
-    }],
-    "stream": true,
-    "response_format": "pcm"
-  }' \
-  --output output.pcm
-```
+When `initial_codec_chunk_frames` is omitted, Base checkpoints use 8 frames for
+the first vocoder chunk. A smaller value lowers time to first audio but can
+increase playback underruns. An explicit `0` uses the steady-state stride from
+the first chunk. Utterances shorter than the initial threshold arrive in the
+final flush.
 
-Streaming returns `audio/pcm` 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the [Higgs TTS cookbook](../cookbook/higgs_tts.md#streaming)
-for a full Python raw PCM consumer.
+### Deterministic inference
 
-All three task types (Base/reference-cloning, CustomVoice and VoiceDesign) use
-true incremental codec and vocoder streaming, for both this HTTP endpoint and
-`/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`. Pass
-`"stream_codec_output": false` on a request, or launch with
-`--preprocessing.factory.stream_codec_output false`, to restore whole-utterance
-decoding.
-
-Streamed CustomVoice output on validated voice/language pairs (currently
-Ryan/English with default sampling) withholds the model's silent bootstrap
-codec frame, removing about 80 ms of leading silence from the first chunk. The
-frame still feeds the vocoder, so every later sample is unchanged, and a
-runtime silence check emits the audio unmodified whenever the first frame is
-not actually silent. Opt out per request with
-`"suppress_bootstrap_silence": false` or per deployment with
-`--vocoder.factory.suppress_bootstrap_silence false`.
-
-When `initial_codec_chunk_frames` is omitted, Qwen3-TTS ramps its first chunks
-`1 -> 2 -> 4` codec frames before the steady stride, so first audio leaves after a
-single AR step while the playback cushion is rebuilt within four chunks. Pass an
-explicit value to trade continuity against time-to-first-audio.
-Utterances that finish in fewer than the first chunk's generated codec frames never reach the
-first chunk, so their audio arrives complete in a single final flush.
-
-#### Codec decoding defaults
-
-Streaming decodes run on the stateful incremental codec by default: each
-follow-up chunk decodes only its fresh frames against per-stream state held in
-a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
-is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
-about a minute compiling the steady shapes. The left-context decoder remains
-available as a rollback:
+Both Base sizes support opt-in deterministic inference:
 
 ```yaml
-stages:
-  vocoder:
-    factory:
-      enable_stateful_codec_decoder: false
+enable_deterministic_inference: true
 ```
 
-`incremental_codec_cuda_graph`, `incremental_codec_compile` and
-`followup_batch_wait_ms` are the individual switches. Measured on one H100
-80GB at 20 requests per second, three client seeds of roughly 1200 requests
-each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
-for the left-context decoder, with first playable audio at 55 to 58 ms
-against 82 to 89 ms.
+With the same prompt, reference, and seed, this mode produces byte-identical
+PCM across runtime batch sizes. It reduces throughput by serializing reference
+preprocessing and vocoder decoding and by disabling Talker compilation and the
+initial vocoder CUDA Graph, so it is disabled by default.
+
+## Model-specific configuration
+
+Qwen3-TTS defaults to 16 running requests, a waiting-queue depth of 16, four
+request-build workers, and a pending-build depth of 16. Every request enters the
+waiting queue first, so `--max-queued-requests` must remain at least 1. Requests
+beyond the running and queued capacity receive HTTP 503; raising
+`--max-running-requests` does not raise the waiting bound automatically.
 
 #### First-audio chunk ramp
 
@@ -432,10 +168,9 @@ python -m sglang_omni.cli serve --config qwen3_tts_ramp.yaml
 ```
 
 Smaller early chunks lower time-to-first-audio but start playback with less
-buffered audio, so the continuity cost grows with concurrency. The default
-`[1, 2, 4]` is the most aggressive schedule and suits low concurrency; prefer
-`[2, 4, 8]` at moderate concurrency and `[4, 8]` for saturated serving, where
-the wider first chunk buys back the playback cushion. The ramp is mutually
+buffered audio, so the continuity cost grows with concurrency: keep
+`[2, 4, 8]` to low concurrency, prefer `[4, 8]` up to moderate concurrency,
+and keep the default schedule for saturated serving. The ramp is mutually
 exclusive with the legacy `initial_chunk_frames` /
 `stream_initial_followup_stride` options, its first entry must not exceed the
 steady stride, and a per-request `initial_codec_chunk_frames` still overrides
@@ -443,131 +178,45 @@ only the first chunk.
 
 ## Generation Parameters
 
-| Parameter | Default | Notes |
-|---|---|---|
-| `model` | served model | Served model identifier |
-| `input` | (required) | Text to synthesize |
-| `voice` | `default` | Voice identifier. For Base reference cloning, the reference clip provides the speaker conditioning |
-| `references` | `null` | Reference clip for cloning. Each item has `audio_path` and `text` |
-| `ref_audio` / `ref_text` | `null` | Shorthand for `references[0].audio_path` / `references[0].text` |
-| `language` | `auto` | Target-language hint (see list above) |
-| `temperature` | `0.9` | Sampling temperature |
-| `top_p` | `1.0` | Top-p sampling |
-| `top_k` | `50` | Top-k sampling |
-| `repetition_penalty` | `1.05` | Repetition penalty |
-| `max_new_tokens` | `2048` | Maximum number of generated codec tokens |
-| `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Stream raw PCM audio chunks |
-| `initial_codec_chunk_frames` | ramp `1 -> 2 -> 4` when omitted | First streaming vocoder chunk size in codec frames. An explicit value replaces the ramp's first chunk only. Smaller values lower TTFA but underrun more easily; `0` uses the steady stride from the start |
-| `stream_codec_output` | `true` | Forward codec frames to the vocoder as they are generated. Set `false` to restore whole-utterance decoding for CustomVoice/VoiceDesign |
-| `suppress_bootstrap_silence` | `true` | Withhold the silent bootstrap codec frame's audio from streamed CustomVoice output (validated voice/language pairs only, guarded by a runtime silence check). Set `false` to keep the leading silence |
+Non-streaming responses set `X-Finish-Reason` to `stop` after codec EOS or
+`length` at `max_new_tokens`. A `length` response is decodable but may contain
+an incomplete utterance.
 
-## Model Variants
+For the complete shared speech request schema, see
+[TTS model usage](../basic_usage/tts.md).
 
-| Checkpoint | Parameters | Config |
-|---|---|---|
-| `Qwen/Qwen3-TTS-12Hz-0.6B-Base` | 0.6B | `examples/configs/qwen3_tts_0_6b.yaml` |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | 1.7B | `examples/configs/qwen3_tts_1_7b.yaml` |
+## Known limitations
 
-Both expose an identical request API. The 1.7B model has higher capacity (typically better
-quality) at a larger memory and latency cost; the 0.6B model is lighter and faster.
+- Base checkpoints need a reference clip for natural output; without one,
+  speech is typically robotic.
+- Omitting the reference transcript uses speaker-embedding-only mode and
+  usually reduces cloning quality.
+- `language: auto` can misdetect short or code-switched inputs.
+- The 0.6B Base checkpoint has shown rare repetition loops up to
+  `max_new_tokens`. Lower that limit or raise `repetition_penalty` when this
+  occurs; the 1.7B checkpoint is less prone.
 
-## CustomVoice Checkpoints
+## Benchmark
 
-CustomVoice generates speech with built-in speakers through the same pipeline. Use it without reference audio; omit `ref_audio`, `ref_text`, `references`, and `x_vector_only_mode`. Omit `task_type` or set it to `CustomVoice`.
-
-| Checkpoint | Config | Instruction guidance |
-|---|---|---|
-| `Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice` | `examples/configs/qwen3_tts_0_6b_customvoice.yaml` | Accepted for backward compatibility, but not recommended |
-| `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice` | `examples/configs/qwen3_tts_1_7b_customvoice.yaml` | Supported |
-
-Both released checkpoints provide `Serena`, `Vivian`, `Uncle_Fu`, `Ryan`, `Aiden`, `Ono_Anna`, `Sohee`, `Eric`, and `Dylan`. Speaker matching is case-insensitive; an omitted or `default` voice selects `Vivian`. `GET /v1/audio/voices` lists `default` and the served checkpoint's speakers. Unknown speakers or supplied cloning fields return HTTP 400; uploaded reference voices are not used for CustomVoice synthesis.
-
-Both sizes support buffered speech, batch requests, incremental HTTP PCM output, and WebSocket audio output. HTTP streaming requires `stream=true` with `response_format="pcm"`; WebSocket sessions use `stream_audio=true` with `response_format="pcm"`.
-
-**0.6B instruction compatibility:** SGLang-Omni continues to pass optional `instructions` into the 0.6B prompt, preserving existing behavior. The released 0.6B model does not provide reliable instruction control; omit this field or use 1.7B when style control is needed.
-
-**Eric/Dylan language behavior:** For both sizes, `language: Auto` selects Eric's Sichuan dialect token or Dylan's Beijing dialect token. An explicit language takes precedence: `language: Chinese` keeps the Chinese language token. This preserves existing SGLang-Omni behavior and differs from the QwenLM/Qwen3-TTS Python wrapper (`qwen-tts` 0.1.1), which also selects dialect tokens for `Chinese`. This is a conditioning choice, not a guarantee that the speaker's accent disappears.
-
-Start the 1.7B checkpoint with its matching config:
+The canonical Seed-TTS benchmark exercises correctness, latency, throughput,
+streaming, and overload behavior:
 
 ```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice \
-  --config examples/configs/qwen3_tts_1_7b_customvoice.yaml \
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --generate-only \
+  --use-existing-server \
+  --stream \
+  --model Qwen/Qwen3-TTS-12Hz-1.7B-Base \
   --port 8000
 ```
 
-Then select a built-in speaker in the request. For 0.6B, use its model/config pair from the table and omit `instructions`.
+Use benchmark artifacts for current performance numbers instead of treating a
+cookbook snapshot as a release guarantee.
 
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
-    "input": "SGLang-Omni serves Qwen CustomVoice.",
-    "voice": "Ryan",
-    "language": "English",
-    "instructions": "Speak clearly and calmly."
-  }' \
-  --output custom-voice.wav
-```
+## Related documentation
 
-## Benchmark Results
-
-### 0.6B Base
-
-Qwen3-TTS-12Hz-0.6B-Base on Seed-TTS EN (1088 utterances, reference voice cloning from each
-prompt), concurrency 16, WER scored with HF Whisper-large-v3. Hardware: 1× H200 SXM.
-
-| Metric | Value |
-|---|---|
-| WER (corpus, excl. runaway outliers) | 1.07% |
-| WER (per-sample median / p95) | 0.00% / 9.09% |
-| WER (corpus micro-avg, raw) | 18.29% |
-| Runaway samples (>50% WER) | 2 / 1088 (0.2%) |
-| Latency mean / median (s) | 6.61 / 6.24 |
-| RTF mean / median | 1.51 / 1.48 |
-| Output throughput (tok/s) | 115.4 |
-| Completed / failed requests | 1088 / 0 |
-
-Typical output is clean (0.00% median WER, 9.09% p95). Two utterances (0.2%) ran away into a
-repetition loop and generated ~164 s of looping audio up to `max_new_tokens`, which alone lifts
-the raw micro-average to 18.29%; excluding those, corpus WER is 1.07%. RTF > 1 reflects the
-0.6B codec pipeline at concurrency 16, not single-stream latency. The 1.7B checkpoint trades
-latency for quality.
-
-### 1.7B CustomVoice
-
-Qwen3-TTS-12Hz-1.7B-CustomVoice on the full Seed-TTS-Eval EN and ZH splits, concurrency 16, with 16 warmup requests per language/mode and `max_new_tokens=2048`. EN used Ryan/English and ZH used Vivian/Chinese, without reference audio or instructions. WER/CER was scored with Qwen3-ASR-1.7B at concurrency 32. Hardware: 1× H200 141 GB, BF16, TP1. Sampling overrides and seed were unset.
-
-The server used `--tts_engine.engine.max_running_requests 64`, `--tts_engine.engine.cuda_graph_max_bs 64`, `--tts_engine.engine.torch_compile_max_bs 64`, `--vocoder.process vocoder`, `--tts_engine.gpu_memory_fraction 0.85`, and `--vocoder.gpu_memory_fraction 0.10`; `torch.compile` remained disabled. Streaming used the default `1 -> 2 -> 4` chunk ramp without a request-level override. Each language/mode was measured once, in non-streaming EN/ZH then streaming EN/ZH order on the same warmed server. The target GPU had no external GPU process during timed windows; host CPU, memory, and I/O were shared with another profiling task.
-
-| Metric | Non-streaming EN | Non-streaming ZH | Streaming EN | Streaming ZH |
-|---|---:|---:|---:|---:|
-| Samples | 1088 | 2020 | 1088 | 2020 |
-| Corpus WER/CER | 1.608% | 0.984% | 2.085% | 0.927% |
-| Corpus WER/CER (excl. >50% outliers) | 1.359% | 0.984% | 1.454% | 0.927% |
-| Samples above 50% WER/CER | 3 | 0 | 4 | 0 |
-| UTMOS | 4.1723 | 3.1824 | 4.1500 | 3.1789 |
-| QPS | 14.788 | 13.307 | 10.098 | 8.333 |
-| Latency mean (s) | 1.075 | 1.198 | 1.573 | 1.915 |
-| RTF mean | 0.2335 | 0.2079 | 0.3380 | 0.3332 |
-| TTFA mean (s) | N/A | N/A | 0.1213 | 0.1047 |
-
-Corpus WER (EN) / CER (ZH) is total edit distance divided by total reference words / characters and includes every sample. The filtered row excludes samples whose own WER/CER exceeds 50% and recomputes the corpus rate. UTMOS is the mean predicted audio-quality score, not a listening-test score. These independently sampled runs are not a paired comparison of streaming and non-streaming quality; the Base result also uses different conditioning and a different ASR evaluator.
-
-TTFA measures arrival of the first PCM payload, not the first audible speech; its mean payload duration was 80 ms in both languages. All 3,108 streaming requests were continuity-scored: 98.99% EN and 93.76% ZH had no playback underrun longer than 50 ms. Maximum underrun was 396.1 ms EN and 2072.0 ms ZH. The default ramp therefore does not guarantee uninterrupted playback at concurrency 16; see [First-audio chunk ramp](#first-audio-chunk-ramp) for the buffering tradeoff.
-
-## Known Limitations
-
-- **Reference audio recommended.** As a cloning model, Qwen3-TTS Base produces robotic speech
-  without a reference clip.
-- **Transcript improves cloning.** Providing `text` in `references` (ICL mode) yields better
-  speaker similarity than speaker-embedding-only (x-vector) mode.
-- **Language detection.** `language: auto` may misdetect for short or code-switched inputs;
-  set `language` explicitly when you know the target language.
-- **Rare runaway generation.** Roughly 0.2% of utterances (observed on the 0.6B checkpoint) can
-  fall into a repetition loop and keep generating up to `max_new_tokens`. Raising
-  `repetition_penalty` (default `1.05`) or lowering `max_new_tokens` mitigates it; the 1.7B
-  checkpoint is less prone.
+- [TTS serving and request fields](../basic_usage/tts.md)
+- [TTS process topology](../basic_usage/tts_process_topology.md)
+- [MPS/DP and Qwen3-TTS weight-sharing status](../basic_usage/mps_dp.md)
+- [Supported models](../supported_models.md)
+- [TTS model integration](../developer_reference/tts_model_integration.md)

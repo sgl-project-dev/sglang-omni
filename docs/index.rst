@@ -18,67 +18,9 @@ Core features:
 Supported Models
 ----------------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 45 15 40
-
-   * - Model
-     - Type
-     - Notes
-   * - `boson-sglang/higgs-audio-v3-tts-4b-base <https://huggingface.co/boson-sglang/higgs-audio-v3-tts-4b-base>`_
-     - TTS
-     - Voice cloning, streaming, 100+ languages
-   * - `fishaudio/s2-pro <https://huggingface.co/fishaudio/s2-pro>`_
-     - TTS
-     - Voice cloning, streaming
-   * - `mistralai/Voxtral-4B-TTS-2603 <https://huggingface.co/mistralai/Voxtral-4B-TTS-2603>`_
-     - TTS
-     - Named voices, streaming, 9 languages
-   * - `Qwen/Qwen3-TTS-12Hz-Base <https://huggingface.co/Qwen/Qwen3-TTS-12Hz-1.7B-Base>`_
-     - TTS
-     - Voice cloning, streaming, 10 languages, 0.6B / 1.7B
-   * - `OpenMOSS-Team/MOSS-TTS-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-v1.5>`_
-     - TTS
-     - Delay-pattern MOSS-TTS; voice cloning, streaming, 31 languages
-   * - `OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5 <https://huggingface.co/OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5>`_
-     - TTS
-     - Local-transformer MOSS-TTS; 48 kHz stereo, streaming
-   * - `inclusionAI/Ming-omni-tts-16.8B-A3B <https://huggingface.co/inclusionAI/Ming-omni-tts-16.8B-A3B>`_
-     - TTS
-     - Text-to-speech and zero-shot voice cloning
-   * - `dots-studio/dots.tts-mf <https://huggingface.co/dots-studio/dots.tts-mf>`_
-     - TTS
-     - 48 kHz continuous-latent TTS; also ``dots.tts-soar`` / ``dots.tts-base``
-   * - `Zyphra/zonos2 <https://huggingface.co/Zyphra/zonos2>`_
-     - TTS
-     - MoE TTS, 9 DAC codebooks, voice cloning
-   * - `MiniMaxAI/MiniMax-Music3 <https://huggingface.co/MiniMaxAI/MiniMax-Music3>`_
-     - Music
-     - Text-to-music; lyrics + caption → 32 kHz stereo song
-   * - `Qwen/Qwen3-ASR-1.7B <https://huggingface.co/Qwen/Qwen3-ASR-1.7B>`_
-     - ASR
-     - Multilingual transcription with 30 language hints
-   * - `FunAudioLLM/Fun-ASR-Nano-2512-hf <https://huggingface.co/FunAudioLLM/Fun-ASR-Nano-2512-hf>`_
-     - ASR
-     - Multilingual Fun-ASR-Nano
-   * - `AutoArk-AI/ARK-ASR-3B <https://huggingface.co/AutoArk-AI/ARK-ASR-3B>`_
-     - ASR
-     - Multilingual ARK-ASR
-   * - `OpenMOSS-Team/MOSS-Transcribe-Diarize <https://huggingface.co/OpenMOSS-Team/MOSS-Transcribe-Diarize>`_
-     - ASR
-     - Multi-speaker transcription + diarization + timestamps
-   * - `openai/whisper-large-v3 <https://huggingface.co/openai/whisper-large-v3>`_
-     - ASR
-     - Experimental transcription and speech-to-English translation routes; see the `audio translation support matrix <basic_usage/audio_translations.html>`_
-   * - `Qwen/Qwen3-Omni-30B-A3B-Instruct <https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct>`_
-     - Omni
-     - Text, image, audio, video → text + audio
-   * - `inclusionAI/Ming-flash-omni-2.0 <https://huggingface.co/inclusionAI/Ming-flash-omni-2.0>`_
-     - Omni
-     - Streaming TTS
-   * - `inclusionAI/LLaDA2.0-Uni <https://huggingface.co/inclusionAI/LLaDA2.0-Uni>`_
-     - Multimodal
-     - Text + image understanding and generation
+See the centralized `supported-model and qualification matrix <supported_models.html>`_
+for task, endpoint, pipeline, streaming, validated hardware, status, and
+cookbook links.
 
 
 .. toctree::
@@ -89,6 +31,14 @@ Supported Models
    get_started/installation_npu.md
    get_started/installation_xpu.md
    get_started/installation_cpu.md
+   get_started/release_notes.md
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: Supported Models
+
+   supported_models.md
 
 
 .. toctree::
@@ -118,14 +68,13 @@ Supported Models
 
 .. toctree::
    :maxdepth: 1
-   :caption: General Usage
+   :caption: User Guide
 
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
    basic_usage/process_topology.md
    basic_usage/tts_process_topology.md
-   basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
    basic_usage/mps_dp.md
 
@@ -139,16 +88,22 @@ Supported Models
 
 .. toctree::
    :maxdepth: 1
-   :caption: Developer Reference
+   :caption: Developer Guide
 
+   STYLE_GUIDE.md
    developer_reference/main.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
-   developer_reference/config.md
-   developer_reference/adding_parameters.md
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md
    developer_reference/bump_version.md
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: References
+
+   developer_reference/config.md
