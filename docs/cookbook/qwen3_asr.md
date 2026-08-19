@@ -72,8 +72,8 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
   -F response_format=json
 ```
 
-The endpoint also accepts `verbose_json` and `text`. `verbose_json` reports
-duration-based usage when duration probing succeeds.
+See the [Transcription API](../user_guide/serving/transcription_api.md) for
+shared request fields, response formats, usage, and errors.
 
 ## Model capabilities
 
@@ -129,9 +129,10 @@ the non-chunked path.
 
 ### Streaming
 
-`stream=true` returns transcript events over SSE. Streaming does not currently
-use long-audio chunking, so uploads above 1,200 seconds return HTTP 400. Use
-non-streaming mode for longer files.
+Streaming does not currently use long-audio chunking, so uploads above 1,200
+seconds return HTTP 400. Use non-streaming mode for longer files. See
+[Streaming](../user_guide/advanced_features/streaming.md) for the shared SSE
+event contract.
 
 ## Model-specific configuration
 
@@ -175,10 +176,15 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
 
 The recurring ASR CI gate uses this benchmark entry point. See the
 [Qwen3-ASR concurrency profile](../developer_reference/qwen3_asr_concurrency_profile.md)
-for the measured tuning study and bottleneck decomposition.
+for the measured tuning study and bottleneck decomposition, and follow the
+[benchmark methodology](../benchmarks/methodology.md) when publishing results.
 
 ## Related documentation
 
+- [Transcription API](../user_guide/serving/transcription_api.md)
+- [Streaming](../user_guide/advanced_features/streaming.md)
+- [Admission control](../user_guide/advanced_features/admission_control.md)
+- [Benchmark methodology](../benchmarks/methodology.md)
 - [Audio translation support](../basic_usage/audio_translations.md)
 - [MPS/DP deployment](../basic_usage/mps_dp.md)
 - [Supported models](../supported_models.md)

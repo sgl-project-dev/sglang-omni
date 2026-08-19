@@ -68,21 +68,39 @@ cookbook links.
 
 .. toctree::
    :maxdepth: 1
-   :caption: User Guide
+   :caption: User Guide: Serving
 
+   user_guide/serving/speech_api.md
+   user_guide/serving/transcription_api.md
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
-   basic_usage/process_topology.md
-   basic_usage/tts_process_topology.md
    basic_usage/omni_router.md
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: User Guide: Advanced Features
+
+   user_guide/advanced_features/streaming.md
+   user_guide/advanced_features/admission_control.md
+   user_guide/advanced_features/deterministic_inference.md
    basic_usage/mps_dp.md
+
+
+.. toctree::
+   :maxdepth: 1
+   :caption: User Guide: Deployment
+
+   user_guide/deployment/stage_placement.md
+   basic_usage/tts_process_topology.md
 
 
 .. toctree::
    :maxdepth: 1
    :caption: Benchmarks
 
+   benchmarks/methodology.md
    benchmarks/relay.md
 
 

@@ -71,13 +71,16 @@ curl -X POST http://localhost:8008/v1/chat/completions \
   return audio with `modalities: ["text", "audio"]`.
 - Native BF16, native FP8, and an AutoRound INT4 thinker with BF16
   talker/code2wav are supported in the documented topologies.
-- The speech pipeline supports streaming chat and server-VAD realtime sessions.
+- The speech pipeline supports the shared streaming chat and server-VAD
+  realtime transports.
 - Disaggregated thinker TP=1 or TP=2 is supported. Colocated speech requires
   thinker TP=1 and explicit per-stage memory budgets.
 
 See [Omni model usage](../basic_usage/qwen3_omni.md) for complete modality
-examples, realtime events, stage placement, precision details, and sampling
-fields.
+examples, realtime events, model-specific placement measurements, precision
+details, and sampling fields. See [Streaming](../user_guide/advanced_features/streaming.md)
+and [Stage placement](../user_guide/deployment/stage_placement.md) for the shared
+contracts.
 
 ## Known limitations
 
@@ -103,11 +106,15 @@ python benchmarks/eval/benchmark_omni_mmmu.py \
 ```
 
 Qwen3-Omni CI also covers speech, MMSU, Video-MME, and Video-AMME paths with
-separate benchmark entry points.
+separate benchmark entry points. Follow the
+[benchmark methodology](../benchmarks/methodology.md) when publishing results.
 
 ## Related documentation
 
 - [Omni model usage](../basic_usage/qwen3_omni.md)
 - [Omni router](../basic_usage/omni_router.md)
+- [Streaming](../user_guide/advanced_features/streaming.md)
+- [Stage placement](../user_guide/deployment/stage_placement.md)
+- [Benchmark methodology](../benchmarks/methodology.md)
 - [Pipeline architecture](../developer_reference/pipeline.md)
 - [Supported models](../supported_models.md)

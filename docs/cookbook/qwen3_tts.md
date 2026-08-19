@@ -115,9 +115,10 @@ is unreliable.
 
 ### Streaming
 
-Set `"stream": true` and `"response_format": "pcm"` to receive incremental
-16-bit mono PCM. Base checkpoints stream through both the HTTP speech endpoint
-and `/v1/audio/speech/stream` WebSocket sessions with `stream_audio=true`.
+Base checkpoints support the shared HTTP PCM stream and stateful speech
+WebSocket. CustomVoice and VoiceDesign remain non-streaming. See
+[Streaming](../user_guide/advanced_features/streaming.md) for the transport and
+framing contracts.
 
 When `initial_codec_chunk_frames` is omitted, Base checkpoints use 8 frames for
 the first vocoder chunk. A smaller value lowers time to first audio but can
@@ -127,24 +128,17 @@ final flush.
 
 ### Deterministic inference
 
-Both Base sizes support opt-in deterministic inference:
-
-```yaml
-enable_deterministic_inference: true
-```
-
-With the same prompt, reference, and seed, this mode produces byte-identical
-PCM across runtime batch sizes. It reduces throughput by serializing reference
-preprocessing and vocoder decoding and by disabling Talker compilation and the
-initial vocoder CUDA Graph, so it is disabled by default.
+Both Base sizes support the opt-in batch-invariant, byte-identical PCM contract
+described in [Deterministic inference](../user_guide/advanced_features/deterministic_inference.md).
+The mode is disabled by default because its serialized preprocessing and
+vocoder work reduce throughput.
 
 ## Model-specific configuration
 
 Qwen3-TTS defaults to 16 running requests, a waiting-queue depth of 16, four
-request-build workers, and a pending-build depth of 16. Every request enters the
-waiting queue first, so `--max-queued-requests` must remain at least 1. Requests
-beyond the running and queued capacity receive HTTP 503; raising
-`--max-running-requests` does not raise the waiting bound automatically.
+request-build workers, and a pending-build depth of 16. See
+[Admission control](../user_guide/advanced_features/admission_control.md) before
+changing the running, queue, KV, or CUDA Graph limits together.
 
 #### First-audio chunk ramp
 
@@ -182,8 +176,8 @@ Non-streaming responses set `X-Finish-Reason` to `stop` after codec EOS or
 `length` at `max_new_tokens`. A `length` response is decodable but may contain
 an incomplete utterance.
 
-For the complete shared speech request schema, see
-[TTS model usage](../basic_usage/tts.md).
+For the complete shared request and response contract, see the
+[Speech API](../user_guide/serving/speech_api.md).
 
 ## Known limitations
 
@@ -211,11 +205,16 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
 ```
 
 Use benchmark artifacts for current performance numbers instead of treating a
-cookbook snapshot as a release guarantee.
+cookbook snapshot as a release guarantee. Follow the
+[benchmark methodology](../benchmarks/methodology.md) when publishing results.
 
 ## Related documentation
 
 - [TTS serving and request fields](../basic_usage/tts.md)
+- [Speech API](../user_guide/serving/speech_api.md)
+- [Streaming](../user_guide/advanced_features/streaming.md)
+- [Admission control](../user_guide/advanced_features/admission_control.md)
+- [Deterministic inference](../user_guide/advanced_features/deterministic_inference.md)
 - [TTS process topology](../basic_usage/tts_process_topology.md)
 - [MPS/DP and Qwen3-TTS weight-sharing status](../basic_usage/mps_dp.md)
 - [Supported models](../supported_models.md)
