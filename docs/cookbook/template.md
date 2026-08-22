@@ -20,7 +20,8 @@ One sentence describing the model and its primary use.
 | Output | ... |
 | Streaming | Yes / No / Partial |
 | Validated hardware | Measured or CI-tested configuration |
-| Support status | CI tested / Performance qualified / Supported / Experimental |
+| Maturity | Supported / Experimental |
+| Validation | Not recorded / CI tested / Performance qualified |
 
 ## Install
 

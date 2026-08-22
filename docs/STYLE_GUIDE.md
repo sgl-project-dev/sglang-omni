@@ -57,7 +57,7 @@ link to the shared deployment guidance.
 ### Supported models
 
 Maintain the compact model, task, endpoint, pipeline, streaming, validated
-hardware, status, and cookbook view in
+hardware, maturity, validation, and cookbook view in
 [Supported models](./supported_models.md). Add task-specific capability tables
 only when their fields are meaningful for that task.
 
@@ -131,19 +131,26 @@ The primary supported-model table uses these fields:
 | Pipeline | High-level operational stage topology |
 | Streaming | Yes, No, or Partial, with a short qualification when needed |
 | Validated hardware | A measured or CI-tested configuration, not a theoretical minimum |
-| Status | The qualification level defined below |
+| Maturity | Experimental or Supported, as defined below |
+| Validation | The recorded CI or performance evidence, as defined below |
 | Cookbook | The operational recipe |
 
-Use the strongest status supported by current evidence:
+Maturity describes the maintenance expectation:
 
 - **Experimental**: an implementation exists but is not regularly qualified.
 - **Supported**: the configuration is maintained and expected to work.
+
+Validation describes the evidence recorded for that configuration:
+
+- **Not recorded**: no recurring CI or performance qualification is documented.
 - **CI tested**: recurring model CI covers the documented configuration.
 - **Performance qualified**: correctness and performance were measured under a
   defined, reproducible benchmark configuration.
 
-These properties can coexist in source metadata. The compact table displays
-the strongest relevant level and the cookbook can describe narrower coverage.
+Maturity and validation are independent. For example, an experimental model
+can still have recurring CI coverage. Record each dimension explicitly instead
+of treating CI or benchmark evidence as a stronger maturity level. If multiple
+validation types apply and are documented, list each one.
 
 ## Hardware claims
 
@@ -174,7 +181,8 @@ details that do not help a user operate the model.
 
 A new model should include:
 
-- [ ] An entry in the supported-model matrix with an evidence-based status.
+- [ ] An entry in the supported-model matrix with evidence-based maturity and
+      validation.
 - [ ] A cookbook based on the standard template.
 - [ ] A first-class pipeline topology.
 - [ ] Validated hardware, or an explicit statement that it is not yet recorded.
