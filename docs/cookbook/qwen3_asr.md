@@ -14,9 +14,13 @@ API.
 | Pipeline | audio preprocessing → ASR engine → response formatting |
 | Input | One uploaded audio file per request |
 | Output | Text, JSON, or verbose JSON transcript |
-| Streaming | Yes, up to 1,200 seconds |
-| Validated hardware | RTX 4090 24 GB; 1× H100 CI |
-| Support status | CI tested |
+| Streaming | SSE transcript output; complete uploaded-file input, up to 1,200 seconds |
+| Maturity | Supported |
+| Qualified checkpoint | `Qwen/Qwen3-ASR-1.7B` (recurring CI does not pin a model revision) |
+| Qualified configuration | Two router workers using the model-derived default |
+| Evidence hardware | 2× H100 (one per worker) |
+| Validation | CI tested |
+| Evidence | [ASR CI preset](../../tests/test_model/asr_ci_config.py), [router fixture](../../tests/test_model/test_asr_ci_seedtts.py), and [H100 workflow](../../.github/workflows/test-asr-ci.yaml) |
 
 Qwen3-ASR does not support `/v1/audio/translations`; that route returns HTTP
 400. See the [audio translation matrix](../basic_usage/audio_translations.md)
@@ -25,7 +29,7 @@ for models that support it.
 ## Install
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md),
-then resolve the qualified model revision:
+then resolve a fixed model revision for a reproducible local setup:
 
 ```bash
 MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
@@ -49,7 +53,12 @@ sgl-omni serve \
   --port 8000
 ```
 
-### RTX 4090 configuration
+The command above pins a revision for a reproducible user setup. Recurring CI
+currently uses the unpinned Hugging Face repository ID and places two workers
+using the model-derived configuration behind the router, with one H100 assigned
+to each worker. The command above is therefore not the complete CI topology.
+
+### RTX 4090 profile
 
 Use the checked-in profile on a 24 GB RTX 4090:
 
@@ -59,9 +68,10 @@ sgl-omni serve \
   --port 8000
 ```
 
-This profile keeps BF16, limits the stage to 16 running requests, and sets
-`mem_fraction_static` to `0.65`. These values describe the validated RTX 4090
-layout, not a minimum for other GPU architectures.
+This checked-in profile keeps BF16, limits the stage to 16 running requests,
+and sets `mem_fraction_static` to `0.65`. It is an available hardware-specific
+profile, not a recurring-CI qualification or a minimum for other GPU
+architectures.
 
 ## Send a request
 

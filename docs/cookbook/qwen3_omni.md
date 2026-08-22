@@ -14,9 +14,13 @@ accepts text, image, audio, and video and returns text or text plus 24 kHz audio
 | Speech pipeline | text pipeline + talker AR → code2wav |
 | Input | Text, image, audio, video |
 | Output | Text; optional audio in speech mode |
-| Streaming | Text and audio |
-| Validated hardware | Single-GPU H20, H100, and H200 colocated profiles |
-| Support status | CI tested |
+| Streaming | Chat SSE and realtime WebSocket; text and optional audio output |
+| Maturity | Supported |
+| Qualified checkpoint | `Qwen/Qwen3-Omni-30B-A3B-Instruct` (recurring CI does not pin a model revision) |
+| Qualified configuration | Two router workers using the [H100 BF16 profile](../../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus 32,768-token sequence overrides |
+| Evidence hardware | 2× H100 (one per worker) |
+| Validation | CI tested |
+| Evidence | [Qwen3-Omni H100 workflow](../../.github/workflows/test-qwen3-omni-ci.yaml) and [CI fixture](../../tests/test_model/conftest.py) |
 
 ## Install
 
@@ -32,7 +36,7 @@ topology, tensor parallelism, and precision:
 <div id="sgl-server-gen-mount"></div>
 ```
 
-For a one-GPU speech worker, choose the checked-in profile for your hardware:
+Start one worker with the H100 BF16 profile:
 
 ```bash
 sgl-omni serve \
@@ -41,10 +45,21 @@ sgl-omni serve \
   --port 8008
 ```
 
-Equivalent H20 and H200 profiles are
+Available H20 and H200 profiles are
 `examples/configs/qwen3_omni_colocated_h20.yaml` and
 `examples/configs/qwen3_omni_colocated_h200.yaml`. Use
-`qwen3_omni_colocated_h100_fp8.yaml` for the validated H100 FP8 checkpoint.
+`qwen3_omni_colocated_h100_fp8.yaml` for the H100 FP8 checkpoint covered by the
+same recurring H100 workflow.
+
+The recurring Qwen3-Omni workflow runs on H100. The H20 and H200 files are
+checked-in profiles, but this page does not apply the H100 CI result to those
+hardware configurations.
+
+Recurring CI launches two H100-profile workers behind the router and adds
+`thinker_max_seq_len=32768` to both thinker argument paths. The
+[CI fixture](../../tests/test_model/conftest.py) is the source of truth for
+those material launch differences; the single-worker command above is the base
+profile, not the complete recurring-CI topology.
 
 ## Send a request
 

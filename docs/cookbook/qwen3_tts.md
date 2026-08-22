@@ -14,9 +14,13 @@ generation, and 24 kHz audio output.
 | Pipeline | preprocessing → TTS engine → vocoder |
 | Input | Text; Base checkpoints also require reference audio |
 | Output | 24 kHz audio |
-| Streaming | Base checkpoints only |
-| Validated hardware | 1× H100 for the 1.7B Base CI configuration |
-| Support status | CI tested for 1.7B Base |
+| Streaming | HTTP PCM or WebSocket audio output; Base checkpoints only |
+| Maturity | Supported |
+| Qualified checkpoint | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (recurring CI does not pin a model revision) |
+| Qualified configuration | Two router workers using the model-derived pipeline plus the tuned per-worker CI overrides below |
+| Evidence hardware | 2× H100 (one per worker) |
+| Validation | CI tested |
+| Evidence | [TTS CI preset](../../tests/test_model/tts_ci_config.py), [router fixture](../../tests/test_model/test_tts_ci.py), and [H100 workflow](../../.github/workflows/test-tts-ci.yaml) |
 
 `12Hz` is the codec frame rate, not the playback sample rate.
 
@@ -43,9 +47,9 @@ SGLang-Omni applies the required Transformers compatibility shim from
 
 ## Deploy
 
-### Recommended configuration
+### Default configuration
 
-Serve the CI-tested 1.7B Base checkpoint with its checked-in configuration:
+Serve the 1.7B Base checkpoint with its checked-in default configuration:
 
 ```bash
 sgl-omni serve \
@@ -57,9 +61,36 @@ sgl-omni serve \
 First startup can take several minutes while the TTS engine captures CUDA
 Graphs.
 
-### Other validated configurations
+This default launch is not the tuned configuration used by recurring CI.
 
-The 0.6B Base checkpoint uses the same pipeline and request format:
+### CI-qualified per-worker configuration
+
+Each of the two `qwen3-tts` CI router workers adds the following topology,
+concurrency, CUDA Graph, compile, and memory overrides to the model-derived
+pipeline configuration. The checked-in YAML below selects the same pipeline
+class and checkpoint, but CI does not pass that file directly.
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
+  --max-running-requests 64 \
+  --cuda-graph-max-bs 64 \
+  --talker-torch-compile-max-bs 64 \
+  --stages.vocoder.process vocoder \
+  --stages.tts_engine.runtime.resources.total-gpu-memory-fraction 0.85 \
+  --stages.vocoder.runtime.resources.total-gpu-memory-fraction 0.10 \
+  --port 8000
+```
+
+The [TTS CI preset](../../tests/test_model/tts_ci_config.py) is the source of
+truth for these overrides. The [router fixture](../../tests/test_model/test_tts_ci.py)
+launches two workers, each using one H100. Recurring CI does not qualify the
+single-worker default command above.
+
+### Other available configurations
+
+The 0.6B Base checkpoint uses the same pipeline and request format, but is not
+covered by the recurring 1.7B CI preset:
 
 ```bash
 sgl-omni serve \

@@ -56,10 +56,11 @@ link to the shared deployment guidance.
 
 ### Supported models
 
-Maintain the compact model, task, endpoint, pipeline, streaming, validated
-hardware, maturity, validation, and cookbook view in
-[Supported models](./supported_models.md). Add task-specific capability tables
-only when their fields are meaningful for that task.
+Maintain a compact model-family view and a separate configuration-evidence
+table in [Supported models](./supported_models.md). Never apply evidence from
+one checkpoint, launch configuration, or hardware profile to a broader model
+family. Add task-specific capability tables only when their fields are
+meaningful for that task.
 
 ### Cookbook
 
@@ -121,7 +122,7 @@ configuration reference.
 
 ## Supported-model schema
 
-The primary supported-model table uses these fields:
+The primary model-family table uses these fields:
 
 | Field | Meaning |
 |---|---|
@@ -129,11 +130,20 @@ The primary supported-model table uses these fields:
 | Task | TTS, ASR, Omni, Music, Generation, or another concrete task |
 | Endpoint | Public serving endpoint |
 | Pipeline | High-level operational stage topology |
-| Streaming | Yes, No, or Partial, with a short qualification when needed |
-| Validated hardware | A measured or CI-tested configuration, not a theoretical minimum |
+| Streaming contract | Direction and transport, or No with a short qualification |
 | Maturity | Experimental or Supported, as defined below |
-| Validation | The recorded CI or performance evidence, as defined below |
 | Cookbook | The operational recipe |
+
+The configuration-evidence table uses these fields:
+
+| Field | Meaning |
+|---|---|
+| Model | Public model or checkpoint family |
+| Checkpoint | Exact model identifier; include a revision when the evidence pins one |
+| Configuration | Exact checked-in config plus material launch overrides |
+| Hardware | The targeted or measured hardware; Validation states whether runtime evidence exists |
+| Validation | The evidence level defined below |
+| Evidence | Link to the CI preset/workflow, qualification report, or artifact |
 
 Maturity describes the maintenance expectation:
 
@@ -143,14 +153,19 @@ Maturity describes the maintenance expectation:
 Validation describes the evidence recorded for that configuration:
 
 - **Not recorded**: no recurring CI or performance qualification is documented.
+- **Profile available**: a checked-in launch profile exists, but no completed
+  runtime qualification is claimed.
+- **Manually validated**: the exact configuration has a recorded validation,
+  but is not covered by a recurring gate.
 - **CI tested**: recurring model CI covers the documented configuration.
 - **Performance qualified**: correctness and performance were measured under a
   defined, reproducible benchmark configuration.
 
 Maturity and validation are independent. For example, an experimental model
 can still have recurring CI coverage. Record each dimension explicitly instead
-of treating CI or benchmark evidence as a stronger maturity level. If multiple
-validation types apply and are documented, list each one.
+of treating CI or benchmark evidence as a stronger maturity level. Use one row
+per exact qualified configuration. If multiple validation types apply to that
+same configuration and are documented, list each one.
 
 ## Hardware claims
 
@@ -181,8 +196,9 @@ details that do not help a user operate the model.
 
 A new model should include:
 
-- [ ] An entry in the supported-model matrix with evidence-based maturity and
-      validation.
+- [ ] A model-family entry with evidence-based maturity.
+- [ ] A configuration-evidence row for every validation claim, including the
+      exact checkpoint, config, hardware, and evidence link.
 - [ ] A cookbook based on the standard template.
 - [ ] A first-class pipeline topology.
 - [ ] Validated hardware, or an explicit statement that it is not yet recorded.

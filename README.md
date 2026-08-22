@@ -37,6 +37,45 @@
 - [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
 - [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
 
+## Getting Started
+
+This path assumes you are inside the recommended NVIDIA CUDA container from
+[Installation](./docs/get_started/installation.md), which provides UCX,
+FlashAttention, SGLang, and CUDA. For a manual installation, complete those
+prerequisites before installing the package.
+
+Install SGLang-Omni in an active Python 3.12 environment:
+
+```bash
+uv pip install --prerelease=allow sglang-omni
+```
+
+Start a [Higgs Audio v3](./docs/cookbook/higgs_tts.md) server:
+
+```bash
+sgl-omni serve \
+  --model-path bosonai/higgs-audio-v3-tts-4b \
+  --port 8000
+```
+
+Send a matching speech request:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "voice": "default",
+    "input": "Hello from SGLang-Omni."
+  }' \
+  --output output.wav
+```
+
+Next: [TTS](./docs/basic_usage/tts.md) ·
+[ASR](./docs/cookbook/qwen3_asr.md) ·
+[Omni](./docs/basic_usage/qwen3_omni.md) ·
+[Supported models](./docs/supported_models.md)
+
 ## About
 
 SGLang-Omni is a high-performance serving runtime for speech, audio, and omni
@@ -71,46 +110,8 @@ See the [pipeline lifecycle](./docs/developer_reference/pipeline.md),
 | ASR and diarization | [Qwen3-ASR](./docs/cookbook/qwen3_asr.md), [Fun-ASR](./docs/cookbook/fun_asr.md), [MOSS-Transcribe-Diarize](./docs/cookbook/moss_transcribe_diarize.md) | `/v1/audio/transcriptions`; text and structured segments | Model-dependent |
 | Music generation | [MiniMax Music 3](./docs/cookbook/minimax_music3.md) | `/v1/audio/speech`; audio | No |
 
-See the [supported-model and qualification matrix](./docs/supported_models.md)
-for the complete list, validated hardware, endpoints, maturity, and validation.
-
-## Getting Started
-
-This minimal path serves [Higgs Audio v3](./docs/cookbook/higgs_tts.md) on one
-NVIDIA GPU and writes a generated WAV file. For Docker, system prerequisites,
-or source installation, see [Installation](./docs/get_started/installation.md).
-
-Install SGLang-Omni in an active Python 3.12 environment:
-
-```bash
-uv pip install --prerelease=allow sglang-omni
-```
-
-Start the server:
-
-```bash
-sgl-omni serve \
-  --model-path bosonai/higgs-audio-v3-tts-4b \
-  --port 8000
-```
-
-Send a matching speech request:
-
-```bash
-curl -X POST http://localhost:8000/v1/audio/speech \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "bosonai/higgs-audio-v3-tts-4b",
-    "voice": "default",
-    "input": "Hello from SGLang-Omni."
-  }' \
-  --output output.wav
-```
-
-Next: [TTS](./docs/basic_usage/tts.md) ·
-[ASR](./docs/cookbook/qwen3_asr.md) ·
-[Omni](./docs/basic_usage/qwen3_omni.md) ·
-[Supported models](./docs/supported_models.md)
+See the [supported-model matrix and configuration evidence](./docs/supported_models.md)
+for the complete list, endpoints, maturity, and audited qualification scope.
 
 ## Performance
 
@@ -118,8 +119,9 @@ Performance is qualified per model, hardware, workload, and traffic shape
 rather than summarized as a project-wide speedup. SGLang-Omni includes
 optimizations across CUDA Graphs, stage batching, asynchronous execution,
 streaming, and multi-stage placement. See the
-[benchmark methodology](./docs/benchmarks/methodology.md) and published
-[qualification results](./docs/supported_models.md) for reproducible evidence.
+[benchmark methodology](./docs/benchmarks/methodology.md),
+[configuration evidence](./docs/supported_models.md#configuration-evidence),
+and model cookbooks for the audited scope and reproducible commands.
 
 ## Hardware Support
 

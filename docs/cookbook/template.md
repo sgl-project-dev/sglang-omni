@@ -18,10 +18,13 @@ One sentence describing the model and its primary use.
 | Pipeline | preprocessing → engine → vocoder |
 | Input | ... |
 | Output | ... |
-| Streaming | Yes / No / Partial |
-| Validated hardware | Measured or CI-tested configuration |
+| Streaming | Direction and transport / No |
 | Maturity | Supported / Experimental |
-| Validation | Not recorded / CI tested / Performance qualified |
+| Qualified checkpoint | `organization/model` plus revision, or Not recorded |
+| Qualified configuration | Checked-in config plus material overrides, or Not recorded |
+| Evidence hardware | Targeted or measured hardware, or Not recorded |
+| Validation | Not recorded / Profile available / Manually validated / CI tested / Performance qualified |
+| Evidence | Link to CI preset/workflow, report, or artifact |
 
 ## Install
 
