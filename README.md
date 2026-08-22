@@ -1,5 +1,8 @@
 <div align="center">
-<img src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/docs/_static/image/sgl-omni-logo.svg" alt="logo" width="400"></img>
+
+<img src="https://raw.githubusercontent.com/sgl-project/sglang-omni/main/docs/_static/image/sgl-omni-logo.svg" alt="SGLang-Omni logo" width="400"></img>
+
+### High-performance serving for teams deploying speech, audio, and omni models with streaming, multi-stage execution, and OpenAI-compatible APIs
 
 <p>
 <a href="https://pypi.org/project/sglang-omni/"><img src="https://img.shields.io/pypi/v/sglang-omni?style=for-the-badge&logo=pypi&logoColor=white&label=PyPI" alt="PyPI"></a>
@@ -10,11 +13,7 @@
 <a href="https://deepwiki.com/sgl-project/sglang-omni"><img src="https://img.shields.io/badge/Ask-DeepWiki-087fca?style=for-the-badge" alt="Ask DeepWiki"></a>
 </p>
 
-</div>
-
---------------------------------------------------------------------------------
-
-<p align="center">
+<p>
 <a href="https://lmsys.org/blog/"><b>Blog</b></a> |
 <a href="https://sgl-project.github.io/sglang-omni/"><b>Documentation</b></a> |
 <a href="#quick-start"><b>Quick Start</b></a> |
@@ -23,9 +22,51 @@
 <a href="https://slack.sglang.io"><b>Join Slack</b></a>
 </p>
 
-<p align="center">
+<p>
 ⭐ <b><a href="https://github.com/sgl-project/sglang-omni/stargazers">Star SGLang-Omni</a> to help more builders discover open infrastructure for multimodal and speech serving!</b>
 </p>
+
+</div>
+
+--------------------------------------------------------------------------------
+
+## Quick Start
+
+This minimal path serves [Higgs Audio v3](./docs/cookbook/higgs_tts.md) on one
+NVIDIA GPU and writes a generated WAV file. For Docker, system prerequisites,
+or source installation, see [Installation](./docs/get_started/installation.md).
+
+Install SGLang-Omni in an active Python 3.12 environment:
+
+```bash
+uv pip install --prerelease=allow "sglang-omni==0.1.3"
+```
+
+Start the server:
+
+```bash
+sgl-omni serve \
+  --model-path bosonai/higgs-audio-v3-tts-4b \
+  --port 8000
+```
+
+Send a matching speech request:
+
+```bash
+curl -X POST http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "voice": "default",
+    "input": "Hello from SGLang-Omni."
+  }' \
+  --output output.wav
+```
+
+Next: [TTS](./docs/basic_usage/tts.md) ·
+[ASR](./docs/cookbook/qwen3_asr.md) ·
+[Omni](./docs/basic_usage/qwen3_omni.md) ·
+[Supported models](./docs/supported_models.md)
 
 ## News
 
@@ -36,50 +77,132 @@
 - [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
 - [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
 
-## About
+## Why SGLang-Omni
 
-SGLang-Omni is a multi-stage serving runtime for omni, speech, and TTS models. Its design target is multi-stage decoding: generation split across heterogeneous stages with different compute patterns, dependency structures, and resource needs. SGLang-Omni owns the pipeline topology, stage lifecycle, inter-stage transport, model-family integration layer, and OpenAI-compatible serving surface, while composing with [SGLang](https://github.com/sgl-project/sglang) for high-performance autoregressive scheduling and model execution where applicable.
+- **Serve complete model pipelines.** Run preprocessing, encoders,
+  autoregressive engines, talkers, codecs, and vocoders as one managed request
+  lifecycle instead of assembling separate services.
+- **Build responsive speech experiences.** Stream generated audio, transcript
+  deltas, chat completions, and realtime sessions through OpenAI-compatible
+  HTTP, SSE, and WebSocket interfaces.
+- **Optimize each stage for its workload.** Use continuous batching and SGLang
+  execution for autoregressive stages while lightweight schedulers handle
+  preprocessing, acoustic tails, and streaming vocoders.
+- **Scale placement deliberately.** Assign stages and process replicas across
+  GPUs and processes, or colocate qualified pipelines with explicit memory
+  budgets.
+- **Operate a unified serving surface.** Route requests across workers with
+  capability-aware selection, bounded admission, health checks, and readiness
+  signals.
+- **Extend shared model contracts.** Reuse pipeline configuration, request
+  mapping, scheduling, transport, and response machinery when adding a model
+  family.
 
-- **Multi-stage runtime**: SGLang-Omni models generation as coordinated stages: preprocessing, encoders, autoregressive engines, talkers, decoders, vocoders, and aggregators.
-- **Stage-specialized scheduling**: Each stage runs behind a scheduler matched to its workload, from SGLang-backed autoregressive scheduling to lightweight preprocessing and streaming vocoder loops.
-- **Transport-aware execution**: A control plane coordinates requests while the relay data plane moves tensor payloads across shared-memory, NCCL, NIXL, and Mooncake backends.
-- **API surface**: OpenAI-compatible endpoints expose multimodal chat, speech generation, batch speech, streaming speech, uploaded voices, and transcription.
+## Supported Workloads
 
-## What SGLang-Omni Serves
+| Workload | Representative models | API / output | Streaming |
+|---|---|---|---|
+| Omni | [Qwen3-Omni](./docs/cookbook/qwen3_omni.md), [Ming-Omni](./docs/cookbook/ming_omni.md) | `/v1/chat/completions`; text and optional audio | Model-dependent |
+| Text-to-speech | [Qwen3-TTS](./docs/cookbook/qwen3_tts.md), [MOSS-TTS](./docs/cookbook/moss_tts.md), [Higgs Audio](./docs/cookbook/higgs_tts.md) | `/v1/audio/speech`; audio | Model-dependent |
+| ASR and diarization | [Qwen3-ASR](./docs/cookbook/qwen3_asr.md), [Fun-ASR](./docs/cookbook/fun_asr.md), [MOSS-Transcribe-Diarize](./docs/cookbook/moss_transcribe_diarize.md) | `/v1/audio/transcriptions`; text and structured segments | Model-dependent |
+| Music generation | [MiniMax Music 3](./docs/cookbook/minimax_music3.md) | `/v1/audio/speech`; audio | No |
 
-- **Omni chat and speech**: [Qwen3-Omni](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_omni.html), [Ming-Omni](https://sgl-project.github.io/sglang-omni/cookbook/ming_omni.html) — multimodal in, text/audio out.
-- **Music generation**: [MiniMax Music 3](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html) — lyrics + caption → 32 kHz stereo song.
-- **Speech generation**: [Higgs Audio v3](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html), [MOSS-TTS](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts.html), [MOSS-TTS Local](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html), [Fish Speech S2-Pro](https://sgl-project.github.io/sglang-omni/cookbook/fishaudio_s2_pro.html), [Qwen3-TTS](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_tts.html), [Voxtral TTS](https://sgl-project.github.io/sglang-omni/cookbook/voxtral_tts.html), [Ming-Omni-TTS](https://sgl-project.github.io/sglang-omni/cookbook/ming_tts.html), [dots.tts](https://sgl-project.github.io/sglang-omni/cookbook/dots_tts.html), [ZONOS2](https://sgl-project.github.io/sglang-omni/cookbook/zonos2.html) — `/v1/audio/speech`, batch, streaming, uploaded voices.
-- **Audio transcription and diarization**: [Qwen3-ASR](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html), [Fun-ASR](https://sgl-project.github.io/sglang-omni/cookbook/fun_asr.html), [ARK-ASR](https://sgl-project.github.io/sglang-omni/cookbook/arkasr.html), [MOSS-Transcribe-Diarize](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html) via `/v1/audio/transcriptions`. MOSS-TD supports speaker labels and timestamps (`response_format=verbose_json`).
-- **SGLang-Omni Router**: Multi-worker OpenAI-compatible front door — health, readiness, lifecycle, capability discovery. [Router guide](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html).
+See the [supported-model and qualification matrix](./docs/supported_models.md)
+for the complete list, validated hardware, endpoints, and support status.
+
+## Performance
+
+SGLang-Omni qualifies performance per model, hardware, workload, and traffic
+shape instead of publishing one project-wide speedup. Current optimization
+work includes:
+
+- CUDA Graph capture for decode and supported prefill paths, asynchronous
+  decoding, request-build overlap, and prefill coalescing;
+- stage-level batching for encoders, autoregressive engines, acoustic tails,
+  and vocoders;
+- streaming chunk policies tuned for time to first audio, cadence, and playback
+  continuity;
+- host/device utilization, process replication, stage placement, and
+  same-GPU or cross-GPU transport.
+
+See the [benchmark methodology](./docs/benchmarks/methodology.md),
+[Qwen3-ASR concurrency profile](./docs/developer_reference/qwen3_asr_concurrency_profile.md),
+[MPS/DP qualification](./docs/basic_usage/mps_dp.md), and
+[relay benchmarks](./docs/benchmarks/relay.md) for scoped evidence and
+reproducible commands.
+
+## Key Features
+
+- **OpenAI-compatible serving:** speech generation, batch speech, uploaded
+  voices, transcription, translation, multimodal chat, and realtime sessions.
+  See the [Speech API](./docs/user_guide/serving/speech_api.md) and
+  [Transcription API](./docs/user_guide/serving/transcription_api.md).
+- **Streaming speech and text:** HTTP PCM, transcription and chat SSE, stateful
+  speech WebSocket sessions, and bidirectional realtime interaction. See
+  [Streaming](./docs/user_guide/advanced_features/streaming.md).
+- **Multi-stage deployment:** declarative topologies, tensor parallel stages,
+  process-level replicas, colocation, and disaggregated placement. See
+  [Stage placement](./docs/user_guide/deployment/stage_placement.md).
+- **Scheduling and admission:** workload-specific schedulers, bounded request
+  queues, continuous batching, and model-local resource pools. See
+  [Admission control](./docs/user_guide/advanced_features/admission_control.md).
+- **Routing and health:** one capability-aware endpoint for worker selection,
+  liveness, readiness, and lifecycle management. See the
+  [Omni router](./docs/basic_usage/omni_router.md).
+- **Model integration:** shared stage, model-runner, request-builder, and
+  vocoder contracts for adding new speech and multimodal pipelines. See the
+  [developer guide](./docs/developer_reference/main.md).
+
+## Architecture Overview
+
+The control plane owns pipeline topology, request registration, routing,
+stream completion, cancellation, and stage lifecycle. The data plane moves
+typed payloads between stages through process-local dispatch, CUDA IPC, shared
+memory, or configured cross-node relay transport according to placement.
+
+Each stage owns a scheduler matched to its execution pattern. Autoregressive
+stages compose with [SGLang](https://github.com/sgl-project/sglang) for model
+execution and continuous batching; preprocessing, encoders, decoders, and
+vocoders use pipeline-native scheduling and exchange only the payloads required
+by downstream stages.
+
+Read the [pipeline lifecycle](./docs/developer_reference/pipeline.md),
+[communication design](./docs/developer_reference/communication.md), and
+[configuration reference](./docs/developer_reference/config.md) for the full
+runtime contract.
 
 ## Hardware Support
 
-| Backend | Status | Notes |
-|---------|--------|-------|
-| **NVIDIA CUDA** | Supported | Default backend with full model coverage. |
-| **Apple Silicon** | Experimental | Qwen3-ASR runs through native MLX or Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx). |
-| **Intel GPU (XPU)** | Experimental | Intel Arc GPUs via PyTorch XPU. **Qwen3-ASR, Qwen3-TTS, and Qwen3-Omni serve end-to-end** (Omni thinker via multi-XPU tensor parallelism). Install per [Intel XPU guide](./docs/get_started/installation_xpu.md); the backend is auto-detected. |
+Hardware status describes documented implementations, not theoretical minimum
+memory requirements. Model-level validation remains in the
+[supported-model matrix](./docs/supported_models.md).
 
-Additional model guides, including experimental and research-oriented paths, are available in the [Cookbook](https://sgl-project.github.io/sglang-omni/).
+| Backend | Status | Documented scope |
+|---|---|---|
+| NVIDIA CUDA | Supported | Primary backend with checked-in single- and multi-GPU model profiles. See [Installation](./docs/get_started/installation.md). |
+| Apple Silicon | Experimental | Qwen3-ASR runs through native MLX or Torch MPS on macOS arm64. Install with [`install.sh`](./install.sh) and follow the [Qwen3-ASR guide](./docs/cookbook/qwen3_asr.md#apple-silicon-mlx). |
+| Intel GPU (XPU) | Experimental | Qwen3-ASR and Qwen3-TTS serve on one XPU; Qwen3-Omni uses multi-XPU tensor parallelism. See [Intel XPU installation](./docs/get_started/installation_xpu.md). |
 
-## Quick Start
+## Documentation and Community
 
-- **macOS Apple Silicon:** from a checkout, run [`./install.sh`](./install.sh) for a one-command Homebrew + uv setup. See [installation](./docs/get_started/installation.md#macos-apple-silicon).
-- [Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)
-- [TTS usage](https://sgl-project.github.io/sglang-omni/basic_usage/tts.html)
-- [Qwen3-Omni usage](https://sgl-project.github.io/sglang-omni/basic_usage/qwen3_omni.html)
-- [Qwen3-ASR cookbook](https://sgl-project.github.io/sglang-omni/cookbook/qwen3_asr.html)
-- [MOSS-Transcribe-Diarize cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_transcribe_diarize.html)
-- [Omni router](https://sgl-project.github.io/sglang-omni/basic_usage/omni_router.html)
-- [Developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html)
+| Area | Links |
+|---|---|
+| Get started | [Installation](./docs/get_started/installation.md) · [Apple Silicon](./docs/get_started/installation.md#macos-apple-silicon) · [Quick Start](#quick-start) · [Supported models](./docs/supported_models.md) |
+| Task guides | [TTS](./docs/basic_usage/tts.md) · [ASR](./docs/cookbook/qwen3_asr.md) · [Omni](./docs/basic_usage/qwen3_omni.md) |
+| APIs and deployment | [Speech API](./docs/user_guide/serving/speech_api.md) · [Transcription API](./docs/user_guide/serving/transcription_api.md) · [Stage placement](./docs/user_guide/deployment/stage_placement.md) · [Router](./docs/basic_usage/omni_router.md) |
+| Benchmarks | [Methodology](./docs/benchmarks/methodology.md) · [Relay](./docs/benchmarks/relay.md) |
+| Development and contributing | [Developer guide](./docs/developer_reference/main.md) · [TTS model integration](./docs/developer_reference/tts_model_integration.md) · [Issue tracker](https://github.com/sgl-project/sglang-omni/issues) |
+| Community | [SGLang Slack](https://slack.sglang.io) · [SGLang](https://github.com/sgl-project/sglang) · [Blog](https://lmsys.org/blog/) |
 
-## Community & Support
-
-SGLang-Omni welcomes contributors working on inference systems, kernels, scheduling, inter-stage communication, model runners and cache efficiency, model integration, benchmarking, production deployment. Join the [SGLang Slack](https://slack.sglang.io) or read the [developer reference](https://sgl-project.github.io/sglang-omni/developer_reference/main.html).
-
-Organizations interested in supporting SGLang-Omni, TTS, or omni model serving can contact Chenyang Zhao at [zhaochenyang@lmsys.org](mailto:zhaochenyang@lmsys.org).
+SGLang-Omni welcomes contributors working on inference systems, kernels,
+scheduling, inter-stage communication, model integration, benchmarking, and
+deployment. Organizations interested in supporting SGLang-Omni, TTS, or omni
+model serving can contact Chenyang Zhao at
+[zhaochenyang@lmsys.org](mailto:zhaochenyang@lmsys.org).
 
 ## Acknowledgments
 
-SGLang-Omni builds on the SGLang ecosystem and on open model work from the TTS, speech, and omni-model communities. We thank the model teams, systems contributors, and partner organizations helping make open multimodal serving faster, more reliable, and easier to extend.
+SGLang-Omni builds on the SGLang ecosystem and on open model work from the TTS,
+speech, and omni-model communities. We thank the model teams, systems
+contributors, and partner organizations helping make open multimodal serving
+faster, more reliable, and easier to extend.
