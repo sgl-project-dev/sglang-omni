@@ -39,14 +39,37 @@
 
 ## Getting Started
 
-This path assumes you are inside the recommended NVIDIA CUDA container from
-[Installation](./docs/get_started/installation.md), which provides UCX,
-FlashAttention, SGLang, and CUDA. For a manual installation, complete those
-prerequisites before installing the package.
+### Docker (recommended)
 
-Install SGLang-Omni in an active Python 3.12 environment:
+Pull and start the NVIDIA CUDA image, which includes UCX, FlashAttention,
+SGLang, and CUDA:
 
 ```bash
+docker pull hongccc/sglang-omni:dev
+
+docker run -it \
+  --shm-size 32g \
+  --gpus all \
+  --ipc host \
+  --network host \
+  --privileged \
+  hongccc/sglang-omni:dev \
+  /bin/zsh
+```
+
+The `dev` tag moves with `main`. See [Installation](./docs/get_started/installation.md)
+for digest pinning, manual and source installs, or use the
+[Intel XPU guide](./docs/get_started/installation_xpu.md) for Intel GPUs.
+
+### Install and serve
+
+Inside the container, create a Python 3.12 environment and install
+SGLang-Omni:
+
+```bash
+pip install uv
+uv venv .venv -p 3.12
+source .venv/bin/activate
 uv pip install --prerelease=allow sglang-omni
 ```
 
