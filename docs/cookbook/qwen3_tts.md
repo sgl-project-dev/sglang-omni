@@ -36,7 +36,7 @@ uv pip install --no-deps qwen-tts==0.1.1
 ```
 
 Keep `--no-deps` on both commands. Resolving `qwen-tts` would replace the
-project's Transformers 5.12 / SGLang 0.5.16 stack with Transformers 4.57.3;
+project's Transformers 5.12 / SGLang 0.5.18 stack with Transformers 4.57.3;
 resolving `sox` can upgrade NumPy beyond the `numba==0.65.1` ceiling. Do not add
 `onnxruntime`, which is already a project dependency and can trigger the same
 NumPy conflict.
@@ -73,12 +73,12 @@ class and checkpoint, but CI does not pass that file directly.
 ```bash
 sgl-omni serve \
   --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --max-running-requests 64 \
-  --cuda-graph-max-bs 64 \
-  --talker-torch-compile-max-bs 64 \
-  --stages.vocoder.process vocoder \
-  --stages.tts_engine.runtime.resources.total-gpu-memory-fraction 0.85 \
-  --stages.vocoder.runtime.resources.total-gpu-memory-fraction 0.10 \
+  --tts_engine.engine.max_running_requests 64 \
+  --tts_engine.engine.cuda_graph_max_bs 64 \
+  --tts_engine.engine.torch_compile_max_bs 64 \
+  --vocoder.process vocoder \
+  --tts_engine.gpu_memory_fraction 0.85 \
+  --vocoder.gpu_memory_fraction 0.10 \
   --port 8000
 ```
 
@@ -159,10 +159,11 @@ final flush.
 
 ### Deterministic inference
 
-Both Base sizes support the opt-in batch-invariant, byte-identical PCM contract
-described in [Deterministic inference](../user_guide/advanced_features/deterministic_inference.md).
-The mode is disabled by default because its serialized preprocessing and
-vocoder work reduce throughput.
+Both Base sizes expose the opt-in deterministic mode described in
+[Deterministic inference](../user_guide/advanced_features/deterministic_inference.md).
+That guide scopes the recorded batch-invariance evidence. The mode is disabled
+by default because its serialized preprocessing and vocoder work reduce
+throughput.
 
 ## Model-specific configuration
 

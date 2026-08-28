@@ -75,6 +75,7 @@ cookbook links.
    basic_usage/qwen3_omni.md
    basic_usage/audio_translations.md
    basic_usage/tts.md
+   basic_usage/process_topology_migration.md
    basic_usage/omni_router.md
 
 
@@ -112,6 +113,7 @@ cookbook links.
    developer_reference/main.md
    developer_reference/apiserver_design.md
    developer_reference/pipeline.md
+   developer_reference/adding_parameters.md
    developer_reference/communication.md
    developer_reference/reference_encode_service.md
    developer_reference/profiler.md

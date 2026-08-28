@@ -70,7 +70,7 @@ SGLang-Omni:
 pip install uv
 uv venv .venv -p 3.12
 source .venv/bin/activate
-uv pip install --prerelease=allow sglang-omni
+uv pip install --prerelease=allow "sglang-omni==0.1.3"
 ```
 
 Start a [Higgs Audio v3](./docs/cookbook/higgs_tts.md) server:

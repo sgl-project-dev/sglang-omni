@@ -147,7 +147,8 @@ The configuration-evidence table uses these fields:
 
 Maturity describes the maintenance expectation:
 
-- **Experimental**: an implementation exists but is not regularly qualified.
+- **Experimental**: an implementation exists, but its documented support
+  contract is not yet considered stable.
 - **Supported**: the configuration is maintained and expected to work.
 
 Validation describes the evidence recorded for that configuration:

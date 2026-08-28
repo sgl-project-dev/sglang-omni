@@ -20,23 +20,25 @@ resource boundary. The model cookbook documents those additional limits.
 
 ## Generation-stage controls
 
-The shared serve CLI exposes:
+Engine limits use the canonical dotted config paths. Replace `<stage>` with the
+exact engine stage name from the model configuration:
 
 | Flag | Behavior |
 |---|---|
-| `--max-running-requests` | Override the generation stage's concurrent running slots |
-| `--max-queued-requests` | Override waiting capacity before fast rejection |
-| `--max-total-tokens` | Cap the generation-stage KV pool |
-| `--cuda-graph-max-bs` | Set the largest captured decode batch size |
+| `--<stage>.engine.max_running_requests` | Override the stage's concurrent running slots |
+| `--<stage>.engine.max_queued_requests` | Override waiting capacity before fast rejection |
+| `--<stage>.engine.max_total_tokens` | Cap the stage's KV pool |
+| `--<stage>.engine.cuda_graph_max_bs` | Set the largest captured decode batch size |
 
 The first three values are related but not interchangeable. Running slots do
 not reserve enough KV for every request's maximum length, and raising running
 capacity does not raise the queue limit or CUDA Graph range automatically.
 
-These generic flags target the pipeline's declared `generation` role. A
-multi-engine pipeline can expose additional role-specific flags. For example,
-Qwen3-Omni uses `--max-running-requests` for its talker and
-`--thinker-max-running-requests` for its thinker.
+For example, Qwen3-Omni uses `--thinker.engine.max_running_requests` and
+`--talker_ar.engine.max_running_requests` for its two engines. Qwen3-TTS uses
+the `--tts_engine.engine.*` paths. The `stages.` prefix used in YAML is implied
+on the CLI; see the [configuration reference](../../developer_reference/config.md)
+for the complete path and precedence rules.
 
 ## Queue behavior
 

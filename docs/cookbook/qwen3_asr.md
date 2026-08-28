@@ -147,12 +147,14 @@ event contract.
 ## Model-specific configuration
 
 The default `auto` dtype follows the BF16 checkpoint configuration. Pass
-`--stages.asr.factory-args.dtype float16` only when you intentionally need FP16.
+`--asr.factory.dtype float16` only when you intentionally need FP16.
 
-Async decode is enabled at every batch size. `--decode-mode sync` disables it;
-`--async-lookahead-min-batch-size` changes the crossover. Request building uses
-the shared prefill-admission gate with a target of 16 ready requests and a 40 ms
-maximum wait, releasing earlier when build work drains and decode is idle.
+Async decode is enabled with a minimum batch size of 1, so it applies at every
+batch size by default. `--asr.factory.enable_async_decode false` disables it;
+`--asr.factory.async_decode_min_batch_size N` changes the crossover. Request
+building uses the shared prefill-admission gate with a target of 16 ready
+requests and a 40 ms maximum wait, releasing earlier when build work drains and
+decode is idle.
 
 The default running-request limit is 64. On memory-constrained hardware, lower
 it explicitly; the validated RTX 4090 profile uses 16.

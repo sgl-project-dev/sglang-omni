@@ -30,9 +30,12 @@ model_path: Qwen/Qwen3-TTS-12Hz-1.7B-Base
 enable_deterministic_inference: true
 ```
 
-Under the qualified contract, the same prompt, reference audio, reference
-transcript, and seed produce byte-identical PCM across runtime batch sizes.
-Both the 0.6B and 1.7B Base checkpoints support the mode.
+Both the 0.6B and 1.7B Base checkpoints expose the mode. The checked
+[runtime batch-invariance test](../../../tests/test_model/test_qwen3_tts_batch_invariance.py)
+defaults to the 0.6B Base checkpoint and verifies that the same prompt,
+reference audio, reference transcript, and seed produce byte-identical PCM at
+runtime batch sizes 1 and 8. Qualify other checkpoint, hardware, precision, and
+topology combinations separately before applying the same evidence to them.
 
 ## Performance tradeoff
 
@@ -42,7 +45,7 @@ of batch-dependent output:
 - reference preprocessing is serialized;
 - Talker compilation is disabled;
 - vocoder decoding is serialized when needed for stable ordering;
-- the initial vocoder CUDA Graph is disabled.
+- both the initial and follow-up vocoder CUDA Graph paths are disabled.
 
 These changes reduce throughput, so the mode is opt-in. Do not enable it in a
 recommended configuration without stating the performance cost.

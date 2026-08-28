@@ -11,13 +11,13 @@ accepts text, image, audio, and video and returns text or text plus 24 kHz audio
 | Checkpoint | `Qwen/Qwen3-Omni-30B-A3B-Instruct` |
 | Endpoints | `/v1/chat/completions`, `/v1/realtime` |
 | Text pipeline | preprocessing/encoders → multimodal aggregate → thinker → decode |
-| Speech pipeline | text pipeline + talker AR → code2wav |
+| Speech pipeline | preprocessing/encoders → thinker and talker AR → decode/code2wav |
 | Input | Text, image, audio, video |
 | Output | Text; optional audio in speech mode |
 | Streaming | Chat SSE and realtime WebSocket; text and optional audio output |
 | Maturity | Supported |
 | Qualified checkpoint | `Qwen/Qwen3-Omni-30B-A3B-Instruct` (recurring CI does not pin a model revision) |
-| Qualified configuration | Two router workers using the [H100 BF16 profile](../../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus 32,768-token sequence overrides |
+| Qualified configuration | Two router workers using the [H100 BF16 profile](../../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus 32,768-token preprocessing and thinker limits |
 | Evidence hardware | 2× H100 (one per worker) |
 | Validation | CI tested |
 | Evidence | [Qwen3-Omni H100 workflow](../../.github/workflows/test-qwen3-omni-ci.yaml) and [CI fixture](../../tests/test_model/conftest.py) |
@@ -56,7 +56,8 @@ checked-in profiles, but this page does not apply the H100 CI result to those
 hardware configurations.
 
 Recurring CI launches two H100-profile workers behind the router and adds
-`thinker_max_seq_len=32768` to both thinker argument paths. The
+`--preprocessing.factory.max_seq_len 32768` and
+`--thinker.factory.max_seq_len 32768`. The
 [CI fixture](../../tests/test_model/conftest.py) is the source of truth for
 those material launch differences; the single-worker command above is the base
 profile, not the complete recurring-CI topology.
@@ -80,8 +81,9 @@ curl -X POST http://localhost:8008/v1/chat/completions \
 
 ## Model capabilities
 
-- Text-only mode runs the six-stage thinker pipeline. Speech mode adds the
-  talker and code2wav stages for an eight-stage pipeline.
+- Text-only mode runs a six-stage pipeline with a multimodal aggregation stage.
+  Speech mode uses a seven-stage topology: its encoders join directly into the
+  thinker and talker, so it does not include the separate aggregation stage.
 - Any supported input modality can produce text. Speech mode can additionally
   return audio with `modalities: ["text", "audio"]`.
 - Native BF16, native FP8, and an AutoRound INT4 thinker with BF16

@@ -23,7 +23,7 @@ The server rejects empty uploads before they consume model resources.
 | `model` | string | Served model | Model identifier |
 | `language` | string | None | Optional model-specific language hint |
 | `prompt` | string | None | Compatibility prompt; model support varies |
-| `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `response_format` | string | `json` | `json`, `verbose_json`, `text`, `srt`, or `vtt`; subtitle formats require model-provided segment timestamps |
 | `temperature` | float | Model default | Sampling temperature |
 | `max_new_tokens` | integer | Stage limit | Positive per-request generation limit |
 | `stream` | boolean | `false` | Return transcript events over SSE |
@@ -39,12 +39,19 @@ cookbook.
 | `json` | JSON | `text` plus duration usage when available |
 | `verbose_json` | JSON | Task, language, duration, text, segments, and usage |
 | `text` | Plain text | Transcript body only |
+| `srt` | Plain text | SubRip subtitles built from model-provided timestamped segments |
+| `vtt` | Plain text | WebVTT subtitles built from model-provided timestamped segments |
 
 Duration usage is rounded up to whole audio seconds when the server can probe
 the input duration. Segment contents are produced by the active model adapter.
 They may represent model timestamps, server-side long-audio chunks, or one
 whole-file segment; consult the cookbook before treating them as word-level
 timestamps.
+
+`srt` and `vtt` are available only when the active model adapter exposes
+segment timestamps. The server returns HTTP 400 for other models. These formats
+are non-streaming only and are not synthesized from server-side long-audio
+chunk boundaries.
 
 ## Streaming transcription
 
@@ -67,9 +74,10 @@ switching routes.
 ## Errors
 
 The endpoint returns HTTP 400 for empty files, unsupported response formats,
-invalid model-specific hints, and request limits such as excessive audio
-duration. Runtime failures and queue saturation use the shared serving error
-mapping. See the model cookbook for its concrete constraints and
+subtitle formats without model-provided segment timestamps, invalid
+model-specific hints, and request limits such as excessive audio duration.
+Runtime failures and queue saturation use the shared serving error mapping.
+See the model cookbook for its concrete constraints and
 [Admission control](../advanced_features/admission_control.md) for overload
 behavior.
 

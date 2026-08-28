@@ -10,7 +10,8 @@ checkpoint or profile.
 
 Maturity describes the maintenance expectation:
 
-- **Experimental**: an implementation exists but is not regularly qualified.
+- **Experimental**: an implementation exists, but its documented support
+  contract is not yet considered stable.
 - **Supported**: the documented configuration is maintained and expected to
   work.
 
@@ -59,11 +60,11 @@ yet been recorded here; it does not mean the model is unsupported.
 |---|---|---|---|---|---|
 | Higgs Audio v3 | `bosonai/higgs-audio-v3-tts-4b` | Model-derived default | Not yet recorded | Not recorded | [Cookbook](./cookbook/higgs_tts.md) |
 | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | [Default profile](../examples/configs/qwen3_tts_1_7b.yaml) | Not yet recorded | Profile available | [Checked-in profile](../examples/configs/qwen3_tts_1_7b.yaml) |
-| Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (CI does not pin a model revision) | Two router workers using the model-derived pipeline plus tuned per-worker CI overrides | 2× H100 (one per worker) | CI tested | [TTS CI preset](../tests/test_model/tts_ci_config.py), [router fixture](../tests/test_model/test_tts_ci.py), [H100 workflow](../.github/workflows/test-tts-ci.yaml) |
+| Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (CI does not pin a model revision) | Two router workers; each uses `tts_engine.engine.{max_running_requests,cuda_graph_max_bs,torch_compile_max_bs}=64`, a separate vocoder process, and TTS-engine/vocoder GPU fractions of `0.85`/`0.10` | 2× H100 (one per worker) | CI tested | [TTS CI preset](../tests/test_model/tts_ci_config.py), [router fixture](../tests/test_model/test_tts_ci.py), [H100 workflow](../.github/workflows/test-tts-ci.yaml) |
 | Qwen3-ASR | `Qwen/Qwen3-ASR-1.7B` (CI does not pin a model revision) | Two router workers using the model-derived default | 2× H100 (one per worker) | CI tested | [ASR CI preset](../tests/test_model/asr_ci_config.py), [router fixture](../tests/test_model/test_asr_ci_seedtts.py), [H100 workflow](../.github/workflows/test-asr-ci.yaml) |
 | Qwen3-ASR | `Qwen/Qwen3-ASR-1.7B` | [RTX 4090 profile](../examples/configs/qwen3_asr_rtx4090.yaml) | RTX 4090 24 GB | Profile available | [Checked-in profile](../examples/configs/qwen3_asr_rtx4090.yaml) |
-| Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | Two router workers using the [H100 BF16 colocated profile](../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus 32,768-token sequence overrides | 2× H100 (one per worker) | CI tested | [H100 workflow](../.github/workflows/test-qwen3-omni-ci.yaml), [CI fixture](../tests/test_model/conftest.py) |
-| Qwen3-Omni | `marksverdhei/Qwen3-Omni-30B-A3B-FP8` | Two router workers using the [H100 FP8 colocated profile](../examples/configs/qwen3_omni_colocated_h100_fp8.yaml) plus 32,768-token sequence overrides | 2× H100 (one per worker) | CI tested | [H100 workflow](../.github/workflows/test-qwen3-omni-ci.yaml), [CI fixture](../tests/test_model/conftest.py) |
+| Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | Two router workers using the [H100 BF16 colocated profile](../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus `preprocessing.factory.max_seq_len=32768` and `thinker.factory.max_seq_len=32768` | 2× H100 (one per worker) | CI tested | [H100 workflow](../.github/workflows/test-qwen3-omni-ci.yaml), [CI fixture](../tests/test_model/conftest.py) |
+| Qwen3-Omni | `marksverdhei/Qwen3-Omni-30B-A3B-FP8` | Two router workers using the [H100 FP8 colocated profile](../examples/configs/qwen3_omni_colocated_h100_fp8.yaml) plus `preprocessing.factory.max_seq_len=32768` and `thinker.factory.max_seq_len=32768` | 2× H100 (one per worker) | CI tested | [H100 workflow](../.github/workflows/test-qwen3-omni-ci.yaml), [CI fixture](../tests/test_model/conftest.py) |
 | Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | [H20 colocated profile](../examples/configs/qwen3_omni_colocated_h20.yaml) | 1× H20 | Profile available | [Checked-in profile](../examples/configs/qwen3_omni_colocated_h20.yaml) |
 | Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | [H200 colocated profile](../examples/configs/qwen3_omni_colocated_h200.yaml) | 1× H200 | Profile available | [Checked-in profile](../examples/configs/qwen3_omni_colocated_h200.yaml) |
 
