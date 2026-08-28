@@ -1,14 +1,15 @@
 # Model cookbook template
 
-Copy this template when adding a model cookbook. Remove optional sections that
-do not apply. Replace every placeholder before publishing the page.
+Copy this template when adding a model cookbook. Keep the required sections,
+remove inapplicable optional subsections, and replace every placeholder before
+publishing the page.
 
 ````markdown
 # Model name
 
 One sentence describing the model and its primary use.
 
-## At a glance
+## Overview
 
 | Item | Value |
 |---|---|
@@ -16,38 +17,27 @@ One sentence describing the model and its primary use.
 | Checkpoint(s) | `organization/model` |
 | Endpoint(s) | `/v1/...` |
 | Pipeline | preprocessing → engine → vocoder |
-| Input | ... |
-| Output | ... |
+| Input / output | ... → ... |
 | Streaming | Direction and transport / No |
-| Maturity | Supported / Experimental |
-| Qualified checkpoint | `organization/model` plus revision, or Not recorded |
-| Qualified configuration | Checked-in config plus material overrides, or Not recorded |
-| Evidence hardware | Targeted or measured hardware, or Not recorded |
-| Validation | Not recorded / Profile available / Manually validated / CI tested / Performance qualified |
-| Evidence | Link to CI preset/workflow, report, or artifact |
+| Validated hardware | Accelerator model, or Not recorded |
 
-## Install
+## Prerequisites
 
-Follow the shared installation guide, then install only model-specific
-dependencies.
+Follow the shared installation guide. List only model-specific packages,
+system dependencies, checkpoint access, or setup required before deployment.
 
 ## Deploy
 
-### Recommended configuration
-
-Prefer a checked-in configuration.
+Provide one canonical checked-in configuration or command.
 
 ```bash
 sgl-omni serve \
   --model-path organization/model \
-  --config examples/configs/model.yaml \
   --port 8000
 ```
 
-### Other validated configurations
-
-Include only meaningful alternatives that have been validated, such as a
-consumer-GPU, multi-GPU, or memory-conservative configuration.
+If the model requires a checked-in configuration, include its real
+`examples/configs/` path in this command.
 
 ## Send a request
 
@@ -58,29 +48,28 @@ value.
 curl ...
 ```
 
-## Model capabilities
+## Capabilities
 
 Include only relevant model-specific subsections, for example voice cloning,
 language hints, streaming, long audio, diarization, multimodal input, or voice
 design.
 
-## Model-specific configuration
+## Configuration
 
 Document behavior that differs from shared runtime defaults. Do not copy the
 complete server configuration reference.
 
-## Known limitations
+## Limitations
 
 - List concrete unsupported or constrained behavior.
 
 ## Benchmark
 
-Provide the canonical benchmark command and link to benchmark methodology or a
-qualification report.
+Provide the canonical benchmark command and link to the shared benchmark
+methodology.
 
-```bash
-python -m benchmarks.eval.example ...
-```
+Include one command that uses an existing benchmark entry point and the
+arguments needed for this model.
 
 ## Related documentation
 

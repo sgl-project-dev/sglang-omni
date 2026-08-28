@@ -3,38 +3,25 @@
 [Qwen3-Omni](https://huggingface.co/Qwen/Qwen3-Omni-30B-A3B-Instruct)
 accepts text, image, audio, and video and returns text or text plus 24 kHz audio.
 
-## At a glance
+## Overview
 
 | Item | Value |
 |---|---|
 | Task | Omni |
-| Checkpoint | `Qwen/Qwen3-Omni-30B-A3B-Instruct` |
-| Endpoints | `/v1/chat/completions`, `/v1/realtime` |
+| Checkpoint(s) | `Qwen/Qwen3-Omni-30B-A3B-Instruct` |
+| Endpoint(s) | `/v1/chat/completions`, `/v1/realtime` |
 | Text pipeline | preprocessing/encoders → multimodal aggregate → thinker → decode |
 | Speech pipeline | preprocessing/encoders → thinker and talker AR → decode/code2wav |
-| Input | Text, image, audio, video |
-| Output | Text; optional audio in speech mode |
+| Input / output | Text, image, audio, or video → text and optional audio |
 | Streaming | Chat SSE and realtime WebSocket; text and optional audio output |
-| Maturity | Supported |
-| Qualified checkpoint | `Qwen/Qwen3-Omni-30B-A3B-Instruct` (recurring CI does not pin a model revision) |
-| Qualified configuration | Two router workers using the [H100 BF16 profile](../../examples/configs/qwen3_omni_colocated_h100_bf16.yaml) plus 32,768-token preprocessing and thinker limits |
-| Evidence hardware | 2× H100 (one per worker) |
-| Validation | CI tested |
-| Evidence | [Qwen3-Omni H100 workflow](../../.github/workflows/test-qwen3-omni-ci.yaml) and [CI fixture](../../tests/test_model/conftest.py) |
+| Validated hardware | H100 |
 
-## Install
+## Prerequisites
 
 Follow [Installation](../get_started/installation.md). No additional
 model-specific package is required.
 
 ## Deploy
-
-Use the selector to generate a launch command for text-only or speech output,
-topology, tensor parallelism, and precision:
-
-```{raw} html
-<div id="sgl-server-gen-mount"></div>
-```
 
 Start one worker with the H100 BF16 profile:
 
@@ -44,23 +31,6 @@ sgl-omni serve \
   --colocate \
   --port 8008
 ```
-
-Available H20 and H200 profiles are
-`examples/configs/qwen3_omni_colocated_h20.yaml` and
-`examples/configs/qwen3_omni_colocated_h200.yaml`. Use
-`qwen3_omni_colocated_h100_fp8.yaml` for the H100 FP8 checkpoint covered by the
-same recurring H100 workflow.
-
-The recurring Qwen3-Omni workflow runs on H100. The H20 and H200 files are
-checked-in profiles, but this page does not apply the H100 CI result to those
-hardware configurations.
-
-Recurring CI launches two H100-profile workers behind the router and adds
-`--preprocessing.factory.max_seq_len 32768` and
-`--thinker.factory.max_seq_len 32768`. The
-[CI fixture](../../tests/test_model/conftest.py) is the source of truth for
-those material launch differences; the single-worker command above is the base
-profile, not the complete recurring-CI topology.
 
 ## Send a request
 
@@ -79,7 +49,7 @@ curl -X POST http://localhost:8008/v1/chat/completions \
   }'
 ```
 
-## Model capabilities
+## Capabilities
 
 - Text-only mode runs a six-stage pipeline with a multimodal aggregation stage.
   Speech mode uses a seven-stage topology: its encoders join directly into the
@@ -88,18 +58,30 @@ curl -X POST http://localhost:8008/v1/chat/completions \
   return audio with `modalities: ["text", "audio"]`.
 - Native BF16, native FP8, and an AutoRound INT4 thinker with BF16
   talker/code2wav are supported in the documented topologies.
-- The speech pipeline supports the shared streaming chat and server-VAD
-  realtime transports.
+- The speech pipeline supports streaming chat and server-VAD realtime input;
+  the shared transport contracts are documented in [Streaming](../user_guide/advanced_features/streaming.md).
 - Disaggregated thinker TP=1 or TP=2 is supported. Colocated speech requires
   thinker TP=1 and explicit per-stage memory budgets.
 
 See [Omni model usage](../basic_usage/qwen3_omni.md) for complete modality
-examples, realtime events, model-specific placement measurements, precision
-details, and sampling fields. See [Streaming](../user_guide/advanced_features/streaming.md)
-and [Stage placement](../user_guide/deployment/stage_placement.md) for the shared
-contracts.
+examples, model-specific placement measurements, precision details, and
+sampling fields. Shared placement behavior is documented in
+[Stage placement](../user_guide/deployment/stage_placement.md).
 
-## Known limitations
+## Configuration
+
+Use `examples/configs/qwen3_omni_colocated_h100_fp8.yaml` with the H100 FP8
+checkpoint. H20 and H200 profiles are also checked in as
+`qwen3_omni_colocated_h20.yaml` and `qwen3_omni_colocated_h200.yaml`; their
+presence records an available topology, not runtime validation on those
+accelerators.
+
+See [Omni model usage](../basic_usage/qwen3_omni.md) for the command selector,
+text-only and speech topology choices, tensor parallelism, precision options,
+and sampling fields. Config-file composition and command-line precedence follow
+the shared [configuration contract](../developer_reference/config.md).
+
+## Limitations
 
 - A text-only server accepts `modalities: ["text", "audio"]` but returns no
   audio; use a speech-mode server when audio output is required.
@@ -112,8 +94,7 @@ contracts.
 
 ## Benchmark
 
-Use the benchmark matching the modality being qualified. For example, run MMMU
-for image-plus-text input and text output:
+Use MMMU as the canonical image-plus-text benchmark:
 
 ```bash
 python benchmarks/eval/benchmark_omni_mmmu.py \
@@ -122,9 +103,8 @@ python benchmarks/eval/benchmark_omni_mmmu.py \
   --port 8008
 ```
 
-Qwen3-Omni CI also covers speech, MMSU, Video-MME, and Video-AMME paths with
-separate benchmark entry points. Follow the
-[benchmark methodology](../benchmarks/methodology.md) when publishing results.
+Follow the [benchmark methodology](../benchmarks/methodology.md) when
+publishing results.
 
 ## Related documentation
 

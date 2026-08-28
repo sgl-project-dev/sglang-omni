@@ -16,10 +16,10 @@ The user-facing documentation has these sections:
 | Section | Question it answers |
 |---|---|
 | Get started | How do I install SGLang-Omni and send one request? |
-| User guide: serving | How does a public API behave? |
-| User guide: advanced features | How does a reusable runtime capability work? |
-| User guide: deployment | How do I place and size a multi-stage pipeline? |
-| Supported models | Which models and capabilities are qualified? |
+| Basic usage | How do I use a public API or common model workflow? |
+| Advanced features | How does a reusable runtime capability work? |
+| Deployment | How do I place and size a multi-stage pipeline? |
+| Supported models | Which models are supported, and on which accelerators? |
 | Cookbook | How do I deploy and use one model? |
 | Benchmarks | How do we measure correctness and performance? |
 | Developer guide | How does the system work, and how do I extend it? |
@@ -35,7 +35,7 @@ ownership define the contract even when a legacy page still has an older path.
 Keep installation, the first successful request, supported platforms, and
 release notes here. Do not turn this section into a complete feature guide.
 
-### Serving
+### Basic usage
 
 Document endpoint fields, response formats, streaming protocols, and generic
 error semantics here. A cookbook should mention only model-specific endpoint
@@ -56,23 +56,25 @@ link to the shared deployment guidance.
 
 ### Supported models
 
-Maintain a compact model-family view and a separate configuration-evidence
-table in [Supported models](./supported_models.md). Never apply evidence from
-one checkpoint, launch configuration, or hardware profile to a broader model
-family. Add task-specific capability tables only when their fields are
-meaningful for that task.
+Maintain a compact model-family matrix and a separate accelerator matrix in
+[Supported models](./supported_models.md). Keep model support independent from
+validation evidence. Never apply evidence from one model/backend combination
+to a broader family or accelerator. Store exact checkpoints, revisions,
+configuration overrides, hardware, and evidence links in
+[Model qualification evidence](./developer_reference/model_qualification.md).
 
 ### Cookbook
 
-A cookbook is a verified operational recipe for one model. It contains the
-model's prerequisites, checked-in configuration, pipeline, first request,
-capabilities, deviations from shared defaults, known limitations, canonical
-benchmark command, and links to shared documentation. Use the
+A cookbook is an operational recipe for one model. It contains the model's
+prerequisites, one canonical deployment, pipeline, first request, capabilities,
+deviations from shared defaults, known limitations, canonical benchmark
+command, and links to shared documentation. Use the
 [model cookbook template](./cookbook/template.md).
 
 Do not use a cookbook as a complete API reference, generic feature guide,
-benchmark methodology document, performance investigation report, or
-implementation design document.
+benchmark methodology document, CI qualification database, performance
+investigation report, or implementation design document. Keep CI workflow,
+worker-count, and qualification evidence details out of the primary metadata.
 
 ### Benchmarks
 
@@ -114,6 +116,7 @@ by code, configuration, CI, or benchmark artifacts.
 | Benchmark commands | Benchmark implementation |
 | CI qualification | Model CI definition |
 | Performance numbers | Benchmark artifact or qualification report |
+| Exact model qualification | Model CI definition, report, or benchmark artifact cataloged in the qualification page |
 | Cookbook | Operational explanation and model-specific guidance |
 
 Link to the stronger source when practical. If a cookbook recommends an
@@ -129,51 +132,51 @@ The primary model-family table uses these fields:
 | Model | Public model or checkpoint family |
 | Task | TTS, ASR, Omni, Music, Generation, or another concrete task |
 | Endpoint | Public serving endpoint |
-| Pipeline | High-level operational stage topology |
-| Streaming contract | Direction and transport, or No with a short qualification |
-| Maturity | Experimental or Supported, as defined below |
+| Streaming | Direction and transport, or No with a short qualification |
+| Status | Experimental or Supported |
 | Cookbook | The operational recipe |
 
-The configuration-evidence table uses these fields:
+The accelerator table keeps three claims separate:
 
 | Field | Meaning |
 |---|---|
-| Model | Public model or checkpoint family |
-| Checkpoint | Exact model identifier; include a revision when the evidence pins one |
-| Configuration | Exact checked-in config plus material launch overrides |
-| Hardware | The targeted or measured hardware; Validation states whether runtime evidence exists |
-| Validation | The evidence level defined below |
-| Evidence | Link to the CI preset/workflow, qualification report, or artifact |
+| Backend implementation | Whether an accelerator integration exists in current main |
+| Expected model scope | Which model/backend combinations are intended to work |
+| Validation | Whether those combinations are CI tested, manually validated, experimental, not recorded, or unsupported |
+| Documentation / evidence | Installation guidance, CI, or the implementation source supporting the claim |
 
-Maturity describes the maintenance expectation:
+Detailed qualification belongs in
+[Model qualification evidence](./developer_reference/model_qualification.md),
+with one row per exact checkpoint and configuration. Record the checkpoint and
+revision when pinned, material launch overrides, hardware, validation type,
+and CI workflow, report, or benchmark evidence.
+
+Model status describes the maintenance expectation:
 
 - **Experimental**: an implementation exists, but its documented support
   contract is not yet considered stable.
 - **Supported**: the configuration is maintained and expected to work.
 
-Validation describes the evidence recorded for that configuration:
+Accelerator validation describes model/backend runtime evidence:
 
-- **Not recorded**: no recurring CI or performance qualification is documented.
-- **Profile available**: a checked-in launch profile exists, but no completed
-  runtime qualification is claimed.
-- **Manually validated**: the exact configuration has a recorded validation,
-  but is not covered by a recurring gate.
-- **CI tested**: recurring model CI covers the documented configuration.
-- **Performance qualified**: correctness and performance were measured under a
-  defined, reproducible benchmark configuration.
+- **CI tested**: recurring model-level CI runs on the named accelerator.
+- **Manually validated**: current documentation records an end-to-end run, but
+  no recurring model gate covers it.
+- **Experimental**: backend and model-specific implementation exists without
+  recurring CI or a durable manual validation record in current main.
+- **Not recorded**: backend implementation exists, but no user-facing model
+  support set is recorded.
+- **Unsupported**: end-to-end model serving is not supported on that backend.
 
-Maturity and validation are independent. For example, an experimental model
-can still have recurring CI coverage. Record each dimension explicitly instead
-of treating CI or benchmark evidence as a stronger maturity level. Use one row
-per exact qualified configuration. If multiple validation types apply to that
-same configuration and are documented, list each one.
+Model status and accelerator validation are independent. A platform abstraction
+or checked-in profile proves implementation scope, not runtime validation.
 
 ## Hardware claims
 
-State what was tested, not what might fit. Prefer "Validated on 1× RTX 4090 24
-GB" or "CI tested on 1× H100" over "Minimum hardware: 24 GB GPU." If no
-configuration has been recorded, write "Not yet recorded" rather than inferring
-a minimum from model size or free memory.
+State what was tested, not what might fit. Prefer "Validated on: H100" over
+"Minimum hardware: 80 GB GPU." If no runtime evidence is recorded, write "Not
+recorded" rather than inferring support from model size, a backend abstraction,
+or a checked-in profile.
 
 ## Writing style
 
@@ -198,8 +201,10 @@ details that do not help a user operate the model.
 A new model should include:
 
 - [ ] A model-family entry with evidence-based maturity.
-- [ ] A configuration-evidence row for every validation claim, including the
-      exact checkpoint, config, hardware, and evidence link.
+- [ ] An accelerator-matrix update when the model changes a backend's expected
+      or validated scope.
+- [ ] A qualification-evidence row for each exact CI or manual validation
+      claim.
 - [ ] A cookbook based on the standard template.
 - [ ] A first-class pipeline topology.
 - [ ] Validated hardware, or an explicit statement that it is not yet recorded.
@@ -208,5 +213,5 @@ A new model should include:
 - [ ] A streaming example when streaming is supported.
 - [ ] Model-specific capabilities and known limitations.
 - [ ] A canonical benchmark command.
-- [ ] Identified CI coverage.
+- [ ] CI or manual validation linked only when current-main evidence exists.
 - [ ] Links to shared API, runtime, deployment, and benchmark documentation.

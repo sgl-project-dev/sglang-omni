@@ -4,27 +4,21 @@
 discrete multi-codebook text-to-speech family with voice cloning, 10-language
 generation, and 24 kHz audio output.
 
-## At a glance
+## Overview
 
 | Item | Value |
 |---|---|
 | Task | TTS |
-| Checkpoints | `Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-Base`, plus CustomVoice and VoiceDesign variants |
-| Endpoint | `/v1/audio/speech` |
+| Checkpoint(s) | `Qwen/Qwen3-TTS-12Hz-{0.6B,1.7B}-Base`, plus CustomVoice and VoiceDesign variants |
+| Endpoint(s) | `/v1/audio/speech` |
 | Pipeline | preprocessing → TTS engine → vocoder |
-| Input | Text; Base checkpoints also require reference audio |
-| Output | 24 kHz audio |
+| Input / output | Text and optional reference audio → 24 kHz audio |
 | Streaming | HTTP PCM or WebSocket audio output; Base checkpoints only |
-| Maturity | Supported |
-| Qualified checkpoint | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` (recurring CI does not pin a model revision) |
-| Qualified configuration | Two router workers using the model-derived pipeline plus the tuned per-worker CI overrides below |
-| Evidence hardware | 2× H100 (one per worker) |
-| Validation | CI tested |
-| Evidence | [TTS CI preset](../../tests/test_model/tts_ci_config.py), [router fixture](../../tests/test_model/test_tts_ci.py), and [H100 workflow](../../.github/workflows/test-tts-ci.yaml) |
+| Validated hardware | H100 |
 
 `12Hz` is the codec frame rate, not the playback sample rate.
 
-## Install
+## Prerequisites
 
 Install SGLang-Omni by following [Installation](../get_started/installation.md).
 Qwen3-TTS uses the upstream `qwen-tts` package and the system `sox` binary:
@@ -47,8 +41,6 @@ SGLang-Omni applies the required Transformers compatibility shim from
 
 ## Deploy
 
-### Default configuration
-
 Serve the 1.7B Base checkpoint with its checked-in default configuration:
 
 ```bash
@@ -60,48 +52,6 @@ sgl-omni serve \
 
 First startup can take several minutes while the TTS engine captures CUDA
 Graphs.
-
-This default launch is not the tuned configuration used by recurring CI.
-
-### CI-qualified per-worker configuration
-
-Each of the two `qwen3-tts` CI router workers adds the following topology,
-concurrency, CUDA Graph, compile, and memory overrides to the model-derived
-pipeline configuration. The checked-in YAML below selects the same pipeline
-class and checkpoint, but CI does not pass that file directly.
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-1.7B-Base \
-  --tts_engine.engine.max_running_requests 64 \
-  --tts_engine.engine.cuda_graph_max_bs 64 \
-  --tts_engine.engine.torch_compile_max_bs 64 \
-  --vocoder.process vocoder \
-  --tts_engine.gpu_memory_fraction 0.85 \
-  --vocoder.gpu_memory_fraction 0.10 \
-  --port 8000
-```
-
-The [TTS CI preset](../../tests/test_model/tts_ci_config.py) is the source of
-truth for these overrides. The [router fixture](../../tests/test_model/test_tts_ci.py)
-launches two workers, each using one H100. Recurring CI does not qualify the
-single-worker default command above.
-
-### Other available configurations
-
-The 0.6B Base checkpoint uses the same pipeline and request format, but is not
-covered by the recurring 1.7B CI preset:
-
-```bash
-sgl-omni serve \
-  --model-path Qwen/Qwen3-TTS-12Hz-0.6B-Base \
-  --config examples/configs/qwen3_tts_0_6b.yaml \
-  --port 8000
-```
-
-CustomVoice and VoiceDesign use their own checked-in configs. See
-[TTS model usage](../basic_usage/tts.md) for those launch commands and their
-text-only request fields.
 
 ## Send a request
 
@@ -127,7 +77,7 @@ curl -X POST http://localhost:8000/v1/audio/speech \
 `ref_audio` and `ref_text` are shorthand for the first reference object's
 `audio_path` and `text` fields.
 
-## Model capabilities
+## Capabilities
 
 ### Checkpoint modes
 
@@ -146,10 +96,10 @@ is unreliable.
 
 ### Streaming
 
-Base checkpoints support the shared HTTP PCM stream and stateful speech
-WebSocket. CustomVoice and VoiceDesign remain non-streaming. See
-[Streaming](../user_guide/advanced_features/streaming.md) for the transport and
-framing contracts.
+Base checkpoints support HTTP PCM and the stateful speech WebSocket;
+CustomVoice and VoiceDesign remain non-streaming. See
+[Streaming](../user_guide/advanced_features/streaming.md) for the shared
+transport and framing contracts.
 
 When `initial_codec_chunk_frames` is omitted, Base checkpoints use 8 frames for
 the first vocoder chunk. A smaller value lowers time to first audio but can
@@ -159,18 +109,17 @@ final flush.
 
 ### Deterministic inference
 
-Both Base sizes expose the opt-in deterministic mode described in
-[Deterministic inference](../user_guide/advanced_features/deterministic_inference.md).
-That guide scopes the recorded batch-invariance evidence. The mode is disabled
-by default because its serialized preprocessing and vocoder work reduce
-throughput.
+Both Base sizes expose opt-in deterministic inference. It is disabled by
+default because it serializes preprocessing and vocoder work. See
+[Deterministic inference](../user_guide/advanced_features/deterministic_inference.md)
+for the enablement and evidence contract.
 
-## Model-specific configuration
+## Configuration
 
-Qwen3-TTS defaults to 16 running requests, a waiting-queue depth of 16, four
-request-build workers, and a pending-build depth of 16. See
-[Admission control](../user_guide/advanced_features/admission_control.md) before
-changing the running, queue, KV, or CUDA Graph limits together.
+The 0.6B Base checkpoint uses the same pipeline and request format through
+`examples/configs/qwen3_tts_0_6b.yaml`. CustomVoice and VoiceDesign use their
+own checked-in configs. See [TTS model usage](../basic_usage/tts.md) for those
+launch commands and their text-only request fields.
 
 #### First-audio chunk ramp
 
@@ -211,7 +160,7 @@ an incomplete utterance.
 For the complete shared request and response contract, see the
 [Speech API](../user_guide/serving/speech_api.md).
 
-## Known limitations
+## Limitations
 
 - Base checkpoints need a reference clip for natural output; without one,
   speech is typically robotic.
@@ -224,8 +173,7 @@ For the complete shared request and response contract, see the
 
 ## Benchmark
 
-The canonical Seed-TTS benchmark exercises correctness, latency, throughput,
-streaming, and overload behavior:
+Run the Seed-TTS benchmark against the deployed server:
 
 ```bash
 python -m benchmarks.eval.benchmark_tts_seedtts \
@@ -236,9 +184,8 @@ python -m benchmarks.eval.benchmark_tts_seedtts \
   --port 8000
 ```
 
-Use benchmark artifacts for current performance numbers instead of treating a
-cookbook snapshot as a release guarantee. Follow the
-[benchmark methodology](../benchmarks/methodology.md) when publishing results.
+Follow the [benchmark methodology](../benchmarks/methodology.md) when
+publishing results.
 
 ## Related documentation
 

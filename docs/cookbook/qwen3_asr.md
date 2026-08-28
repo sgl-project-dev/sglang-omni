@@ -4,74 +4,36 @@
 audio transcription model served through the OpenAI-compatible transcription
 API.
 
-## At a glance
+## Overview
 
 | Item | Value |
 |---|---|
 | Task | ASR |
-| Checkpoint | `Qwen/Qwen3-ASR-1.7B` |
-| Endpoint | `/v1/audio/transcriptions` |
+| Checkpoint(s) | `Qwen/Qwen3-ASR-1.7B` |
+| Endpoint(s) | `/v1/audio/transcriptions` |
 | Pipeline | audio preprocessing → ASR engine → response formatting |
-| Input | One uploaded audio file per request |
-| Output | Text, JSON, or verbose JSON transcript |
+| Input / output | One uploaded audio file → text, JSON, or verbose JSON transcript |
 | Streaming | SSE transcript output; complete uploaded-file input, up to 1,200 seconds |
-| Maturity | Supported |
-| Qualified checkpoint | `Qwen/Qwen3-ASR-1.7B` (recurring CI does not pin a model revision) |
-| Qualified configuration | Two router workers using the model-derived default |
-| Evidence hardware | 2× H100 (one per worker) |
-| Validation | CI tested |
-| Evidence | [ASR CI preset](../../tests/test_model/asr_ci_config.py), [router fixture](../../tests/test_model/test_asr_ci_seedtts.py), and [H100 workflow](../../.github/workflows/test-asr-ci.yaml) |
+| Validated hardware | H100; RTX 4090 24 GB |
 
 Qwen3-ASR does not support `/v1/audio/translations`; that route returns HTTP
 400. See the [audio translation matrix](../basic_usage/audio_translations.md)
 for models that support it.
 
-## Install
+## Prerequisites
 
-Install SGLang-Omni by following [Installation](../get_started/installation.md),
-then resolve a fixed model revision for a reproducible local setup:
-
-```bash
-MODEL_REVISION=7278e1e70fe206f11671096ffdd38061171dd6e5
-MODEL_PATH="$(
-  hf download Qwen/Qwen3-ASR-1.7B \
-    --revision "${MODEL_REVISION}" \
-    --quiet
-)"
-```
+Follow [Installation](../get_started/installation.md). No additional
+model-specific package is required.
 
 ## Deploy
-
-### Recommended configuration
 
 Qwen3-ASR runs one ASR stage on one GPU:
 
 ```bash
 sgl-omni serve \
-  --model-path "${MODEL_PATH}" \
-  --model-name Qwen/Qwen3-ASR-1.7B \
+  --model-path Qwen/Qwen3-ASR-1.7B \
   --port 8000
 ```
-
-The command above pins a revision for a reproducible user setup. Recurring CI
-currently uses the unpinned Hugging Face repository ID and places two workers
-using the model-derived configuration behind the router, with one H100 assigned
-to each worker. The command above is therefore not the complete CI topology.
-
-### RTX 4090 profile
-
-Use the checked-in profile on a 24 GB RTX 4090:
-
-```bash
-sgl-omni serve \
-  --config examples/configs/qwen3_asr_rtx4090.yaml \
-  --port 8000
-```
-
-This checked-in profile keeps BF16, limits the stage to 16 running requests,
-and sets `mem_fraction_static` to `0.65`. It is an available hardware-specific
-profile, not a recurring-CI qualification or a minimum for other GPU
-architectures.
 
 ## Send a request
 
@@ -85,7 +47,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 See the [Transcription API](../user_guide/serving/transcription_api.md) for
 shared request fields, response formats, usage, and errors.
 
-## Model capabilities
+## Capabilities
 
 ### Language hints
 
@@ -144,25 +106,23 @@ seconds return HTTP 400. Use non-streaming mode for longer files. See
 [Streaming](../user_guide/advanced_features/streaming.md) for the shared SSE
 event contract.
 
-## Model-specific configuration
+## Configuration
+
+The checked-in `examples/configs/qwen3_asr_rtx4090.yaml` profile keeps BF16,
+limits the stage to 16 running requests, and sets `mem_fraction_static` to
+`0.65`; it was validated on one 24 GB RTX 4090. This is not a minimum-memory
+claim.
 
 The default `auto` dtype follows the BF16 checkpoint configuration. Pass
-`--asr.factory.dtype float16` only when you intentionally need FP16.
-
-Async decode is enabled with a minimum batch size of 1, so it applies at every
-batch size by default. `--asr.factory.enable_async_decode false` disables it;
-`--asr.factory.async_decode_min_batch_size N` changes the crossover. Request
-building uses the shared prefill-admission gate with a target of 16 ready
-requests and a 40 ms maximum wait, releasing earlier when build work drains and
-decode is idle.
-
-The default running-request limit is 64. On memory-constrained hardware, lower
-it explicitly; the validated RTX 4090 profile uses 16.
+`--asr.factory.dtype float16` only when you intentionally need FP16. Per-stage
+config files and dotted CLI overrides follow the shared
+[configuration contract](../developer_reference/config.md); command-line
+overrides take precedence over the checked-in profile.
 
 `prompt` is accepted for OpenAI compatibility but Qwen3-ASR ignores it. Audio
 is resampled to 16 kHz before transcription.
 
-## Known limitations
+## Limitations
 
 - The endpoint accepts one uploaded file per request.
 - `/v1/audio/translations` is unsupported.
@@ -172,9 +132,7 @@ is resampled to 16 kHz before transcription.
 
 ## Benchmark
 
-Use the canonical Seed-TTS ASR benchmark. It records revisions, fingerprints,
-sample counts, latency, RTF, throughput, and available process metrics in its
-result artifact.
+Run the Seed-TTS ASR benchmark against the deployed server:
 
 ```bash
 python -m benchmarks.eval.benchmark_asr_seedtts \
@@ -186,7 +144,7 @@ python -m benchmarks.eval.benchmark_asr_seedtts \
   --warmup
 ```
 
-The recurring ASR CI gate uses this benchmark entry point. See the
+See the
 [Qwen3-ASR concurrency profile](../developer_reference/qwen3_asr_concurrency_profile.md)
 for the measured tuning study and bottleneck decomposition, and follow the
 [benchmark methodology](../benchmarks/methodology.md) when publishing results.
