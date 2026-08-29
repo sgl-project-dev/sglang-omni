@@ -36,6 +36,7 @@ class MiniMaxMusic3ARFactoryArgs(FactoryArgs):
     """AR constructor knobs shared by CUDA and native MLX."""
 
     mlx_model_revision: str | None = None
+    enable_serial_offload: bool | None = None
 
 
 class MiniMaxMusic3ARStageConfig(EngineStageConfig):
@@ -54,6 +55,7 @@ class DitDavFactoryArgs(FactoryArgs):
     compile_acoustic: bool | None = None
     breakable_cuda_graph: bool | None = None
     mlx_model_revision: str | None = None
+    enable_serial_offload: bool | None = None
 
 
 class DitDavStageConfig(StageConfig):
@@ -134,6 +136,10 @@ class MiniMaxMusic3PipelineConfig(PipelineConfig):
     @classmethod
     def process_local_edges(cls) -> frozenset[tuple[str, str]]:
         return frozenset({("preprocessing", "minimax_music3_ar")})
+
+    @classmethod
+    def stage_offload_role_to_stage(cls) -> dict[str, str]:
+        return {"ar": "minimax_music3_ar", "dit": "dit_dav"}
 
 
 class MiniMaxMusic3SingleGPUPipelineConfig(MiniMaxMusic3PipelineConfig):

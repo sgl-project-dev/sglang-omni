@@ -50,6 +50,7 @@ def create_ar_executor(
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
     mlx_model_revision: str | None = None,
+    enable_serial_offload: bool = False,
 ):
     if _use_mlx_backend():
         if not current_platform.is_mps():
@@ -112,6 +113,7 @@ def create_dit_dav_executor(
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
     mlx_model_revision: str | None = None,
+    enable_serial_offload: bool = False,
 ) -> MiniMaxMusic3AcousticScheduler:
     if _use_mlx_backend():
         if not current_platform.is_mps():
