@@ -29,6 +29,20 @@
 
 --------------------------------------------------------------------------------
 
+## News
+
+- [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
+- [2026/08] 🚀 SGLang-Omni **v0.1.3** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.3"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
+- [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
+
+<details>
+<summary>More news</summary>
+
+- [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
+- [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
+
+</details>
+
 ## About
 
 SGLang-Omni is a serving framework for speech, audio, and multimodal generative
@@ -62,8 +76,7 @@ curl -X POST http://localhost:8000/v1/audio/transcriptions \
 ```
 
 For the CUDA image, reproducible version pinning, and source installation, see
-[Installation](./docs/get_started/installation.md). Intel GPU users should use
-the [XPU installation guide](./docs/get_started/installation_xpu.md).
+[Installation](./docs/get_started/installation.md).
 
 ## Why SGLang-Omni
 
@@ -143,6 +156,11 @@ definitions and evidence.
 | MUSA | Implemented | No user-facing model/backend set recorded | Not recorded |
 | CPU | Host-stage support only | No documented end-to-end model-serving pipeline | Unsupported |
 
+For installation instructions, see the
+[NVIDIA CUDA guide](./docs/get_started/installation.md) or the
+[Intel XPU guide](./docs/get_started/installation_xpu.md). The canonical matrix
+links the current implementation or evidence for the remaining backends.
+
 ## API and Serving Capabilities
 
 | Use case | Endpoint | Transport / output |
@@ -206,20 +224,6 @@ organization as an adopter or sponsor only when public evidence is available.
 [Deployment](./docs/user_guide/deployment/stage_placement.md) ·
 [Benchmarks](./docs/benchmarks/methodology.md) ·
 [Developer guide](./docs/developer_reference/main.md)
-
-## News
-
-- [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
-- [2026/08] 🚀 SGLang-Omni **v0.1.3** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.3"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
-- [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
-
-<details>
-<summary>More news</summary>
-
-- [2026/06] 🔥 MOSS-TTS Local Transformer v1.5 on SGLang-Omni with native-streaming 48 kHz speech. \[[Blog](https://lmsys.org/blog/2026-06-17-moss-tts-local-v15/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/moss_tts_local.html)\]
-- [2026/06] 🔥 Higgs Audio v3 TTS for real-time, controllable speech. \[[Blog](https://lmsys.org/blog/2026-06-04-higgs-audio-v3-tts/)\] \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/higgs_tts.html)\]
-
-</details>
 
 ## Community
 
