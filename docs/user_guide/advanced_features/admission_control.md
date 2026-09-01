@@ -49,7 +49,8 @@ request-build path from becoming an unbounded queue ahead of the generation
 stage.
 
 When the bounded queue is full, the request is fast-rejected. Speech serving
-maps queue saturation to HTTP 503. Other endpoints use their shared serving
+maps queue saturation to HTTP 503 with the message `The request queue is full.`
+(`sglang_omni/admission.py`). Other endpoints use their shared serving
 error mapping. Clients should treat overload as retryable only with bounded
 backoff and should not immediately replay the same burst.
 

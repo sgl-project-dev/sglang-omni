@@ -114,7 +114,10 @@ limits the stage to 16 running requests, and sets `mem_fraction_static` to
 claim.
 
 The default `auto` dtype follows the BF16 checkpoint configuration. Pass
-`--asr.factory.dtype float16` only when you intentionally need FP16. Per-stage
+`--asr.factory.dtype float16` only when you intentionally need FP16.
+Asynchronous decode overlaps the next GPU forward with host work; disable it with
+`--asr.factory.enable_async_decode false`, or move the batch-size crossover at
+which it engages with `--asr.factory.async_decode_min_batch_size`. Per-stage
 config files and dotted CLI overrides follow the shared
 [configuration contract](../developer_reference/config.md); command-line
 overrides take precedence over the checked-in profile.
