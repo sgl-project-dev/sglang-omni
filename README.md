@@ -225,7 +225,7 @@ organization as an adopter or sponsor only when public evidence is available.
 [Streaming](./docs/user_guide/advanced_features/streaming.md) ·
 [Deployment](./docs/user_guide/deployment/stage_placement.md) ·
 [Benchmarks](./docs/benchmarks/methodology.md) ·
-[Developer guide](./docs/developer_reference/main.md)
+[Developer guide](./docs/developer_reference/overview.md)
 
 ## Community
 

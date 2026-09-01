@@ -21,7 +21,7 @@ Reference Encode Service <reference_encode_service.md>
 
 ## Development
 
-Use these guides when adding configuration, integrating a TTS model, or
+Use these guides when extending runtime configuration, integrating a model, or
 contributing documentation.
 
 ```{toctree}
@@ -30,6 +30,7 @@ contributing documentation.
 
 Adding a Parameter <adding_parameters.md>
 TTS Model Integration <tts_model_integration.md>
+RL Admin Control <rl_admin_control.md>
 Documentation Contribution Guide <../STYLE_GUIDE.md>
 ```
 
@@ -49,12 +50,11 @@ Model Qualification <model_qualification.md>
 
 ## Maintenance
 
-Operate administrative control paths and update the pinned SGLang stack.
+Update the pinned SGLang stack.
 
 ```{toctree}
 :maxdepth: 1
 :caption: Maintenance
 
-RL Admin Control <rl_admin_control.md>
 Bumping the SGLang Version <bump_version.md>
 ```
