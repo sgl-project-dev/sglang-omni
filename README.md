@@ -152,13 +152,14 @@ definitions and evidence.
 | NVIDIA CUDA | Primary implementation | Models in the support matrix unless their guide states otherwise | CI tested for Qwen3-TTS, Qwen3-ASR, and Qwen3-Omni on H100; other validation is model-specific |
 | Intel XPU | Implemented | Qwen3-ASR and Qwen3-TTS on one XPU; Qwen3-Omni text-only with multi-XPU tensor parallelism | Manually validated |
 | AMD ROCm | Implemented | Initial Qwen3-Omni, Qwen3-ASR, and Qwen3-TTS paths | Experimental |
-| Ascend NPU | Implemented | No user-facing model/backend set recorded | Not recorded |
+| Ascend NPU | Implemented | Documented install path only; no per-model validation record | Not recorded |
 | MUSA | Implemented | No user-facing model/backend set recorded | Not recorded |
 | CPU | Host-stage support only | No documented end-to-end model-serving pipeline | Unsupported |
 
 For installation instructions, see the
-[NVIDIA CUDA guide](./docs/get_started/installation.md) or the
-[Intel XPU guide](./docs/get_started/installation_xpu.md). The canonical matrix
+[NVIDIA CUDA guide](./docs/get_started/installation.md), the
+[Intel XPU guide](./docs/get_started/installation_xpu.md), or the
+[Ascend NPU guide](./docs/get_started/installation_npu.md). The canonical matrix
 links the current implementation or evidence for the remaining backends.
 
 ## API and Serving Capabilities

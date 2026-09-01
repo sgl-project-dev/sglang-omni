@@ -56,7 +56,7 @@ separate claims. The evidence status means:
 | NVIDIA CUDA | Yes; primary backend | Models in the support matrix unless their cookbook states otherwise | **CI tested** for Qwen3-TTS, Qwen3-ASR, and Qwen3-Omni on H100; validation remains model-specific | [Installation](./get_started/installation.md), [TTS CI](../.github/workflows/test-tts-ci.yaml), [ASR CI](../.github/workflows/test-asr-ci.yaml), [Qwen3-Omni CI](../.github/workflows/test-qwen3-omni-ci.yaml) |
 | Intel XPU | Yes | Qwen3-ASR and Qwen3-TTS on one XPU; Qwen3-Omni text-only with multi-XPU tensor parallelism | **Manually validated** | [Intel XPU installation and serving guide](./get_started/installation_xpu.md) |
 | AMD ROCm | Yes; standalone platform and image | Initial Qwen3-Omni, Qwen3-ASR, and Qwen3-TTS paths | **Experimental** | [ROCm platform](../sglang_omni/platforms/rocm.py), [ROCm image](../docker/rocm.Dockerfile) |
-| Ascend NPU | Yes | No user-facing model/backend support set is recorded | **Not recorded** | [NPU platform](../sglang_omni/platforms/npu.py) |
+| Ascend NPU | Yes | Documented install path only; no per-model validation record | **Not recorded** | [Ascend NPU installation guide](./get_started/installation_npu.md), [NPU platform](../sglang_omni/platforms/npu.py) |
 | MUSA | Yes | No user-facing model/backend support set is recorded | **Not recorded** | [MUSA platform](../sglang_omni/platforms/musa.py) |
 | CPU | Host-stage device support only | No end-to-end model-serving pipeline is documented | **Unsupported** | [CPU platform](../sglang_omni/platforms/cpu.py) |
 
