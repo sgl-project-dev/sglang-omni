@@ -31,7 +31,7 @@ enable_deterministic_inference: true
 ```
 
 Both the 0.6B and 1.7B Base checkpoints expose the mode. The checked
-[runtime batch-invariance test](../../../tests/test_model/test_qwen3_tts_batch_invariance.py)
+[runtime batch-invariance test](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/test_qwen3_tts_batch_invariance.py)
 defaults to the 0.6B Base checkpoint and verifies that the same prompt,
 reference audio, reference transcript, and seed produce byte-identical PCM at
 runtime batch sizes 1 and 8. Qualify other checkpoint, hardware, precision, and
