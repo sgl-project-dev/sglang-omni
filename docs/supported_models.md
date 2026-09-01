@@ -1,9 +1,10 @@
 # Supported models
 
 This page answers two user-facing questions: which model families SGLang-Omni
-supports, and what level of evidence exists for each accelerator backend.
-Maintainers can find exact checkpoints, launch overrides, hardware, and CI or
-report links in [model qualification evidence](./developer_reference/model_qualification.md).
+supports, and what level of evidence exists for each accelerator backend. The
+model matrix is family-level. Exact checkpoint IDs, revisions, and validated
+configurations live in each cookbook and in
+[model qualification evidence](./developer_reference/model_qualification.md).
 
 ## Model support matrix
 

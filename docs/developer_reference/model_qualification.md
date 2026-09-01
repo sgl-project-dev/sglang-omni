@@ -50,7 +50,7 @@ contract, not whether CI exercises it.
 
 | Model | Exact checkpoint / revision | Configuration and material overrides | Hardware | Validation type | CI / workflow / report evidence |
 |---|---|---|---|---|---|
-| Higgs Audio v3 | `bosonai/higgs-audio-v3-tts-4b` | Model-derived default | Not recorded | Not recorded | [Cookbook](../cookbook/higgs_tts.md) |
+| Higgs Audio v3 | `bosonai/higgs-tts-3-4b`; CI does not pin a model revision | Two router workers using the model-derived default | 2× H100, one per worker | CI tested | [TTS CI preset](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/tts_ci_config.py), [router fixture](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/test_tts_ci.py), [H100 workflow](https://github.com/sgl-project/sglang-omni/blob/main/.github/workflows/test-tts-ci.yaml) |
 | Audar-TTS-V1 Turbo | `audarai/Audar-TTS-V1-Turbo` | [Turbo profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/audar_tts_turbo.yaml) | H100 | Manually validated | Refactor-parity run in [#1090](https://github.com/sgl-project/sglang-omni/pull/1090): 50 paired PCM WAV outputs byte-identical, Arabic ASR 5.43% WER / 88.75 BLEU |
 | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base` | [Default profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_tts_1_7b.yaml) | Not recorded | Profile available | [Checked-in profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_tts_1_7b.yaml) |
 | Qwen3-TTS | `Qwen/Qwen3-TTS-12Hz-1.7B-Base`; CI does not pin a model revision | Two router workers; each uses `tts_engine.engine.{max_running_requests,cuda_graph_max_bs,torch_compile_max_bs}=64`, a separate vocoder process, and TTS-engine/vocoder GPU fractions of `0.85`/`0.10` | 2× H100, one per worker | CI tested | [TTS CI preset](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/tts_ci_config.py), [router fixture](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/test_tts_ci.py), [H100 workflow](https://github.com/sgl-project/sglang-omni/blob/main/.github/workflows/test-tts-ci.yaml) |
@@ -60,10 +60,6 @@ contract, not whether CI exercises it.
 | Qwen3-Omni | `marksverdhei/Qwen3-Omni-30B-A3B-FP8`; CI does not pin a model revision | Two router workers using the [H100 FP8 colocated profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_colocated_h100_fp8.yaml) plus `preprocessing.factory.max_seq_len=32768` and `thinker.factory.max_seq_len=32768` | 2× H100, one per worker | CI tested | [H100 workflow](https://github.com/sgl-project/sglang-omni/blob/main/.github/workflows/test-qwen3-omni-ci.yaml), [CI fixture](https://github.com/sgl-project/sglang-omni/blob/main/tests/test_model/conftest.py) |
 | Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | [H20 colocated profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_colocated_h20.yaml) | 1× H20 | Profile available | [Checked-in profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_colocated_h20.yaml) |
 | Qwen3-Omni | `Qwen/Qwen3-Omni-30B-A3B-Instruct` | [H200 colocated profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_colocated_h200.yaml) | 1× H200 | Profile available | [Checked-in profile](https://github.com/sgl-project/sglang-omni/blob/main/examples/configs/qwen3_omni_colocated_h200.yaml) |
-
-The recurring `higgs` TTS CI preset covers `bosonai/higgs-tts-3-4b`, not
-`bosonai/higgs-audio-v3-tts-4b`, so it is not validation evidence for the
-Higgs Audio v3 row.
 
 ## Maintenance
 
