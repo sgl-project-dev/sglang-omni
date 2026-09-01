@@ -87,24 +87,14 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
 
    benchmarks/methodology.md
    benchmarks/relay.md
+   Qwen3-ASR Concurrency Profile <developer_reference/qwen3_asr_concurrency_profile.md>
 
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
    :caption: Developer Guide
 
-   STYLE_GUIDE.md
-   developer_reference/model_qualification.md
-   developer_reference/main.md
-   developer_reference/apiserver_design.md
-   developer_reference/pipeline.md
-   developer_reference/adding_parameters.md
-   developer_reference/communication.md
-   developer_reference/reference_encode_service.md
-   developer_reference/profiler.md
-   developer_reference/qwen3_asr_concurrency_profile.md
-   developer_reference/rl_admin_control.md
-   developer_reference/bump_version.md
+   developer_reference/overview.md
 
 
 .. toctree::
