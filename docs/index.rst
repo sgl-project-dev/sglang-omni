@@ -104,6 +104,7 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
    developer_reference/profiler.md
    developer_reference/qwen3_asr_concurrency_profile.md
    developer_reference/rl_admin_control.md
+   developer_reference/bump_version.md
 
 
 .. toctree::

@@ -121,7 +121,7 @@ The 0.6B Base checkpoint uses the same pipeline and request format through
 own checked-in configs. See [TTS model usage](../basic_usage/tts.md) for those
 launch commands and their text-only request fields.
 
-#### First-audio chunk ramp
+### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be
 configured server-side with `stream_chunk_ramp` on the vocoder stage: entry
