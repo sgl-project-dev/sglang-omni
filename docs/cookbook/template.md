@@ -1,3 +1,7 @@
+---
+orphan: true
+---
+
 # Model cookbook template
 
 Copy this template when adding a model cookbook. Keep the required sections,
