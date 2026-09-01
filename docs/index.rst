@@ -128,6 +128,7 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
    cookbook/dots_tts.md
    cookbook/minimax_music3.md
    cookbook/zonos2.md
+   cookbook/audar_tts.md
    cookbook/qwen3_asr.md
    cookbook/fun_asr.md
    cookbook/arkasr.md

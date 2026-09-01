@@ -108,6 +108,7 @@ definition and endpoint details.
 | Ming-Omni-TTS | TTS | No | Supported | [Cookbook](./docs/cookbook/ming_tts.md) |
 | dots.tts | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/dots_tts.md) |
 | ZONOS2 | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/zonos2.md) |
+| Audar-TTS-V1 Turbo | TTS | No | Supported | [Cookbook](./docs/cookbook/audar_tts.md) |
 | MiniMax Music 3 | Music | No | Supported | [Cookbook](./docs/cookbook/minimax_music3.md) |
 | Qwen3-ASR | ASR | SSE transcript output | Supported | [Cookbook](./docs/cookbook/qwen3_asr.md) |
 | Fun-ASR-Nano | ASR | SSE transcript output | Supported | [Cookbook](./docs/cookbook/fun_asr.md) |
@@ -199,9 +200,9 @@ for commands and evidence.
 ### Model Ecosystem
 
 Qwen3-TTS · Higgs Audio · Fish Audio · Voxtral · MOSS-TTS · MOSS-TTS Local ·
-Fun-CosyVoice · Ming-Omni-TTS · dots.tts · ZONOS · MiniMax Music · Qwen3-ASR ·
-Fun-ASR · ARK-ASR · MOSS-Transcribe-Diarize · Whisper · Qwen3-Omni · Ming-Omni ·
-LLaDA
+Fun-CosyVoice · Ming-Omni-TTS · dots.tts · ZONOS · Audar-TTS · MiniMax Music ·
+Qwen3-ASR · Fun-ASR · ARK-ASR · MOSS-Transcribe-Diarize · Whisper ·
+Qwen3-Omni · Ming-Omni · LLaDA
 
 ### Accelerator Ecosystem
 

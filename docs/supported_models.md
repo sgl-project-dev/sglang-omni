@@ -26,6 +26,7 @@ Model status describes the maintained user contract, not CI coverage:
 | Ming-Omni-TTS | TTS | `/v1/audio/speech` | No | Supported | [Ming-Omni-TTS](./cookbook/ming_tts.md) |
 | dots.tts | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [dots.tts](./cookbook/dots_tts.md) |
 | ZONOS2 | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [ZONOS2](./cookbook/zonos2.md) |
+| Audar-TTS-V1 Turbo | TTS | `/v1/audio/speech` | No | Supported | [Audar-TTS](./cookbook/audar_tts.md) |
 | MiniMax Music 3 | Music | `/v1/audio/speech` | No | Supported | [MiniMax Music 3](./cookbook/minimax_music3.md) |
 | Qwen3-ASR | ASR | `/v1/audio/transcriptions` | SSE transcript output | Supported | [Qwen3-ASR](./cookbook/qwen3_asr.md) |
 | Fun-ASR-Nano | ASR | `/v1/audio/transcriptions` | SSE transcript output | Supported | [Fun-ASR-Nano](./cookbook/fun_asr.md) |
