@@ -51,7 +51,7 @@ source .venv/bin/activate
 uv pip install --prerelease=allow "sglang-omni==0.1.4"
 ```
 
-<a id="macos-apple-silicon"></a>
+(macos-apple-silicon)=
 
 ## 🍎 Option B: macOS Apple Silicon installer
 

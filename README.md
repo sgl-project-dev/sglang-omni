@@ -31,8 +31,8 @@
 
 ## News
 
+- [2026/09] 🚀 SGLang-Omni **v0.1.4** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.4"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
-- [2026/08] 🚀 SGLang-Omni **v0.1.3** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.3"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
 
 <details>
@@ -151,6 +151,7 @@ definitions and evidence.
 | Accelerator | Backend | Expected model scope | Validation |
 |---|---|---|---|
 | NVIDIA CUDA | Primary implementation | Models in the support matrix unless their guide states otherwise | CI tested on H100; eight models covered, see the [CI coverage table](./docs/developer_reference/model_qualification.md#ci-coverage) |
+| Apple Silicon | MLX and Torch MPS implementations | Qwen3-ASR on macOS arm64 | Experimental |
 | Intel XPU | Implemented | Qwen3-ASR and Qwen3-TTS on one XPU; Qwen3-Omni text-only with multi-XPU tensor parallelism | Manually validated |
 | AMD ROCm | Implemented | Initial Qwen3-Omni, Qwen3-ASR, and Qwen3-TTS paths | Experimental |
 | Ascend NPU | Implemented | Documented install path only; no per-model validation record | Not recorded |
@@ -159,7 +160,8 @@ definitions and evidence.
 
 For installation instructions, see the
 [NVIDIA CUDA guide](./docs/get_started/installation.md), the
-[Intel XPU guide](./docs/get_started/installation_xpu.md), or the
+[Apple Silicon installer](./docs/get_started/installation.md#macos-apple-silicon),
+the [Intel XPU guide](./docs/get_started/installation_xpu.md), or the
 [Ascend NPU guide](./docs/get_started/installation_npu.md). The canonical matrix
 links the current implementation or evidence for the remaining backends.
 
@@ -206,7 +208,7 @@ Qwen3-Omni · Ming-Omni · LLaDA
 
 ### Accelerator Ecosystem
 
-NVIDIA CUDA · Intel XPU · AMD ROCm · Ascend NPU · MUSA · CPU host stages
+NVIDIA CUDA · Apple Silicon · Intel XPU · AMD ROCm · Ascend NPU · MUSA · CPU host stages
 
 ### Adoption and Sponsorship
 
