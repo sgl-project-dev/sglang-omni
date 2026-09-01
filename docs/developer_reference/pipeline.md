@@ -1,4 +1,4 @@
-## Pipeline Overview
+# Pipeline Lifecycle
 
 ### Coordinator
 

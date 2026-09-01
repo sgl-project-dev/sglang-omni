@@ -1,4 +1,4 @@
-# Bumping the SGLang Pin
+# Bumping the SGLang Version
 
 SGLang-Omni pins one SGLang release and the stack that release pins. Moving
 that pin is a version bump PR. This page covers what moves together, where

@@ -1,4 +1,4 @@
-# Architecture
+# Runtime Architecture
 
 SGLang-Omni is the multi-stage runtime for omni models: models that accept
 mixed text, image, audio, and video inputs and may emit text, audio, or other

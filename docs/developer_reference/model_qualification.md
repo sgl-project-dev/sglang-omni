@@ -1,4 +1,4 @@
-# Model qualification evidence
+# Model Qualification
 
 This maintainer-facing catalog records exact model, configuration, hardware,
 and validation evidence. The user-facing [supported-model matrix](../supported_models.md)

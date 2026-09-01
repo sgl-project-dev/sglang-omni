@@ -1,4 +1,4 @@
-# Documentation guide
+# Documentation Contribution Guide
 
 SGLang-Omni follows SGLang's task-oriented documentation structure while
 treating multimodal pipelines, stage placement, streaming behavior, and
