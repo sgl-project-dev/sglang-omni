@@ -149,7 +149,7 @@ definitions and evidence.
 
 | Accelerator | Backend | Expected model scope | Validation |
 |---|---|---|---|
-| NVIDIA CUDA | Primary implementation | Models in the support matrix unless their guide states otherwise | CI tested for Qwen3-TTS, Qwen3-ASR, and Qwen3-Omni on H100; other validation is model-specific |
+| NVIDIA CUDA | Primary implementation | Models in the support matrix unless their guide states otherwise | CI tested on H100; eight models covered, see the [CI coverage table](./docs/developer_reference/model_qualification.md#ci-coverage) |
 | Intel XPU | Implemented | Qwen3-ASR and Qwen3-TTS on one XPU; Qwen3-Omni text-only with multi-XPU tensor parallelism | Manually validated |
 | AMD ROCm | Implemented | Initial Qwen3-Omni, Qwen3-ASR, and Qwen3-TTS paths | Experimental |
 | Ascend NPU | Implemented | Documented install path only; no per-model validation record | Not recorded |
