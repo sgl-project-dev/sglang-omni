@@ -34,6 +34,8 @@ DATASETS: dict[str, str] = {
     "seedtts-mini": "zhaochenyang20/seed-tts-eval-mini-arrow",
     "seedtts-50": "zhaochenyang20/seed-tts-eval-50-arrow",
     "stt-benchmark": STT_BENCHMARK_DATASET_ID,
+    "librispeech-clean": "openslr/librispeech_asr:clean",
+    "librispeech-other": "openslr/librispeech_asr:other",
     "mmmu": "MMMU/MMMU",
     "mmmu-ci-50": "zhaochenyang20/mmmu-ci-50",
     "mmsu": "ddwang2000/MMSU",
@@ -85,6 +87,17 @@ def download_dataset(
             repo_id,
             "mmar-audio.tar.gz",
             repo_type="dataset",
+            **revision_kwargs,
+        )
+    elif repo_id.startswith("openslr/librispeech_asr:"):
+        # Restrict to the test parquet files; loading the config downloads
+        # the train splits too (tens of GB).
+        dataset_id, config_name = repo_id.split(":", 1)
+        load_dataset(
+            dataset_id,
+            data_files={"test": f"{config_name}/test/*.parquet"},
+            split="test",
+            verification_mode="no_checks",
             **revision_kwargs,
         )
     elif repo_id.startswith("lmms-lab/mmau:"):
