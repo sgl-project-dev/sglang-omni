@@ -34,6 +34,11 @@ logger = logging.getLogger(__name__)
 IMAGE_PLACEHOLDER = "<image>./</image>"
 AUDIO_PLACEHOLDER = "<audio>./</audio>"
 
+# Task prompts from the checkpoint's README ("Audio Understanding"); the
+# Chinese prompt also covers AST EN->ZH and the English one AST ZH->EN.
+ASR_PROMPT_ZH = "请仔细听这段音频片段，并将其内容逐字记录。"
+ASR_PROMPT_EN = "Please listen to the audio snippet carefully and transcribe the content."
+
 
 def _resolve_local_model_dir(model_path: str) -> str:
     if Path(model_path).exists():
@@ -71,6 +76,18 @@ class MiniCPMOPreprocessor:
         # use_tts_template before generating speech.
         self._speech_enabled = speech_enabled
 
+    def _speech_to_text_inputs(
+        self, payload: StagePayload, inputs: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[Any]]:
+        """Turn a transcription upload into a chat turn plus audio list."""
+        from sglang_omni.preprocessing.audio import AudioMediaIO
+
+        params = payload.request.params or {}
+        language = str(params.get("language") or "").lower()
+        prompt = ASR_PROMPT_ZH if language.startswith("zh") else ASR_PROMPT_EN
+        audio, _ = AudioMediaIO(target_sr=16000).load_bytes(inputs["audio_bytes"])
+        return [{"role": "user", "content": prompt}], [audio]
+
     def _use_tts_template(self, payload: StagePayload) -> bool:
         from sglang_omni.models.minicpm_o.request_builders import (
             should_generate_audio_output,
@@ -90,7 +107,10 @@ class MiniCPMOPreprocessor:
         inputs = payload.request.inputs
         raw_images = None
         raw_audios = None
-        if isinstance(inputs, dict):
+        if isinstance(inputs, dict) and inputs.get("audio_bytes") is not None:
+            # /v1/audio/transcriptions upload: build the README ASR chat turn.
+            messages, raw_audios = self._speech_to_text_inputs(payload, inputs)
+        elif isinstance(inputs, dict):
             messages = inputs.get("messages", [])
             raw_images = inputs.get("images")
             raw_audios = inputs.get("audio") or inputs.get("audios")
