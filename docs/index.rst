@@ -40,7 +40,6 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
    get_started/installation_npu.md
    get_started/installation_xpu.md
    get_started/installation_cpu.md
-   get_started/release_notes.md
 
 
 .. toctree::
@@ -87,21 +86,18 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
 
    benchmarks/methodology.md
    benchmarks/relay.md
-   Qwen3-ASR Concurrency Profile <developer_reference/qwen3_asr_concurrency_profile.md>
 
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 3
    :caption: Developer Guide
 
-   developer_reference/overview.md
-
-
-.. toctree::
-   :maxdepth: 1
-   :caption: References
-
-   developer_reference/config.md
+   Overview <developer_reference/overview.md>
+   Architecture & Runtime <developer_reference/architecture_runtime.md>
+   Development <developer_reference/development.md>
+   Benchmarking & Validation <developer_reference/benchmarking_validation.md>
+   Documentation Contribution Guide <STYLE_GUIDE.md>
+   Bumping the SGLang Version <developer_reference/bump_version.md>
 
 
 .. toctree::

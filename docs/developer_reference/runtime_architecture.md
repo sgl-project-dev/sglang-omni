@@ -1,3 +1,5 @@
+(runtime-architecture)=
+
 # Runtime Architecture
 
 SGLang-Omni is the multi-stage runtime for omni models: models that accept
