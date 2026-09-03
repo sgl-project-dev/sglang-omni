@@ -979,6 +979,13 @@ class OmniScheduler:
             # Builds are in flight on other threads; stay hot for them.
             time.sleep(0.0001)
             return
+        if self.tp_size > 1 and not self.is_entry_rank:
+            # Note (Audrey): followers receive through broadcast_pyobj, never
+            # through their inbox; blocking here would add the timeout to every
+            # TP rendezvous after idle. Keep the original poll until a
+            # group-aware idle protocol exists.
+            time.sleep(0.001)
+            return
         # Nothing is queued and nothing is building, so the next thing to happen
         # is a message arriving. Block on the inbox instead of polling it: the
         # wait ends the moment a message lands, which is never later than the
