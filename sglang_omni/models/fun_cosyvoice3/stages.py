@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import os
 import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
@@ -61,6 +62,57 @@ _COSYVOICE_INSTALL_HINT = (
 )
 
 _CHUNK_MASK_COMPILE_DISABLED = False
+
+
+class _MpsHiFTAdapter:
+    """Keep HiFT's float64 F0 branch on CPU while decoding on MPS.
+
+    The upstream causal HiFT implementation deliberately evaluates its F0
+    predictor in float64.  PyTorch MPS does not implement float64 tensors, but
+    the remaining source-filter/ISTFT path is usable on MPS.  Keeping this
+    boundary explicit avoids changing the checkpoint's numerical behavior.
+    """
+
+    def __init__(self, hift: Any, device: str) -> None:
+        self._hift = hift
+        self._device = torch.device(device)
+        self._f0_predictor = hift.f0_predictor
+        # MPS rejects a device transfer that also requests float64. Move the
+        # module to CPU first, then preserve upstream's double-precision F0
+        # calculation there.
+        self._f0_predictor.to(device="cpu")
+        self._f0_predictor.to(dtype=torch.float64)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._hift, name)
+
+    def parameters(self):
+        return self._hift.parameters()
+
+    @torch.inference_mode()
+    def inference(self, speech_feat: torch.Tensor, finalize: bool = True):
+        cpu_features = speech_feat.detach().to(device="cpu")
+        f0 = self._f0_predictor(
+            cpu_features.to(dtype=torch.float64),
+            finalize=finalize,
+        ).to(device=self._device, dtype=speech_feat.dtype)
+        source = self._hift.f0_upsamp(f0[:, None]).transpose(1, 2)
+        source, _, _ = self._hift.m_source(source)
+        source = source.transpose(1, 2)
+        if finalize:
+            generated = self._hift.decode(
+                x=speech_feat,
+                s=source,
+                finalize=True,
+            )
+        else:
+            causal_padding = self._f0_predictor.condnet[0].causal_padding
+            generated = self._hift.decode(
+                x=speech_feat[:, :, :-causal_padding],
+                s=source,
+                finalize=False,
+            )
+        return generated, source
 
 
 @dataclass(frozen=True)
@@ -650,6 +702,11 @@ def _load_cosyvoice3_flow_hift(
     *,
     enable_flow_estimator_trt: bool = False,
 ) -> tuple[Any, Any]:
+    if torch.device(device).type == "mps":
+        return _load_cosyvoice3_flow_hift_lightweight(
+            checkpoint_dir,
+            device=device,
+        )
     _import_modelscope_preserving_root_handlers()
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
@@ -667,6 +724,55 @@ def _load_cosyvoice3_flow_hift(
     if enable_flow_estimator_trt:
         _attach_flow_estimator_trt(wrapped, checkpoint_dir, device)
     return wrapped, hift
+
+
+def _load_cosyvoice3_flow_hift_lightweight(
+    checkpoint_dir: str,
+    *,
+    device: str,
+) -> tuple[Any, Any]:
+    """Load only Flow and HiFT for CPU/MPS without constructing a second LLM."""
+    try:
+        from hyperpyyaml import load_hyperpyyaml
+    except ImportError as exc:
+        raise RuntimeError(_COSYVOICE_INSTALL_HINT) from exc
+
+    config_path = os.path.join(checkpoint_dir, "cosyvoice3.yaml")
+    flow_path = os.path.join(checkpoint_dir, "flow.pt")
+    hift_path = os.path.join(checkpoint_dir, "hift.pt")
+    if not all(os.path.isfile(path) for path in (config_path, flow_path, hift_path)):
+        raise FileNotFoundError(
+            "Fun-CosyVoice3 requires cosyvoice3.yaml, flow.pt and hift.pt in "
+            f"{checkpoint_dir}"
+        )
+
+    with open(config_path, encoding="utf-8") as handle:
+        configs = load_hyperpyyaml(
+            handle,
+            overrides={
+                "qwen_pretrain_path": os.path.join(checkpoint_dir, "CosyVoice-BlankEN"),
+                "llm": None,
+                "hifigan": None,
+            },
+        )
+    flow = configs["flow"]
+    hift = configs["hift"]
+    flow.load_state_dict(torch.load(flow_path, map_location="cpu", weights_only=True))
+    hift_state = {
+        key.removeprefix("generator."): value
+        for key, value in torch.load(
+            hift_path,
+            map_location="cpu",
+            weights_only=True,
+        ).items()
+    }
+    hift.load_state_dict(hift_state, strict=True)
+    flow.to(device).eval()
+    hift.to(device).eval()
+    if torch.device(device).type == "mps":
+        hift = _MpsHiFTAdapter(hift, device)
+    del configs
+    return FunCosyVoice3Flow(flow), hift
 
 
 def _configure_dit_torch_compile() -> None:
@@ -796,6 +902,8 @@ def create_sglang_tts_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
+    mlx_model_path: str | None = None,
+    mlx_model_revision: str | None = None,
     server_args_overrides: dict[str, Any] | None = None,
     onnx_intra_op_threads: int = 16,
     token_hop_len: int = TOKEN_HOP_LEN,
@@ -807,6 +915,8 @@ def create_sglang_tts_engine_executor(
     return FunCosyVoice3EngineBuilder(
         token_hop_len=token_hop_len,
         onnx_intra_op_threads=onnx_intra_op_threads,
+        mlx_model_path=mlx_model_path,
+        mlx_model_revision=mlx_model_revision,
     ).build(
         model_path,
         device=device,
@@ -921,9 +1031,10 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         for request in prepared:
             buckets[self._flow_bucket_key(request.flow_input)].append(request)
 
+        flow_device, _ = _flow_device_and_dtype(self._flow)
         for bucket in buckets.values():
             with torch.autocast(
-                device_type=current_platform.device_type,
+                device_type=flow_device.type,
                 dtype=self._compute_dtype,
                 enabled=self._compute_dtype is not None,
             ):
@@ -1198,6 +1309,11 @@ def create_vocoder_executor(
             f"expected one of {sorted(_AUTOCAST_DTYPES)}"
         )
     compute_dtype = _AUTOCAST_DTYPES[dtype]
+    if torch.device(device).type == "mps":
+        # Keep the declarative CUDA default (bf16) unchanged while avoiding
+        # an autocast scope around the MPS Flow/HiFT path. The MPS adapter also
+        # keeps HiFT's required float64 F0 predictor on CPU.
+        compute_dtype = None
     flow, hift = _load_cosyvoice3_flow_hift(
         checkpoint_dir,
         device=device,
