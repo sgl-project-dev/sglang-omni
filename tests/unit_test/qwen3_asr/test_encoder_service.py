@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 
 import pytest
@@ -143,6 +144,38 @@ def test_encode_attaches_lm_ready_embedding_and_clears_feature() -> None:
     assert model.encode_calls == 1
     assert model.grad_enabled_during_encode is False
     assert service.stats()["misses"] == 1
+
+
+def test_encoder_batch_holds_configured_device_execution_guard() -> None:
+    calls: list[str] = []
+
+    class RecordingGuard:
+        @contextmanager
+        def hold(self):
+            calls.append("guard_enter")
+            try:
+                yield 0, 0
+            finally:
+                calls.append("guard_exit")
+
+    model = _StubModel()
+    original = model.get_audio_feature
+
+    def encode(items):  # noqa: ANN001, ANN202
+        calls.append("encode")
+        return original(items)
+
+    model.get_audio_feature = encode
+    service = Qwen3ASRPreLMEncoderService(
+        model,
+        cache_namespace=_NAMESPACE,
+        device_execution_guard=RecordingGuard(),
+    )
+    _SERVICES.append(service)
+
+    service.encode_item(_item(7, 3))
+
+    assert calls == ["guard_enter", "encode", "guard_exit"]
 
 
 def test_submit_returns_before_encoding_completes() -> None:

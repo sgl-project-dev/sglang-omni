@@ -25,6 +25,7 @@ from sglang_omni.scheduling.types import (
     SchedulerRequest,
     sampled_logprobs_to_list,
 )
+from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 
 
 def _current_sglang_sampling_backend() -> str | None:
@@ -96,11 +97,18 @@ class ModelRunner:
       - decode hooks for single-step autoregressive decode processing
     """
 
-    def __init__(self, tp_worker: Any, output_processor: Any):
+    def __init__(
+        self,
+        tp_worker: Any,
+        output_processor: Any,
+        *,
+        device_execution_guard: FairDeviceExecutionGuard | None = None,
+    ):
         self.tp_worker = tp_worker
         self.output_processor = output_processor
         self.device = current_platform.get_device(tp_worker.gpu_id)
         self.model = tp_worker.model_runner.model
+        self._device_execution_guard = device_execution_guard
         self._execution_bridge: Any | None = None
 
         # Async decode (one-step lookahead). Inert unless ``_async_enabled`` is set.
@@ -450,7 +458,14 @@ class ModelRunner:
                     forward_batch, schedule_batch, requests
                 )
             if batch_result is None:
-                batch_result = self.tp_worker.forward_batch_generation(forward_batch)
+                guard = self._device_execution_guard
+                if guard is None:
+                    batch_result = self.tp_worker.forward_batch_generation(forward_batch)
+                else:
+                    with guard.hold():
+                        batch_result = self.tp_worker.forward_batch_generation(
+                            forward_batch
+                        )
 
             if (
                 not schedule_batch.is_prefill_only
