@@ -28,8 +28,11 @@ from typing import Any, cast
 import torch
 from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 
+from sglang_omni.profiler.event_recorder import diag_emit as _diag_emit
+from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +118,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
         cache_max_bytes: int = _CACHE_MAX_BYTES,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 0,
+        device_execution_guard: FairDeviceExecutionGuard | None = None,
     ) -> None:
         self._model = model
         reference = next(model.audio_tower.parameters())
@@ -126,6 +130,7 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
             if self._device.type == "cuda"
             else None
         )
+        self._device_execution_guard = device_execution_guard
         self._cache = StageOutputCache(
             max_size=cache_max_entries,
             max_bytes=cache_max_bytes,
@@ -413,6 +418,51 @@ class Qwen3ASRPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.T
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
         return self._model.get_audio_feature(items)
+
+    def _execute_batch(self, items: list[Any]) -> list[torch.Tensor]:
+        guard = self._device_execution_guard
+        if guard is None:
+            return super()._execute_batch(items)
+
+        request_ids = [str(getattr(item, "request_id", "")) for item in items]
+        for request_id in request_ids:
+            _diag_emit(
+                request_id=request_id,
+                stage=_get_active_stage(),
+                event_name="npu_execution_guard_wait",
+                metadata={"owner": "encoder", "batch_size": len(items)},
+            )
+        with guard.hold() as (guard_ticket, wait_ns):
+            acquired_ns = time.monotonic_ns()
+            for request_id in request_ids:
+                _diag_emit(
+                    request_id=request_id,
+                    stage=_get_active_stage(),
+                    event_name="npu_execution_guard_acquired",
+                    metadata={
+                        "owner": "encoder",
+                        "batch_size": len(items),
+                        "ticket": guard_ticket,
+                        "wait_ms": wait_ns / 1e6,
+                    },
+                )
+            try:
+                embeddings = super()._execute_batch(items)
+            finally:
+                held_ms = (time.monotonic_ns() - acquired_ns) / 1e6
+                for request_id in request_ids:
+                    _diag_emit(
+                        request_id=request_id,
+                        stage=_get_active_stage(),
+                        event_name="npu_execution_guard_released",
+                        metadata={
+                            "owner": "encoder",
+                            "batch_size": len(items),
+                            "ticket": guard_ticket,
+                            "held_ms": held_ms,
+                        },
+                    )
+        return embeddings
 
     def split_embeddings(
         self,

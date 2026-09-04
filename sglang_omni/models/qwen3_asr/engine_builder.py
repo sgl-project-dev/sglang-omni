@@ -25,6 +25,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_decode_cuda_graph_bs,
 )
+from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
@@ -110,6 +111,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.audio_encoder_service: Any = None
         self._torch_mps_model_runner: Any = None
         self._should_wait_for_encode: Callable[[], bool] | None = None
+        self._device_execution_guard: FairDeviceExecutionGuard | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -332,7 +334,18 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             # shared multimodal routine still requires its cache singleton.
             init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
             return
-        del generation_cuda_graph_enabled
+        audio_tower = getattr(model, "audio_tower", None)
+        reference = next(audio_tower.parameters()) if audio_tower is not None else None
+        self._device_execution_guard = (
+            FairDeviceExecutionGuard()
+            if (
+                reference is not None
+                and reference.device.type == "npu"
+                and generation_cuda_graph_enabled
+                and self.enable_pre_lm_encoder
+            )
+            else None
+        )
         self._log_memory_checkpoint("post_cuda_graph_capture")
         if self.enable_encoder_cuda_graph:
             from sglang_omni.models.qwen3_asr.audio_lengths import (
@@ -370,7 +383,17 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 cache_max_bytes=self.pre_lm_cache_size_bytes,
                 max_batch_size=self.pre_lm_max_batch_size,
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
+                device_execution_guard=self._device_execution_guard,
             )
+
+    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        from sglang_omni.model_runner.base import ModelRunner
+
+        return ModelRunner(
+            model_worker,
+            output_proc,
+            device_execution_guard=self._device_execution_guard,
+        )
 
     def should_wait_for_encode(self) -> bool:
         return (
