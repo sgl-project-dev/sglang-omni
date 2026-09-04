@@ -167,6 +167,7 @@ class DotsTTSFlowHead(nn.Module):
         nfe: int,
         max_audio_patches: int,
         optimize: bool = False,
+        pad_to_bucket: bool = False,
     ) -> None:
         if self.mode != "meanflow":
             # note (luojiaxuan): flow-matching checkpoints (SOAR, base) need the
@@ -201,6 +202,7 @@ class DotsTTSFlowHead(nn.Module):
             device=parameter.device,
             dtype=parameter.dtype,
             optimize=optimize,
+            pad_to_bucket=pad_to_bucket,
         )
         self._batched_nfe = int(nfe)
         self._prepare_batched_eos_staging(int(num_slots), parameter.device)
