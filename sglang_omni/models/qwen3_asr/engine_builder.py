@@ -273,7 +273,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         return ModelRunner(
             model_worker,
             output_proc,
-            device_execution_guard=self._device_execution_guard,
+            device_execution_guard=getattr(
+                self, "_device_execution_guard", None
+            ),
         )
 
     def should_wait_for_encode(self) -> bool:

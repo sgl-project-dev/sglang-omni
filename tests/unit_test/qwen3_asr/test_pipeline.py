@@ -107,6 +107,25 @@ def test_qwen3_asr_engine_builder_binds_encode_wait_policy() -> None:
     assert builder.should_wait_for_encode() is True
 
 
+def test_qwen3_asr_model_runner_allows_legacy_builder_without_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    builder = _make_engine_builder()
+    del builder._device_execution_guard
+    received: dict[str, object] = {}
+
+    def make_runner(*args, **kwargs):
+        del args
+        received.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(model_runner_base, "ModelRunner", make_runner)
+
+    builder.make_model_runner(object(), object())
+
+    assert received["device_execution_guard"] is None
+
+
 @pytest.mark.parametrize(
     ("sm_version", "expected_backend"),
     [(89, None), (100, "triton_attn"), (120, "triton_attn")],
