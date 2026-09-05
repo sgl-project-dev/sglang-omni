@@ -12,6 +12,7 @@ from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.backend import Qwen3TTSBackend, get_qwen3_tts_backend
 from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -85,6 +86,23 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            # MLX owns evaluation and request-local caches. Torch graph capture,
+            # radix reuse, and split prefill do not apply to this runner.
+            return {
+                "max_running_requests": 16,
+                "max_queued_requests": 16,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": 0.85,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "trust_remote_code": True,
+            }
+
         defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
@@ -122,9 +140,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id
-        from sglang.srt.utils.tensor_bridge import use_mlx
-
-        if use_mlx():
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
             return
 
         from qwen_tts import Qwen3TTSModel
@@ -206,9 +222,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del device, gpu_id, server_args
-        from sglang.srt.utils.tensor_bridge import use_mlx
-
-        if use_mlx():
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
             self._setup_mlx_model(
                 model_worker=model_worker, checkpoint_dir=checkpoint_dir
             )
@@ -219,6 +233,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
 
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            return
         schedule = get_schedule()
         running = int(schedule.max_running_requests)
         context = int(get_model().context_length)
@@ -236,9 +252,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang.srt.utils.tensor_bridge import use_mlx
-
-        if use_mlx():
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
             # The MLX talker keeps its own frame state, so it needs a different
             # bridge than the Torch AR stage.
             scheduler_runner_mod = importlib.import_module(
