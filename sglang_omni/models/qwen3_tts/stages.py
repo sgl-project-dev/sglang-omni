@@ -266,6 +266,24 @@ def create_vocoder_executor(
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
+    from sglang.srt.utils.tensor_bridge import use_mlx
+
+    if use_mlx():
+        # Metal has neither CUDA graphs nor pinned staging; the MLX vocoder
+        # decodes statefully per request instead of re-running a left-context
+        # window, so the CUDA tuning knobs do not apply.
+        from sglang_omni.models.qwen3_tts.mlx.vocoder_loader import (
+            create_mlx_vocoder_scheduler,
+        )
+
+        return create_mlx_vocoder_scheduler(
+            model_path,
+            stream_stride=stream_stride,
+            initial_chunk_frames=initial_chunk_frames,
+            max_batch_size=max_batch_size,
+            max_batch_wait_ms=max_batch_wait_ms,
+        )
+
     device = resolve_device_spec(device, gpu_id)
     # note (luojiaxuan): the graph and compile switches follow the decoder
     # they belong to unless set explicitly, so turning the stateful decoder
