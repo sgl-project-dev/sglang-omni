@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+from collections import Counter
 from types import SimpleNamespace
 
 import pytest
@@ -105,6 +106,98 @@ def test_layer_stack_forwards_precomputed_attention_metadata():
     assert seen["cu_seqlens"] is cu_seqlens
     assert seen["max_seqlen"] == 104
     assert seen["forward_metadata"] is attention_metadata
+
+
+def test_npu_capture_all_defers_until_real_window_signature():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._buckets = (128, 256)
+    runner._graphs = {}
+    runner._failed = set()
+
+    runner.capture_all()
+
+    assert runner._graphs == {}
+    assert runner._failed == set()
+
+
+def test_npu_capture_materializes_sequence_boundaries_on_host():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._device = torch.device("meta")
+
+    cu_seqlens = runner._make_static_cu([4, 3, 1])
+
+    assert cu_seqlens.device.type == "cpu"
+    assert cu_seqlens.dtype == torch.int32
+    assert cu_seqlens.tolist() == [0, 4, 7, 8]
+
+
+def test_npu_replay_admits_only_one_window_signature_per_bucket():
+    replayed = []
+    captured = []
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._max_seqlen = 8
+    runner._failed = set()
+    runner._graphs = {}
+    runner._npu_signature_by_bucket = {}
+    runner._npu_declined_buckets = set()
+    runner._reported_replays = set()
+    runner._replay_count = 0
+    runner._replay_buckets = Counter()
+    runner._eager_fallback_reasons = Counter()
+    runner._plan = lambda total, windows: (8, [8 - total])
+
+    def capture(bucket_size, *, window_lens=None):
+        captured.append((bucket_size, window_lens))
+        return SimpleNamespace(
+            hidden_states=torch.zeros(8, 2),
+            cu_seqlens=torch.tensor([0, 4, 8], dtype=torch.int32),
+            attention_metadata=None,
+            graph=SimpleNamespace(replay=lambda: replayed.append(True)),
+            output=torch.zeros(8, 2),
+        )
+
+    runner._capture = capture
+    hidden_states = torch.ones(4, 2)
+
+    assert runner.run(hidden_states, [4]) is not None
+    assert runner.run(hidden_states, [4]) is not None
+    assert captured == [(8, (4, 4))]
+    assert len(replayed) == 2
+    assert runner._reported_replays == {(8, (4, 4))}
+
+    # The same token bucket with different host-side sequence boundaries must
+    # use eager rather than replaying a graph with stale op parameters.
+    assert runner.run(hidden_states, [2, 2]) is None
+    assert captured == [(8, (4, 4))]
+    assert runner._npu_declined_buckets == {8}
+    assert runner._eager_fallback_reasons == {"npu_signature_mismatch": 1}
+
+
+def test_encoder_graph_model_info_reports_replay_and_fallbacks():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._buckets = (128, 256)
+    runner._graphs = {(128, (64, 64)): object()}
+    runner._failed = {(256, (128, 128))}
+    runner._replay_count = 3
+    runner._replay_buckets = Counter({128: 3})
+    runner._eager_fallback_reasons = Counter({"npu_signature_mismatch": 2})
+
+    assert runner.model_info() == {
+        "enabled": True,
+        "npu_lazy_signature_capture": True,
+        "configured_buckets": [128, 256],
+        "captured_graph_count": 1,
+        "captured_buckets": {"128": 1},
+        "capture_failure_count": 1,
+        "replay_count": 3,
+        "replay_buckets": {"128": 3},
+        "eager_fallback_count": 2,
+        "eager_fallback_reasons": {"npu_signature_mismatch": 2},
+    }
 
 
 @pytest.fixture

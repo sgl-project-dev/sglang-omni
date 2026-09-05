@@ -11,6 +11,8 @@ buckets only need to track total token count.
 from __future__ import annotations
 
 import logging
+from collections import Counter
+from collections.abc import Hashable
 from dataclasses import dataclass
 from typing import Any
 
@@ -55,7 +57,7 @@ def build_buckets(max_batch: int, max_tokens_per_clip: int) -> tuple[int, ...]:
 class _CapturedGraph:
     graph: torch.cuda.CUDAGraph
     hidden_states: torch.Tensor  # [bucket, hidden] static input
-    cu_seqlens: torch.Tensor  # [max_windows + 1] static window boundaries
+    cu_seqlens: torch.Tensor  # static boundaries; host-resident on Ascend
     attention_metadata: VisionAttentionMetadata | None
     output: torch.Tensor  # [bucket, output_dim] static result
 
@@ -81,17 +83,29 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         param = next(audio_tower.parameters())
         self._device = param.device
         self._dtype = param.dtype
+        self._is_npu = current_platform.is_npu()
         cfg = audio_tower.config
 
         chunk_tokens = _get_feat_extract_output_lengths_int(cfg.n_window * 2)
         self._max_seqlen = chunk_tokens * (cfg.n_window_infer // (cfg.n_window * 2))
-        self._max_windows_for = (
-            lambda bucket_size: max_batch_size + bucket_size // self._max_seqlen + 1
+        self._max_windows_for = lambda bucket_size: (
+            max_batch_size + bucket_size // self._max_seqlen + 1
         )
         top = buckets[-1]
         self._buckets = buckets[:-1] + (top + self._max_windows_for(top),)
-        self._graphs: dict[int, _CapturedGraph] = {}  # bucket size -> recorded graph
-        self._failed: set[int] = set()
+        self._graphs: dict[Hashable, _CapturedGraph] = {}
+        self._failed: set[Hashable] = set()
+        # Ascend fused attention consumes actual_seq_lengths as a host-side
+        # operator parameter. It cannot safely change that list by copying a
+        # device tensor before replay. Keep graph memory bounded by admitting
+        # at most one real window signature for each token bucket; other
+        # signatures use the correct eager path.
+        self._npu_signature_by_bucket: dict[int, tuple[int, ...]] = {}
+        self._npu_declined_buckets: set[int] = set()
+        self._reported_replays: set[Hashable] = set()
+        self._replay_count = 0
+        self._replay_buckets: Counter[int] = Counter()
+        self._eager_fallback_reasons: Counter[str] = Counter()
         self._capture_attention_metadata: VisionAttentionMetadata | None = None
 
     @property
@@ -100,6 +114,16 @@ class Qwen3ASREncoderLayerStackGraphRunner:
 
     def capture_all(self) -> None:
         """Capture every bucket up front. A failed bucket stays eager."""
+        if self._is_npu:
+            # Synthetic bucket layouts are not valid replay metadata for
+            # VisionAscendAttention: its sequence boundaries are captured as
+            # host operator parameters. Capture lazily from the first real
+            # layout observed for each bucket instead.
+            logger.info(
+                "[qwen3-asr] deferring NPU encoder graph capture until real "
+                "window signatures are available"
+            )
+            return
         for bucket_size in self._buckets:
             if bucket_size in self._graphs or bucket_size in self._failed:
                 continue
@@ -140,25 +164,49 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         h = tower.act(h)
         return tower.proj2(h)[0]
 
-    def _capture(self, bucket_size: int) -> _CapturedGraph:
+    def _make_static_cu(self, sizes: list[int]) -> torch.Tensor:
+        bounds = [0]
+        for size in sizes:
+            bounds.append(bounds[-1] + size)
+        return torch.tensor(
+            bounds,
+            dtype=torch.int32,
+            device="cpu" if self._is_npu else self._device,
+        )
+
+    def _capture(
+        self,
+        bucket_size: int,
+        *,
+        window_lens: tuple[int, ...] | None = None,
+    ) -> _CapturedGraph:
         """Record one graph for a bucket-sized packed input."""
         device, dtype = self._device, self._dtype
         d_model = self._tower.ln_post.normalized_shape[0]
         static_hs = torch.zeros(bucket_size, d_model, device=device, dtype=dtype)
 
         max_windows = self._max_windows_for(bucket_size)
-        base, rem = divmod(bucket_size, max_windows)
-        sizes = [base + 1] * rem + [base] * (max_windows - rem)
-        bounds = [0]
-        for size in sizes:
-            bounds.append(bounds[-1] + size)
-        static_cu = torch.tensor(bounds, dtype=torch.int32, device=device)
+        if self._is_npu:
+            if not window_lens or sum(window_lens) != bucket_size:
+                raise ValueError(
+                    "NPU encoder graph capture requires an exact window "
+                    f"signature for bucket {bucket_size}"
+                )
+            sizes = list(window_lens)
+        else:
+            base, rem = divmod(bucket_size, max_windows)
+            sizes = [base + 1] * rem + [base] * (max_windows - rem)
+        # VisionAscendAttention turns cumulative sequence lengths into the
+        # host-side actual_seq_lengths op parameter. Keeping this tensor on the
+        # NPU made `.to("cpu")` synchronize the captured stream (ACL 107030).
+        # The signature is immutable for this graph, so materialize it on the
+        # host before capture. CUDA/ROCm retain their mutable device tensor.
+        static_cu = self._make_static_cu(sizes)
         attention_metadata = None
-        if current_platform.is_rocm():
-            # VisionAiterAttention otherwise recomputes max_seqlen with
-            # seq_lens.max().item() inside the captured region. The device-to-host
-            # sync is illegal during HIP graph capture. Keep the mutable tensor
-            # metadata static and supply the architectural maximum as a host scalar.
+        if current_platform.is_rocm() or self._is_npu:
+            # AITER needs mutable device metadata without a per-layer sync.
+            # Ascend needs immutable host metadata so no device-to-host copy is
+            # issued from its captured stream.
             attention_metadata = VisionAttentionMetadata(
                 cu_seqlens=static_cu,
                 seq_lens=static_cu[1:] - static_cu[:-1],
@@ -184,7 +232,7 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         logger.info(
             "[qwen3-asr] captured encoder layer-stack graph bucket=%d windows=%d out=%s",
             bucket_size,
-            max_windows,
+            len(sizes),
             tuple(static_out.shape),
         )
         return _CapturedGraph(
@@ -201,21 +249,40 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         """Replay the recorded graph for a batch of hidden states."""
         total = int(hidden_states.shape[0])
         if not window_lens or sum(window_lens) != total:
-            return None
+            return self._fallback("invalid_window_layout")
         if max(window_lens) > self._max_seqlen:
-            return None
+            return self._fallback("window_too_large")
 
         plan = self._plan(total, len(window_lens))
         if plan is None:
-            return None
+            return self._fallback("no_bucket")
         bucket_size, dummy_sizes = plan
-        if bucket_size in self._failed:
-            return None
+        effective_window_lens = tuple(window_lens + dummy_sizes)
+        graph_key: Hashable = (
+            (bucket_size, effective_window_lens) if self._is_npu else bucket_size
+        )
+        if graph_key in self._failed:
+            return self._fallback("capture_failed")
 
-        entry = self._graphs.get(bucket_size)
+        if self._is_npu:
+            admitted = self._npu_signature_by_bucket.get(bucket_size)
+            if admitted is not None and admitted != effective_window_lens:
+                if bucket_size not in self._npu_declined_buckets:
+                    logger.warning(
+                        "[qwen3-asr] NPU encoder graph bucket=%d already owns "
+                        "another window signature; mismatched signatures stay eager",
+                        bucket_size,
+                    )
+                    self._npu_declined_buckets.add(bucket_size)
+                return self._fallback("npu_signature_mismatch")
+
+        entry = self._graphs.get(graph_key)
         if entry is None:
             try:
-                entry = self._capture(bucket_size)
+                entry = self._capture(
+                    bucket_size,
+                    window_lens=(effective_window_lens if self._is_npu else None),
+                )
             except Exception as exc:
                 logger.warning(
                     "[qwen3-asr] encoder graph capture failed for bucket=%d: %s; "
@@ -223,24 +290,66 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                     bucket_size,
                     exc,
                 )
-                self._failed.add(bucket_size)
-                return None
-            self._graphs[bucket_size] = entry
-
-        bounds = [0]
-        for size in window_lens + dummy_sizes:
-            bounds.append(bounds[-1] + size)
-        cu = torch.tensor(bounds, dtype=torch.int32)
+                self._failed.add(graph_key)
+                return self._fallback("capture_failed")
+            self._graphs[graph_key] = entry
+            if self._is_npu:
+                self._npu_signature_by_bucket[bucket_size] = effective_window_lens
 
         entry.hidden_states[:total].copy_(hidden_states)
-        entry.cu_seqlens.copy_(cu, non_blocking=True)
-        if entry.attention_metadata is not None:
-            entry.attention_metadata.seq_lens.copy_(cu[1:] - cu[:-1], non_blocking=True)
+        if not self._is_npu:
+            bounds = [0]
+            for size in window_lens + dummy_sizes:
+                bounds.append(bounds[-1] + size)
+            cu = torch.tensor(bounds, dtype=torch.int32)
+            entry.cu_seqlens.copy_(cu, non_blocking=True)
+            if entry.attention_metadata is not None:
+                entry.attention_metadata.seq_lens.copy_(
+                    cu[1:] - cu[:-1], non_blocking=True
+                )
         entry.graph.replay()
+        self._replay_count += 1
+        self._replay_buckets[bucket_size] += 1
+        if graph_key not in self._reported_replays:
+            logger.info(
+                "[qwen3-asr] replayed encoder layer-stack graph bucket=%d windows=%d",
+                bucket_size,
+                len(effective_window_lens),
+            )
+            self._reported_replays.add(graph_key)
         out = entry.output
         if out.dim() == 3:  # attention backends emit [1, tokens, dim]
             out = out.squeeze(0)
         return out[:total].clone()
+
+    def _fallback(self, reason: str) -> None:
+        self._eager_fallback_reasons[reason] += 1
+
+    def model_info(self) -> dict[str, Any]:
+        captured_buckets = Counter(
+            int(key[0] if isinstance(key, tuple) else key) for key in self._graphs
+        )
+        return {
+            "enabled": True,
+            "npu_lazy_signature_capture": self._is_npu,
+            "configured_buckets": [int(bucket) for bucket in self._buckets],
+            "captured_graph_count": len(self._graphs),
+            "captured_buckets": {
+                str(bucket): int(count)
+                for bucket, count in sorted(captured_buckets.items())
+            },
+            "capture_failure_count": len(self._failed),
+            "replay_count": int(self._replay_count),
+            "replay_buckets": {
+                str(bucket): int(count)
+                for bucket, count in sorted(self._replay_buckets.items())
+            },
+            "eager_fallback_count": int(sum(self._eager_fallback_reasons.values())),
+            "eager_fallback_reasons": {
+                reason: int(count)
+                for reason, count in sorted(self._eager_fallback_reasons.items())
+            },
+        }
 
     def _plan(self, total: int, real_windows: int) -> tuple[int, list[int]] | None:
         """Pick a bucket and the dummy-window sizes that absorb its padding."""
