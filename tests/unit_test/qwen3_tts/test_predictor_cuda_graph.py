@@ -1343,12 +1343,24 @@ def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
     return talker
 
 
+@pytest.fixture
+def published_server_args():
+    from sglang.srt.runtime_context import get_context
+
+    with get_context().override_server_args(model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base"):
+        yield
+
+
 @pytest.mark.accelerator
 @pytest.mark.parametrize("batch_size", [1, 16])
-def test_rope_store_writes_the_cache_the_copy_path_writes(batch_size: int):
+def test_rope_store_writes_the_cache_the_copy_path_writes(
+    batch_size: int, published_server_args
+):
     """sglang's rope kernel with the store argument leaves the same bits in the
     predictor cache as the plain rope followed by the two copies, and the
-    attention over that cache is the same bits too."""
+    attention over that cache is the same bits too. The rotary reads the
+    process wide config the engine publishes at bootstrap, so the test
+    publishes one."""
     device = torch.device("cuda")
     torch.manual_seed(11)
     attn = SimpleNamespace(
