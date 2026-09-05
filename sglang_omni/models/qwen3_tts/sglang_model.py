@@ -931,7 +931,7 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             + self._predictor_positions[:, None]
         ).contiguous()
         self._predictor_rope_stores_kv = self._resolve_predictor_rope_store(
-            cp_attn, device=device, dtype=dtype
+            cp_attn, device=device
         )
         self._sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
@@ -1801,16 +1801,15 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
 
     @staticmethod
-    def _resolve_predictor_rope_store(
-        attn: Any, *, device: torch.device, dtype: torch.dtype
-    ) -> bool:
-        """Whether sglang's rope kernel can store k and v into the predictor
-        cache: its fast kernel on CUDA, a bf16 cache, and a rotary class whose
-        forward takes the store argument."""
+    def _resolve_predictor_rope_store(attn: Any, *, device: torch.device) -> bool:
+        """The predictor's rotary is sglang's plain RotaryEmbedding, which on
+        CUDA runs one kernel that rotates q and k and can store k and v into a
+        row cache in the same launch. The native forward of every other device
+        and the fallback kernel for head sizes it does not cover reject the
+        store argument, so those keep the copies."""
         return (
             device.type == "cuda"
-            and dtype == torch.bfloat16
-            and bool(attn.compatible_with_fused_kv_buffer)
+            and attn.compatible_with_fused_kv_buffer
             and not attn.rotary_emb.use_fallback_kernel
         )
 

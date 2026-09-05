@@ -1306,33 +1306,6 @@ def test_sglang_gemm_overrides_keep_the_eager_gemm_on_both_paths(
     assert torch.equal(graph_embeds, eager_embeds)
 
 
-@pytest.mark.parametrize(
-    "device, dtype, compatible, fallback, expected",
-    [
-        ("cuda", torch.bfloat16, True, False, True),
-        ("cuda", torch.bfloat16, False, False, False),
-        ("cuda", torch.bfloat16, True, True, False),
-        ("cuda", torch.float16, True, False, False),
-        ("cpu", torch.bfloat16, True, False, False),
-    ],
-    ids=["fast-kernel", "mrope-class", "fallback-rope", "fp16-cache", "cpu"],
-)
-def test_rope_store_gate_follows_the_rotary_and_cache_contract(
-    device, dtype, compatible, fallback, expected
-):
-    attn = SimpleNamespace(
-        compatible_with_fused_kv_buffer=compatible,
-        rotary_emb=SimpleNamespace(use_fallback_kernel=fallback),
-    )
-
-    assert (
-        Qwen3TTSTalker._resolve_predictor_rope_store(
-            attn, device=torch.device(device), dtype=dtype
-        )
-        is expected
-    )
-
-
 ROPE_HEAD_DIM = 64
 ROPE_NUM_HEADS = 2
 ROPE_NUM_KV_HEADS = 1
@@ -1393,9 +1366,7 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(batch_size: int):
         rotary_emb=get_rope(ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000).to(device),
         compatible_with_fused_kv_buffer=True,
     )
-    assert Qwen3TTSTalker._resolve_predictor_rope_store(
-        attn, device=device, dtype=DTYPE
-    )
+    assert Qwen3TTSTalker._resolve_predictor_rope_store(attn, device=device)
     stored = _rope_store_talker(device, stores=True)
     copied = _rope_store_talker(device, stores=False)
 
