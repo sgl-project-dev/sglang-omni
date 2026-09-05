@@ -24,7 +24,7 @@ from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
-from sglang_omni.vendor.sglang.layers import RMSNorm
+from sglang_omni.vendor.sglang.layers import RMSNorm, get_rope
 
 
 @pytest.fixture(autouse=True)
@@ -100,9 +100,10 @@ def _build_talker(device: torch.device) -> Qwen3TTSTalker:
         positions[:, None].expand(predictor_len, MAX_BS).contiguous()
     )
     talker._predictor_k_cache = torch.zeros(
-        1, MAX_BS, NUM_KV_HEADS, predictor_len, HEAD_DIM, device=device, dtype=DTYPE
+        1, MAX_BS, predictor_len, NUM_KV_HEADS, HEAD_DIM, device=device, dtype=DTYPE
     )
     talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    talker._predictor_rope_stores_kv = False
     talker._output_codes = torch.zeros(
         MAX_BS, NUM_CODE_GROUPS, dtype=torch.long, device=device
     )
@@ -1303,6 +1304,124 @@ def test_sglang_gemm_overrides_keep_the_eager_gemm_on_both_paths(
     assert not calls
     assert torch.equal(graph_codes, eager_codes)
     assert torch.equal(graph_embeds, eager_embeds)
+
+
+@pytest.mark.parametrize(
+    "device, dtype, compatible, fallback, expected",
+    [
+        ("cuda", torch.bfloat16, True, False, True),
+        ("cuda", torch.bfloat16, False, False, False),
+        ("cuda", torch.bfloat16, True, True, False),
+        ("cuda", torch.float16, True, False, False),
+        ("cpu", torch.bfloat16, True, False, False),
+    ],
+    ids=["fast-kernel", "mrope-class", "fallback-rope", "fp16-cache", "cpu"],
+)
+def test_rope_store_gate_follows_the_rotary_and_cache_contract(
+    device, dtype, compatible, fallback, expected
+):
+    attn = SimpleNamespace(
+        compatible_with_fused_kv_buffer=compatible,
+        rotary_emb=SimpleNamespace(use_fallback_kernel=fallback),
+    )
+
+    assert (
+        Qwen3TTSTalker._resolve_predictor_rope_store(
+            attn, device=torch.device(device), dtype=dtype
+        )
+        is expected
+    )
+
+
+ROPE_HEAD_DIM = 64
+ROPE_NUM_HEADS = 2
+ROPE_NUM_KV_HEADS = 1
+ROPE_HIDDEN = ROPE_NUM_HEADS * ROPE_HEAD_DIM
+
+
+def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
+    predictor_len = NUM_CODE_GROUPS + 1
+    talker = object.__new__(Qwen3TTSTalker)
+    positions = torch.arange(predictor_len, device=device, dtype=torch.long)
+    talker._predictor_position_rows = (
+        positions[:, None].expand(predictor_len, MAX_BS).contiguous()
+    )
+    talker._predictor_k_cache = torch.zeros(
+        1,
+        MAX_BS,
+        predictor_len,
+        ROPE_NUM_KV_HEADS,
+        ROPE_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    talker._predictor_v_cache = torch.zeros_like(talker._predictor_k_cache)
+    talker._predictor_k_rows = [
+        layer.view(MAX_BS * predictor_len, -1) for layer in talker._predictor_k_cache
+    ]
+    talker._predictor_v_rows = [
+        layer.view(MAX_BS * predictor_len, -1) for layer in talker._predictor_v_cache
+    ]
+    talker._predictor_cache_slots = (
+        torch.arange(MAX_BS, device=device, dtype=torch.long)[None, :] * predictor_len
+        + positions[:, None]
+    ).contiguous()
+    talker._predictor_rope_stores_kv = stores
+    return talker
+
+
+@pytest.mark.accelerator
+@pytest.mark.parametrize("batch_size", [1, 16])
+def test_rope_store_writes_the_cache_the_copy_path_writes(batch_size: int):
+    """sglang's rope kernel with the store argument leaves the same bits in the
+    predictor cache as the plain rope followed by the two copies, and the
+    attention over that cache is the same bits too."""
+    device = torch.device("cuda")
+    torch.manual_seed(11)
+    attn = SimpleNamespace(
+        q_size=ROPE_NUM_HEADS * ROPE_HEAD_DIM,
+        kv_size=ROPE_NUM_KV_HEADS * ROPE_HEAD_DIM,
+        num_heads=ROPE_NUM_HEADS,
+        num_kv_heads=ROPE_NUM_KV_HEADS,
+        head_dim=ROPE_HEAD_DIM,
+        q_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        k_norm=RMSNorm(ROPE_HEAD_DIM, eps=1e-6).to(device, DTYPE),
+        alt_stream=None,
+        qkv_proj=_TupleLinear(
+            ROPE_HIDDEN, (ROPE_NUM_HEADS + 2 * ROPE_NUM_KV_HEADS) * ROPE_HEAD_DIM
+        ).to(device, DTYPE),
+        rotary_emb=get_rope(ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000).to(device),
+        compatible_with_fused_kv_buffer=True,
+    )
+    assert Qwen3TTSTalker._resolve_predictor_rope_store(
+        attn, device=device, dtype=DTYPE
+    )
+    stored = _rope_store_talker(device, stores=True)
+    copied = _rope_store_talker(device, stores=False)
+
+    predictor_len = NUM_CODE_GROUPS + 1
+    for cache_len in range(predictor_len):
+        hidden = torch.randn(batch_size, 1, ROPE_HIDDEN, device=device).to(DTYPE)
+        positions = stored._predictor_position_rows[cache_len, :batch_size]
+        outputs = [
+            talker._predictor_cached_self_attention(
+                layer_idx=0,
+                attn=attn,
+                hidden_states=hidden,
+                positions=positions,
+                batch_size=batch_size,
+                cache_len=cache_len,
+            )
+            for talker in (stored, copied)
+        ]
+        torch.cuda.synchronize()
+        assert torch.equal(outputs[0], outputs[1]), cache_len
+        assert torch.equal(stored._predictor_k_cache, copied._predictor_k_cache)
+        assert torch.equal(stored._predictor_v_cache, copied._predictor_v_cache)
+
+    written = stored._predictor_k_cache[0, :batch_size]
+    assert bool(written.abs().sum() > 0)
+    assert bool(stored._predictor_k_cache[0, batch_size:].abs().sum() == 0)
 
 
 if __name__ == "__main__":

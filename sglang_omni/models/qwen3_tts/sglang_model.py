@@ -44,7 +44,7 @@ from sglang_omni.models.qwen3_tts.sampling_kernels import (
 )
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import ReplicatedLinear, RMSNorm
-from sglang_omni.vendor.sglang.models import apply_qk_norm
+from sglang_omni.vendor.sglang.models import FusedSetKVBufferArg, apply_qk_norm
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 
 logger = logging.getLogger(__name__)
@@ -905,16 +905,34 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             .expand(predictor_len, max_batch_size)
             .contiguous()
         )
+        # note(ratish): slot major, so the rope kernel stores k and v as one
+        # row per (batch row, slot) and the attention reads a transposed view.
         self._predictor_k_cache = torch.zeros(
             len(cp_layers),
             max_batch_size,
-            cp_attn.num_kv_heads,
             predictor_len,
+            cp_attn.num_kv_heads,
             cp_attn.head_dim,
             device=device,
             dtype=dtype,
         )
         self._predictor_v_cache = torch.zeros_like(self._predictor_k_cache)
+        self._predictor_k_rows = [
+            layer_cache.view(max_batch_size * predictor_len, -1)
+            for layer_cache in self._predictor_k_cache
+        ]
+        self._predictor_v_rows = [
+            layer_cache.view(max_batch_size * predictor_len, -1)
+            for layer_cache in self._predictor_v_cache
+        ]
+        self._predictor_cache_slots = (
+            torch.arange(max_batch_size, device=device, dtype=torch.long)[None, :]
+            * predictor_len
+            + self._predictor_positions[:, None]
+        ).contiguous()
+        self._predictor_rope_stores_kv = self._resolve_predictor_rope_store(
+            cp_attn, device=device, dtype=dtype
+        )
         self._sampled_token_ids = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
         )
@@ -1782,6 +1800,20 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             attn_input.shape[0], 1, residual.shape[-1]
         )
 
+    @staticmethod
+    def _resolve_predictor_rope_store(
+        attn: Any, *, device: torch.device, dtype: torch.dtype
+    ) -> bool:
+        """Whether sglang's rope kernel can store k and v into the predictor
+        cache: its fast kernel on CUDA, a bf16 cache, and a rotary class whose
+        forward takes the store argument."""
+        return (
+            device.type == "cuda"
+            and dtype == torch.bfloat16
+            and bool(attn.compatible_with_fused_kv_buffer)
+            and not attn.rotary_emb.use_fallback_kernel
+        )
+
     def _predictor_cached_self_attention(
         self,
         *,
@@ -1808,22 +1840,35 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
             head_dim=attn.head_dim,
             alt_stream=attn.alt_stream,
         )
+        if self._predictor_rope_stores_kv:
+            store = FusedSetKVBufferArg(
+                value=v,
+                k_buffer=self._predictor_k_rows[layer_idx],
+                v_buffer=self._predictor_v_rows[layer_idx],
+                cache_loc=self._predictor_cache_slots[cache_len, :batch_size],
+            )
+        else:
+            store = None
         q, k = attn.rotary_emb(
             positions.to(device=flat_hidden.device, dtype=torch.long),
             q,
             k,
-            fused_set_kv_buffer_arg=None,
+            fused_set_kv_buffer_arg=store,
         )
+        if store is None:
+            self._predictor_k_cache[layer_idx, :batch_size, cache_len].copy_(
+                k.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            )
+            self._predictor_v_cache[layer_idx, :batch_size, cache_len].copy_(
+                v.view(batch_size, attn.num_kv_heads, attn.head_dim)
+            )
         q = q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2)
-        k = k.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-        v = v.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
-
-        layer_k_cache = self._predictor_k_cache[layer_idx, :batch_size]
-        layer_v_cache = self._predictor_v_cache[layer_idx, :batch_size]
-        layer_k_cache[:, :, cache_len : cache_len + 1, :].copy_(k)
-        layer_v_cache[:, :, cache_len : cache_len + 1, :].copy_(v)
-        cached_k = layer_k_cache[:, :, : cache_len + 1, :]
-        cached_v = layer_v_cache[:, :, : cache_len + 1, :]
+        cached_k = self._predictor_k_cache[
+            layer_idx, :batch_size, : cache_len + 1
+        ].transpose(1, 2)
+        cached_v = self._predictor_v_cache[
+            layer_idx, :batch_size, : cache_len + 1
+        ].transpose(1, 2)
         num_kv_groups = attn.num_heads // attn.num_kv_heads
         if num_kv_groups == 1:
             attn_output = torch.nn.functional.scaled_dot_product_attention(
