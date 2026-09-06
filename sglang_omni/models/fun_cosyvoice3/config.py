@@ -63,8 +63,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=8000,
                 max_batch_size=16,
                 max_batch_wait_ms=30,
-                # note (guozhihao-224): mutually exclusive DiT accelerators; both default off.
-                enable_dit_torch_compile=False,
+                # note (guozhihao-224): mutually exclusive DiT accelerators.
+                # note (db-ol): the factory compiles the DiT unless TensorRT is
+                # enabled, set enable_dit_torch_compile false to run it eager.
                 enable_flow_estimator_trt=False,
             ),
             gpu=0,

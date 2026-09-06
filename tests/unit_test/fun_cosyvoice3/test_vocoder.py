@@ -513,6 +513,38 @@ def test_create_vocoder_executor_threads_trt_flag(monkeypatch) -> None:
     }
 
 
+def _executor_compiles(monkeypatch, **kwargs) -> bool:
+    monkeypatch.setattr(stages, "resolve_device_spec", lambda device, gpu_id: "cpu")
+    monkeypatch.setattr(stages, "resolve_checkpoint", lambda model_path: "/checkpoint")
+    monkeypatch.setattr(
+        stages,
+        "_load_cosyvoice3_flow_hift",
+        lambda checkpoint_dir, device, fp16, **_: (
+            _BatchCapableFakeFlow(),
+            _FakeHiFT(),
+        ),
+    )
+    compiled: list[object] = []
+    monkeypatch.setattr(
+        stages,
+        "_compile_dit_backbone",
+        lambda flow, compute_dtype: compiled.append(flow),
+    )
+    stages.create_vocoder_executor("model", device="cpu", **kwargs)
+    return bool(compiled)
+
+
+def test_create_vocoder_executor_compiles_dit_by_default(monkeypatch) -> None:
+    assert _executor_compiles(monkeypatch)
+    assert not _executor_compiles(monkeypatch, enable_dit_torch_compile=False)
+
+
+def test_create_vocoder_executor_trt_alone_skips_the_default_compile(
+    monkeypatch,
+) -> None:
+    assert not _executor_compiles(monkeypatch, enable_flow_estimator_trt=True)
+
+
 def test_create_vocoder_executor_rejects_trt_and_compile() -> None:
     with pytest.raises(ValueError, match="enable only one"):
         stages.create_vocoder_executor(
@@ -616,7 +648,6 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "flow_batch_admission_frames": 8000,
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
-        "enable_dit_torch_compile": False,
         "enable_flow_estimator_trt": False,
     }
 

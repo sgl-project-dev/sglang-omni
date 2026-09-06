@@ -135,5 +135,5 @@ def test_vocoder_factory_exposes_dit_torch_compile_flag() -> None:
     import inspect
 
     signature = inspect.signature(stages.create_vocoder_executor)
-    assert signature.parameters["enable_dit_torch_compile"].default is False
+    assert signature.parameters["enable_dit_torch_compile"].default is None
     assert signature.parameters["enable_flow_estimator_trt"].default is False
