@@ -1338,7 +1338,7 @@ def preprocess_qwen3_tts_payload(
                 model=context.model,
                 wrapper=context.wrapper,
                 default_stream_codec_output=default_stream_codec_output,
-            mlx_preprocessor=context.mlx_preprocessor,
+                mlx_preprocessor=context.mlx_preprocessor,
             )
             prepared.ready_event = torch.cuda.Event()
             prepared.ready_event.record(context.stream)
