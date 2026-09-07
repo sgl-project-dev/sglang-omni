@@ -508,10 +508,11 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-based-style-control">Instruction-based Style Control</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speed-control">Speed Control</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-planned">Streaming (Planned)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-architecture">Model Architecture</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
@@ -672,8 +673,11 @@ preferred). This is opt-in: TensorRT is not a <code class="docutils literal notr
 startup builds and caches a <code class="docutils literal notranslate"><span class="pre">.plan</span></code> under <code class="docutils literal notranslate"><span class="pre">COSYVOICE3_TRT_CACHE</span></code> or
 <code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/cosyvoice3_trt</span></code>, and the official CosyVoice ONNX freezes
 CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
-Packed Flow (CFG batch = <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">*</span> <span class="pre">request_batch</span></code>) still works by chunking
-request-wise cond/uncond pairs into that CFG=2 engine.</p>
+The engine is attached as an <code class="docutils literal notranslate"><span class="pre">nn.Module</span></code> wrapper (<code class="docutils literal notranslate"><span class="pre">FlowEstimatorTRTModule</span></code>)
+so CosyVoice does not take its raw <code class="docutils literal notranslate"><span class="pre">execute_async_v3</span></code> path. Packed Flow
+(CFG batch = <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">*</span> <span class="pre">request_batch</span></code>) still works by chunking request-wise
+cond/uncond pairs into that CFG=2 engine; out-of-profile <code class="docutils literal notranslate"><span class="pre">T</span></code> falls back to
+the original PyTorch DiT.</p>
 <p>TensorRT and <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> both replace the same DiT, so they are mutually
 exclusive. Enabling TensorRT skips the default compile on its own, setting both
 flags to true is rejected:</p>
@@ -873,11 +877,45 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </pre></div>
 </div>
 </section>
-<section id="streaming-planned">
-<h3>Streaming (Planned)<a class="headerlink" href="#streaming-planned" title="Link to this heading">#</a></h3>
-<p>Incremental Flow + HiFT decoding is planned but is not enabled in the current implementation.
-The current vocoder buffers the generated speech tokens and returns one complete waveform.
-Do not rely on <code class="docutils literal notranslate"><span class="pre">stream=true</span></code> for time-to-first-audio until the streaming decoder is wired.</p>
+<section id="streaming">
+<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
+<p>Incremental Flow + HiFT decoding is enabled. Set <code class="docutils literal notranslate"><span class="pre">stream:</span> <span class="pre">true</span></code> and use
+<code class="docutils literal notranslate"><span class="pre">response_format:</span> <span class="pre">&quot;pcm&quot;</span></code> so the server can emit audio before speech-token
+generation finishes.</p>
+<p>The vocoder follows CosyVoice3’s causal chunk loop: 25 speech tokens per hop
+(<code class="docutils literal notranslate"><span class="pre">pre_lookahead_len=3</span></code>, 25 Hz → about 1 s of audio per chunk). The first PCM
+chunk is emitted once the AR stage has produced <code class="docutils literal notranslate"><span class="pre">28</span> <span class="pre">+</span> <span class="pre">prompt_pad</span></code> tokens,
+where <code class="docutils literal notranslate"><span class="pre">prompt_pad</span></code> (0–24) rounds the Flow prompt-token length up to a
+multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
+<code class="docutils literal notranslate"><span class="pre">CosyVoice3Model</span></code> (default; keep growth on). Each scheduler step runs at most
+one hop per request so a backlogged stream cannot monopolize the GPU.
+Non-streaming requests still decode the whole utterance in one Flow + HiFT
+pass.</p>
+<p>Optional serving knobs (vocoder factory; keep <code class="docutils literal notranslate"><span class="pre">tts_engine.factory.token_hop_len</span></code>
+in sync if you change the hop):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Factory arg</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">token_hop_len</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">25</span></code></p></td>
+<td><p>Base hop / AR follow-up flush; must match training chunk size</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">token_max_hop_len</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">100</span></code></p></td>
+<td><p>Cap for <code class="docutils literal notranslate"><span class="pre">25</span> <span class="pre">→</span> <span class="pre">50</span> <span class="pre">→</span> <span class="pre">100</span></code> growth</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">disable_hop_growth</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Leave off unless A/B’ing; growth ON was better at c=16</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
@@ -885,13 +923,12 @@ Do not rely on <code class="docutils literal notranslate"><span class="pre">stre
 <span class="s1">    "input": "Get the trust fund to the bank early.",</span>
 <span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
 <span class="s1">    "ref_text": "We asked over twenty different people, and they all said it was his.",</span>
-<span class="s1">    "response_format": "wav"</span>
+<span class="s1">    "stream": true,</span>
+<span class="s1">    "response_format": "pcm"</span>
 <span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.wav
+<span class="w">  </span>--output<span class="w"> </span>output.pcm
 </pre></div>
 </div>
-<p>The request above uses the supported buffered response path. A future streaming implementation
-will use <code class="docutils literal notranslate"><span class="pre">response_format=&quot;pcm&quot;</span></code> and emit audio before speech-token generation completes.</p>
 </section>
 </section>
 <section id="generation-parameters">
@@ -954,11 +991,24 @@ will use <code class="docutils literal notranslate"><span class="pre">response_f
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Reserved for the planned incremental decoder; current decode is buffered</p></td>
+<td><p>Incremental causal Flow + HiFT; first PCM chunk after <code class="docutils literal notranslate"><span class="pre">28</span> <span class="pre">+</span> <span class="pre">prompt_pad</span></code> speech tokens (<code class="docutils literal notranslate"><span class="pre">prompt_pad</span></code> rounds the prompt length to a multiple of 25)</p></td>
 </tr>
 </tbody>
 </table>
 </div>
+</section>
+<section id="benchmarking">
+<h2>Benchmarking<a class="headerlink" href="#benchmarking" title="Link to this heading">#</a></h2>
+<p>Measure causal streaming with Seed-TTS-Eval against a running server:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span>--lang<span class="w"> </span>en<span class="w"> </span>--max-concurrency<span class="w"> </span><span class="m">16</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--use-existing-server<span class="w"> </span>--generate-only<span class="w"> </span>--stream<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output-dir<span class="w"> </span>results/fun_cosyvoice3_en
+</pre></div>
+</div>
+<p>Use <code class="docutils literal notranslate"><span class="pre">--lang</span> <span class="pre">zh</span> <span class="pre">--no-ref-text</span></code> for the Chinese cross-lingual split. See
+<code class="docutils literal notranslate"><span class="pre">benchmarks/README.md</span></code> for the full workflow.</p>
 </section>
 <section id="model-architecture">
 <h2>Model Architecture<a class="headerlink" href="#model-architecture" title="Link to this heading">#</a></h2>
@@ -1010,17 +1060,22 @@ on every request instead of being cached by URL alone.</p></li>
 <li><p><strong>Speed control.</strong> Applied once, on the decoded waveform, by the shared
 <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> response-encoding path.</p></li>
 <li><p><strong>Voice conversion.</strong> Voice conversion is outside the current zero-shot TTS scope.</p></li>
-<li><p><strong>Streaming decode.</strong> The current implementation buffers all speech tokens before Flow + HiFT
-decoding. Incremental PCM output is planned but is not yet available.</p></li>
+<li><p><strong>Streaming decode.</strong> Causal Flow + HiFT emit PCM after each hop
+(<code class="docutils literal notranslate"><span class="pre">pre_lookahead_len=3</span></code>; hop grows 25 → 50 → 100 by default). Quality can
+differ slightly from the buffered whole-utterance path. Opt-in TensorRT
+(<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>) also accelerates streaming hops; do not enable
+it together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. TRT freezes DiT attention, so
+streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT
+wrapper when streaming: CosyVoice’s raw TRT enqueue is incompatible with
+packed hop-batch CFG shapes.</p></li>
 <li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator
-and the opt-in TensorRT estimator (<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>). Do not enable
-TensorRT together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. HiFT batches only the mels
-produced by one Flow bucket while padding waste stays within
-<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming Flow/HiFT batching is outside the current
-buffered decoder.</p></li>
+and the opt-in TensorRT estimator. HiFT batches only the mels produced by one
+Flow bucket while padding waste stays within <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>.
+Streaming coalesces first/follow-up hops across requests
+(<code class="docutils literal notranslate"><span class="pre">_can_batch_stream_chunks</span></code>, short peer wait) so TTFP stays low under load.</p></li>
 <li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be
 installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
-only the CosyVoice Flow and HiFT paths are used by the buffered decoder.</p></li>
+only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
 </ul>
 </section>
 </section>
@@ -1069,10 +1124,11 @@ only the CosyVoice Flow and HiFT paths are used by the buffered decoder.</p></li
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-based-style-control">Instruction-based Style Control</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speed-control">Speed Control</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-planned">Streaming (Planned)</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-architecture">Model Architecture</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
 </ul>
