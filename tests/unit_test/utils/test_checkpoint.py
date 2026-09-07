@@ -84,6 +84,24 @@ def test_pinned_spec_resolves_architecture_without_snapshot(
     assert captured["raw"] == ("dots-studio/dots.tts-mf", "config.json", revision)
 
 
+def test_unresolvable_pinned_spec_names_the_revision(monkeypatch) -> None:
+    import pytest
+
+    from sglang_omni.config import manager
+
+    def fail_metadata(*args, **kwargs):
+        raise OSError("metadata offline in this test")
+
+    monkeypatch.setattr(manager.AutoConfig, "from_pretrained", fail_metadata)
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", fail_metadata)
+
+    with pytest.raises(ValueError, match="check that revision c28105ad"):
+        manager.resolve_config_cls_for_model_path("org/model@c28105ad")
+    with pytest.raises(ValueError) as unpinned:
+        manager.resolve_config_cls_for_model_path("org/model")
+    assert "revision" not in str(unpinned.value)
+
+
 def test_local_model_path_skips_snapshot_resolution(monkeypatch, tmp_path) -> None:
     from sglang_omni.config import manager
     from sglang_omni.models.dots_tts.config import DotsTTSPipelineConfig

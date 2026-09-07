@@ -38,7 +38,10 @@ def resolve_config_cls_for_model_path(model_path: str):
     if arch is None:
         arch = try_resolve_arch_from_mistral_config(repo_id, revision=revision)
     if arch is None:
-        raise ValueError(f"Could not resolve model architecture for {model_path!r}")
+        hint = f", check that revision {revision} exists" if revision else ""
+        raise ValueError(
+            f"Could not resolve model architecture for {model_path!r}{hint}"
+        )
     return PIPELINE_CONFIG_REGISTRY.get_config(arch)
 
 
