@@ -202,10 +202,6 @@ REFERENCE_FAILURES = (
     ),
     ("html_url", "https://example.com/"),
     (
-        # Pinned to the commit that added the asset, not a branch: this case has
-        # to fetch 200 with a non-audio Content-Type, and an asset that moves or
-        # disappears quietly degrades it into a fetch failure already covered by
-        # not_found_url. Do not repoint this at a mutable ref.
         "wrong_content_type",
         "https://raw.githubusercontent.com/sgl-project/sglang-omni/"
         "3153edb19750767d2388cc8bb00fd30c809271d6/"
