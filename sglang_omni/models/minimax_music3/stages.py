@@ -23,6 +23,12 @@ logger = logging.getLogger(__name__)
 _DEFAULT_AR_CONCURRENCY = int(os.environ.get("MINIMAX_MUSIC3_AR_CONCURRENCY", "16"))
 
 
+def _use_mlx_backend() -> bool:
+    from sglang.srt.utils.tensor_bridge import use_mlx
+
+    return bool(use_mlx())
+
+
 def create_preprocessing_executor(model_path: str) -> SimpleScheduler:
     del model_path
 
@@ -43,13 +49,29 @@ def create_ar_executor(
     device: str | None = None,
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
+    mlx_model_revision: str | None = None,
+    enable_serial_offload: bool = False,
 ):
+    if _use_mlx_backend():
+        if not current_platform.is_mps():
+            raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+        from .mlx.ar_scheduler import MiniMaxMusic3MlxARScheduler
+
+        scheduler = MiniMaxMusic3MlxARScheduler(
+            model_path,
+            revision=mlx_model_revision,
+            serial_offload=enable_serial_offload,
+        )
+        logger.info("MiniMax Music 3 AR executor ready backend=mlx max_concurrency=1")
+        return scheduler
     if device is None:
         if gpu_id is None or not (
             current_platform.is_cuda() or current_platform.is_musa()
         ):
             raise RuntimeError("MiniMax Music 3 requires CUDA/MUSA backend")
         device = f"cuda:{gpu_id}"
+    if enable_serial_offload and torch.device(device).type != "cuda":
+        raise RuntimeError("MiniMax Music 3 serial offload requires CUDA or MLX")
     torch.backends.cudnn.enabled = False
     torch.backends.cuda.enable_cudnn_sdp(False)
 
@@ -60,7 +82,8 @@ def create_ar_executor(
     if requested is not None:
         max_concurrency = int(requested)
     builder = MiniMaxMusic3EngineBuilder(
-        max_running_requests=max(int(max_concurrency), 1)
+        max_running_requests=max(int(max_concurrency), 1),
+        enable_serial_offload=enable_serial_offload,
     )
     scheduler = builder.build(
         model_path,
@@ -93,7 +116,36 @@ def create_dit_dav_executor(
     cache_dit_max_warmup_steps: int = 4,
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
+    mlx_model_revision: str | None = None,
+    enable_serial_offload: bool = False,
 ) -> MiniMaxMusic3AcousticScheduler:
+    if _use_mlx_backend():
+        if not current_platform.is_mps():
+            raise RuntimeError("SGLANG_USE_MLX=1 requires the Apple Metal platform")
+        if cache_dit:
+            raise ValueError("MiniMax Music 3 cache_dit is unavailable with MLX")
+        if breakable_cuda_graph:
+            raise ValueError(
+                "MiniMax Music 3 breakable_cuda_graph is unavailable with MLX"
+            )
+        from .mlx.acoustic import MiniMaxMusic3MlxAcousticDecoder
+
+        decoder = MiniMaxMusic3MlxAcousticDecoder(
+            model_path,
+            revision=mlx_model_revision,
+            dit_steps=dit_steps,
+            dit_cfg_scale=dit_cfg_scale,
+            serial_offload=enable_serial_offload,
+        )
+        logger.info(
+            "MiniMax Music 3 acoustic executor ready backend=mlx dtype=%s "
+            "dit_steps=%d dit_cfg_scale=%.3f sample_rate=%d",
+            decoder.dtype,
+            decoder.dit_steps,
+            decoder.dit_cfg_scale,
+            OUTPUT_SAMPLE_RATE,
+        )
+        return MiniMaxMusic3AcousticScheduler(decoder)
     if device is None:
         if gpu_id is None or not (
             current_platform.is_cuda() or current_platform.is_musa()
@@ -102,6 +154,8 @@ def create_dit_dav_executor(
                 "MiniMax Music 3 acoustic inference requires CUDA/MUSA backend"
             )
         device = f"cuda:{gpu_id}"
+    if enable_serial_offload and torch.device(device).type != "cuda":
+        raise RuntimeError("MiniMax Music 3 serial offload requires CUDA or MLX")
     decoder = MiniMaxMusic3AcousticDecoder(
         model_path,
         device=device,
@@ -118,6 +172,7 @@ def create_dit_dav_executor(
         cache_dit_max_warmup_steps=cache_dit_max_warmup_steps,
         cache_dit_residual_diff_threshold=cache_dit_residual_diff_threshold,
         cache_dit_max_continuous_cached_steps=cache_dit_max_continuous_cached_steps,
+        serial_offload=enable_serial_offload,
     )
     logger.info(
         f"MiniMax Music 3 acoustic executor ready device={decoder.device} dtype={decoder.dtype} dit_steps={decoder.dit_steps} dit_cfg_scale={decoder.dit_cfg_scale:.3f} attention_backend={decoder.attention_backend} compile_acoustic={decoder.compile_acoustic} sample_rate={OUTPUT_SAMPLE_RATE}"
