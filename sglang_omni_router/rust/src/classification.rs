@@ -96,10 +96,7 @@ impl ClassificationExecutor {
             HttpFault::InternalError
         });
         let classified = match classified {
-            Ok(classified) => classified.and_then(|value| {
-                ensure_before(deadline)?;
-                Ok(value)
-            }),
+            Ok(classified) => complete_before(deadline, classified),
             Err(fault) => Err(fault),
         };
         let outcome = match &classified {
@@ -258,17 +255,32 @@ fn ensure_before(deadline: Instant) -> Result<(), HttpFault> {
     }
 }
 
+fn complete_before<T>(deadline: Instant, result: Result<T, HttpFault>) -> Result<T, HttpFault> {
+    ensure_before(deadline).and(result)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    use super::ClassificationExecutor;
+    use super::{ClassificationExecutor, complete_before};
     use crate::error::HttpFault;
     use crate::metrics::{
         ClassificationKind, ClassificationOutcome, ClassificationPhase, RouterMetrics,
     };
+
+    #[tokio::test(start_paused = true)]
+    async fn elapsed_deadline_precedes_operation_error() {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
+        tokio::time::advance(Duration::from_millis(21)).await;
+
+        assert_eq!(
+            complete_before::<()>(deadline, Err(HttpFault::MalformedRequest)),
+            Err(HttpFault::UpstreamTimeout)
+        );
+    }
 
     async fn occupy_blocking_executor(
         executor: Arc<ClassificationExecutor>,
