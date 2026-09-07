@@ -89,16 +89,7 @@ impl http_body::Body for DirectResponseBody {
         let frame = Pin::new(inner).poll_frame(cx);
         match frame {
             Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                Ok(data) => {
-                    if self
-                        .inner
-                        .as_ref()
-                        .is_some_and(http_body::Body::is_end_stream)
-                    {
-                        self.terminalize(HttpBodyTermination::Complete);
-                    }
-                    Poll::Ready(Some(Ok(Frame::data(data))))
-                }
+                Ok(data) => Poll::Ready(Some(Ok(Frame::data(data)))),
                 Err(_trailers) => self.fail(),
             },
             Poll::Ready(Some(Err(_source))) => self.fail(),
@@ -116,5 +107,46 @@ impl http_body::Body for DirectResponseBody {
 
     fn size_hint(&self) -> SizeHint {
         SizeHint::default()
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use std::pin::Pin;
+    use std::sync::Arc;
+
+    use bytes::Bytes;
+    use http_body::Body as _;
+
+    use super::DirectResponseBody;
+    use crate::metrics::{HttpBodyTermination, RouterMetrics};
+
+    #[tokio::test]
+    async fn final_frame_precedes_terminal_ownership_release() {
+        let metrics = RouterMetrics::new();
+        let mut body = DirectResponseBody {
+            inner: Some(reqwest::Body::from(Bytes::from_static(b"{}"))),
+            lease: None,
+            metrics: Arc::clone(&metrics),
+            terminal: false,
+        };
+
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx))
+            .await
+            .expect("body frame")
+            .expect("valid body frame");
+        assert_eq!(frame.into_data().expect("data frame"), "{}");
+        assert!(!body.is_end_stream());
+        assert_eq!(
+            metrics.http_body_terminations(HttpBodyTermination::Complete),
+            0
+        );
+
+        drop(body);
+        assert_eq!(
+            metrics.http_body_terminations(HttpBodyTermination::Complete),
+            1
+        );
     }
 }
