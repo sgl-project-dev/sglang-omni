@@ -729,3 +729,6 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
   `/data/jaxan/runs/20260902-mainline-nari-ab/`。后续若 CI 需要 GPU 复现,按规范新建容器。
 - **#1998 CI 全绿(2026-09-06 23:30 PT)**:32 个 check 通过(TTS CI 五个 stage 含 stage 3 一致性、
   ASR、Qwen3-Omni 全部 stage、XPU 重跑通过;首轮 XPU 失败是镜像构建时 pip 下载超时,与代码无关)。
+- **#1997 CI 全绿(2026-09-06 23:55 PT,head 89d5c1ed)**:33 个 check 通过,含 TTS CI 五个 stage、
+  ASR 两段、Qwen3-Omni 十一段、XPU、单测。三个 PR 状态:#1907(CI 绿)→ #1997(CI 绿)→
+  #1998(CI 绿,能干净合到 main+#1997 之上),均待 review。
