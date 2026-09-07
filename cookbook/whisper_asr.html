@@ -496,6 +496,7 @@
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#encoder-cuda-graph">Encoder CUDA Graph</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graph">Breakable Prefill CUDA Graph</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-coalescing">Prefill Coalescing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#async-decode">Async Decode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
@@ -549,6 +550,66 @@
 </pre></div>
 </div>
 <p>The graph is captured after SGLang’s generation graphs. With pre-LM off, raise <code class="docutils literal notranslate"><span class="pre">max_prefill_tokens</span></code> before configuring larger LM-side buckets (12/16). Each request uses the smallest captured bucket that fits its batch. Requests larger than every captured bucket, with a different feature shape, or without a successful capture run eagerly. Startup and first-replay logs identify the captured and executed buckets.</p>
+</section>
+<section id="breakable-prefill-cuda-graph">
+<h2>Breakable Prefill CUDA Graph<a class="headerlink" href="#breakable-prefill-cuda-graph" title="Link to this heading">#</a></h2>
+<p>The decoder body uses SGLang’s breakable prefill CUDA Graph backend by default.
+Whisper encoder states and cross-attention K/V are prepared outside the captured
+decoder body. The default capture ladder stops at the largest aggregate decoder
+token count atomic admission can form. The cap considers every reachable request
+count because a batch of more, shorter prompts can contain more decoder tokens
+than a batch sized from the longest possible request. With the default 6,144
+budget, 1,500 encoder placeholders, and at most 232 decoder tokens per request,
+the cap is 696. Startup logs report the capture cost and confirm the active
+buckets with <code class="docutils literal notranslate"><span class="pre">prefill</span> <span class="pre">CUDA</span> <span class="pre">graphs</span> <span class="pre">attested</span></code>.</p>
+<p>The current benchmark results were collected with
+<code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs_prefill=256</span></code>. To reproduce that capture profile and limit
+startup time and GPU memory, set the prefill graph cap explicitly:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">asr</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">cuda_graph_max_bs_prefill</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">256</span>
+</pre></div>
+</div>
+<p>Whisper runs three independently configured graph planes, each bucketed on its
+own axis; cross-attention K/V is written once per request between the first
+two and only read afterwards:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>plane</p></th>
+<th class="head"><p>bucket axis</p></th>
+<th class="head"><p>config</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>encoder forward</p></td>
+<td><p>batch size</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">enable_encoder_cuda_graph</span></code>, encoder graph buckets</p></td>
+</tr>
+<tr class="row-odd"><td><p>decoder prefill body</p></td>
+<td><p>aggregate prefill tokens</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cuda_graph_backend_prefill</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_bs_prefill</span></code></p></td>
+</tr>
+<tr class="row-even"><td><p>decoder decode</p></td>
+<td><p>batch size</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">cuda_graph_bs</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_max_bs</span></code></p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>Disabling one plane leaves the other two active.</p>
+<p>To disable only the prefill graph while keeping decode and encoder CUDA Graphs
+enabled, override the ASR stage:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">config_cls</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">WhisperASRPipelineConfig</span>
+<span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">whisper</span>
+<span class="nt">model_path</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai/whisper-large-v3</span>
+
+<span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">asr</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">engine</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">cuda_graph_backend_prefill</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">disabled</span>
+</pre></div>
+</div>
 </section>
 <section id="prefill-coalescing">
 <h2>Prefill Coalescing<a class="headerlink" href="#prefill-coalescing" title="Link to this heading">#</a></h2>
@@ -1064,6 +1125,7 @@ contain Whisper special tokens.</p></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#encoder-cuda-graph">Encoder CUDA Graph</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#breakable-prefill-cuda-graph">Breakable Prefill CUDA Graph</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prefill-coalescing">Prefill Coalescing</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#async-decode">Async Decode</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#transcribe-audio">Transcribe Audio</a></li>
