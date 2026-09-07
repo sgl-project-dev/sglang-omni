@@ -41,6 +41,9 @@ futures-util = { version = "=0.3.32", default-features = false, features = ["sin
 [target.'cfg(unix)'.dependencies]
 rlimit = { version = "=0.11.0", default-features = false }
 
+[dev-dependencies]
+tokio = { version = "=1.51.4", default-features = false, features = ["test-util"] }
+
 [lints.rust]
 unreachable_pub = "deny"
 unsafe_code = "forbid"
