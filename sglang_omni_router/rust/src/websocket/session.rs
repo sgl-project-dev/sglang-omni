@@ -18,6 +18,7 @@ use crate::metrics::{RouterMetrics, WebsocketPhase, WebsocketProtocol, Websocket
 use crate::worker_pool::{AdmissionLease, RequestLease};
 
 use super::upstream::UpstreamSocket;
+use super::{ReceiveFailure, downstream_receive_failure, upstream_receive_failure};
 
 type DownstreamSink = SplitSink<WebSocket, DownstreamMessage>;
 type DownstreamStream = SplitStream<WebSocket>;
@@ -168,8 +169,8 @@ pub(super) struct SessionSupervisor {
 enum RelayTerminal {
     ClientClose(Option<DownstreamClose>),
     WorkerClose(Option<UpstreamClose>),
-    ClientGone,
-    WorkerGone,
+    ClientFailure(ReceiveFailure),
+    WorkerFailure(ReceiveFailure),
     ClientViolation {
         code: CloseCode,
         reason: &'static str,
@@ -191,8 +192,18 @@ impl RelayTerminal {
         match self {
             Self::ClientClose(_) => WebsocketTermination::ClientClose,
             Self::WorkerClose(_) => WebsocketTermination::WorkerClose,
-            Self::ClientGone => WebsocketTermination::ClientDisconnect,
-            Self::WorkerGone => WebsocketTermination::WorkerDisconnect,
+            Self::ClientFailure(ReceiveFailure::Disconnect) => {
+                WebsocketTermination::ClientDisconnect
+            }
+            Self::ClientFailure(ReceiveFailure::Protocol) => {
+                WebsocketTermination::ClientProtocolError
+            }
+            Self::WorkerFailure(ReceiveFailure::Disconnect) => {
+                WebsocketTermination::WorkerDisconnect
+            }
+            Self::WorkerFailure(ReceiveFailure::Protocol) => {
+                WebsocketTermination::WorkerProtocolError
+            }
             Self::ClientViolation { .. } => WebsocketTermination::ClientProtocolError,
             Self::WorkerViolation { .. } => WebsocketTermination::WorkerProtocolError,
             Self::Draining => WebsocketTermination::Draining,
@@ -533,10 +544,10 @@ impl SessionSupervisor {
                 )
                 .await;
             }
-            RelayTerminal::ClientGone => {
+            RelayTerminal::ClientFailure(_) => {
                 close_upstream(downstream, upstream, policy.close_timeout(), drain).await;
             }
-            RelayTerminal::WorkerGone => {
+            RelayTerminal::WorkerFailure(_) => {
                 self.lease.request_immediate_probe();
                 close_downstream(
                     downstream,
@@ -640,13 +651,13 @@ async fn forward_client_message(
                 .send(UpstreamMessage::Text(text))
                 .await
                 .err()
-                .map(|_| RelayTerminal::WorkerGone)
+                .map(|_| RelayTerminal::WorkerFailure(ReceiveFailure::Disconnect))
         }
         Some(Ok(DownstreamMessage::Binary(bytes))) if protocol.accepts_client_binary() => upstream
             .send(UpstreamMessage::Binary(bytes))
             .await
             .err()
-            .map(|_| RelayTerminal::WorkerGone),
+            .map(|_| RelayTerminal::WorkerFailure(ReceiveFailure::Disconnect)),
         Some(Ok(DownstreamMessage::Binary(_))) => Some(RelayTerminal::ClientViolation {
             code: 1003,
             reason: "binary messages are unsupported",
@@ -659,7 +670,10 @@ async fn forward_client_message(
                 reason: "message too large",
             })
         }
-        Some(Err(_)) | None => Some(RelayTerminal::ClientGone),
+        Some(Err(error)) => Some(RelayTerminal::ClientFailure(downstream_receive_failure(
+            &error,
+        ))),
+        None => Some(RelayTerminal::ClientFailure(ReceiveFailure::Disconnect)),
     }
 }
 
@@ -682,7 +696,7 @@ async fn worker_to_client(
                     .await
                     .is_err()
                 {
-                    return RelayTerminal::ClientGone;
+                    return RelayTerminal::ClientFailure(ReceiveFailure::Disconnect);
                 }
             }
             Some(Ok(UpstreamMessage::Binary(bytes))) if protocol.accepts_worker_binary() => {
@@ -691,7 +705,7 @@ async fn worker_to_client(
                     .await
                     .is_err()
                 {
-                    return RelayTerminal::ClientGone;
+                    return RelayTerminal::ClientFailure(ReceiveFailure::Disconnect);
                 }
             }
             Some(Ok(UpstreamMessage::Binary(_))) => {
@@ -706,7 +720,10 @@ async fn worker_to_client(
             Some(Ok(
                 UpstreamMessage::Ping(_) | UpstreamMessage::Pong(_) | UpstreamMessage::Frame(_),
             )) => {}
-            Some(Err(_)) | None => return RelayTerminal::WorkerGone,
+            Some(Err(error)) => {
+                return RelayTerminal::WorkerFailure(upstream_receive_failure(&error));
+            }
+            None => return RelayTerminal::WorkerFailure(ReceiveFailure::Disconnect),
         }
     }
 }

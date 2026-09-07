@@ -19,6 +19,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::{Mutex, Notify};
 use tokio_tungstenite::connect_async;
+use tokio_tungstenite::tungstenite::Error as WebSocketError;
 use tokio_tungstenite::tungstenite::Message as ClientMessage;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
@@ -750,7 +751,29 @@ async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() 
     tokio::time::timeout(Duration::from_secs(2), state.realtime_control.notified())
         .await
         .expect("client-to-worker direction remains live under downstream backpressure");
+    let saturated = connect_async(format!("ws://{router_address}/v1/realtime"))
+        .await
+        .expect_err("second realtime session is rejected before upgrade");
+    assert!(
+        matches!(saturated, WebSocketError::Http(response) if response.status() == StatusCode::TOO_MANY_REQUESTS)
+    );
+    wait_metrics(
+        router_address,
+        &[
+            "sglang_omni_router_http_response_headers_total{route=\"realtime_websocket\",status=\"4xx\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"setup\",reason=\"dispatch_error\"} 0\n",
+        ],
+    )
+    .await;
     drop(flood_client);
+    wait_metrics(
+        router_address,
+        &[
+            "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"relay\",reason=\"client_close\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"relay\",reason=\"client_disconnect\"} 1\n",
+        ],
+    )
+    .await;
 
     #[cfg(unix)]
     {

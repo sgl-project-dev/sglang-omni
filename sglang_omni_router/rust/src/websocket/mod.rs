@@ -13,8 +13,8 @@ use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer as _};
 use tokio::sync::watch;
 use tokio::time::Instant;
-use tokio_tungstenite::tungstenite::Message as UpstreamMessage;
 use tokio_tungstenite::tungstenite::error::CapacityError;
+use tokio_tungstenite::tungstenite::{Error as UpstreamError, Message as UpstreamMessage};
 
 use crate::classification::ClassificationExecutor;
 use crate::config::{Config, WebsocketConfig};
@@ -677,7 +677,11 @@ fn finish_setup_termination(
 fn worker_setup_termination(event: &WorkerEvent) -> WebsocketTermination {
     match event {
         Some(Ok(UpstreamMessage::Close(_))) => WebsocketTermination::WorkerClose,
-        Some(Err(_)) | None => WebsocketTermination::WorkerDisconnect,
+        Some(Err(error)) => match upstream_receive_failure(error) {
+            ReceiveFailure::Disconnect => WebsocketTermination::WorkerDisconnect,
+            ReceiveFailure::Protocol => WebsocketTermination::WorkerProtocolError,
+        },
+        None => WebsocketTermination::WorkerDisconnect,
         Some(Ok(_)) => WebsocketTermination::WorkerProtocolError,
     }
 }
@@ -831,7 +835,16 @@ async fn receive_speech_config(
                     termination: WebsocketTermination::ClientProtocolError,
                 });
             }
-            Some(Err(_)) | None => {
+            Some(Err(error)) => {
+                return Err(SpeechConfigFailure {
+                    close: close_message(1008, "invalid session.config"),
+                    termination: match downstream_receive_failure(&error) {
+                        ReceiveFailure::Disconnect => WebsocketTermination::ClientDisconnect,
+                        ReceiveFailure::Protocol => WebsocketTermination::ClientProtocolError,
+                    },
+                });
+            }
+            None => {
                 return Err(SpeechConfigFailure {
                     close: close_message(1008, "invalid session.config"),
                     termination: WebsocketTermination::ClientDisconnect,
@@ -839,6 +852,36 @@ async fn receive_speech_config(
             }
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReceiveFailure {
+    Disconnect,
+    Protocol,
+}
+
+fn upstream_receive_failure(error: &UpstreamError) -> ReceiveFailure {
+    match error {
+        UpstreamError::Capacity(_)
+        | UpstreamError::Protocol(_)
+        | UpstreamError::Utf8(_)
+        | UpstreamError::AttackAttempt => ReceiveFailure::Protocol,
+        UpstreamError::ConnectionClosed
+        | UpstreamError::AlreadyClosed
+        | UpstreamError::Io(_)
+        | UpstreamError::Tls(_)
+        | UpstreamError::WriteBufferFull(_)
+        | UpstreamError::Url(_)
+        | UpstreamError::Http(_)
+        | UpstreamError::HttpFormat(_) => ReceiveFailure::Disconnect,
+    }
+}
+
+fn downstream_receive_failure(error: &axum::Error) -> ReceiveFailure {
+    error
+        .source()
+        .and_then(|source| source.downcast_ref::<UpstreamError>())
+        .map_or(ReceiveFailure::Disconnect, upstream_receive_failure)
 }
 
 fn websocket_message_too_large(error: &axum::Error) -> bool {
@@ -1153,10 +1196,13 @@ fn is_speech_setup_event(bytes: &[u8]) -> bool {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::io;
     use std::time::Duration;
 
     use axum::http::Uri;
     use tokio::sync::watch;
+    use tokio_tungstenite::tungstenite::Error as UpstreamError;
+    use tokio_tungstenite::tungstenite::error::ProtocolError;
 
     use crate::classification::ClassificationExecutor;
     use crate::error::HttpFault;
@@ -1167,10 +1213,36 @@ mod tests {
     };
 
     use super::{
-        DrainState, EventKind, MAX_MESSAGE_BYTES, is_speech_setup_event, parse_event_kind,
-        parse_speech_config, realtime_model, reference_forms, setup_while_serving,
-        speech_requirement, websocket_message_too_large,
+        DrainState, EventKind, MAX_MESSAGE_BYTES, ReceiveFailure, downstream_receive_failure,
+        is_speech_setup_event, parse_event_kind, parse_speech_config, realtime_model,
+        reference_forms, setup_while_serving, speech_requirement, upstream_receive_failure,
+        websocket_message_too_large,
     };
+
+    #[test]
+    fn receive_failures_distinguish_protocol_errors_from_disconnects() {
+        let protocol = UpstreamError::Protocol(ProtocolError::ResetWithoutClosingHandshake);
+        let disconnect = UpstreamError::Io(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "connection reset",
+        ));
+        assert_eq!(
+            upstream_receive_failure(&protocol),
+            ReceiveFailure::Protocol
+        );
+        assert_eq!(
+            upstream_receive_failure(&disconnect),
+            ReceiveFailure::Disconnect
+        );
+        assert_eq!(
+            downstream_receive_failure(&axum::Error::new(protocol)),
+            ReceiveFailure::Protocol
+        );
+        assert_eq!(
+            downstream_receive_failure(&axum::Error::new(disconnect)),
+            ReceiveFailure::Disconnect
+        );
+    }
 
     #[tokio::test]
     async fn speech_setup_deadline_bounds_blocking_classification() {
