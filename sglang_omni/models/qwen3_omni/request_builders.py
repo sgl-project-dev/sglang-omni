@@ -1051,6 +1051,7 @@ def make_talker_scheduler_adapters(
     user_token_id: int = 872,
     assistant_token_id: int = 77091,
     speaker_map: dict[str, int] | None = None,
+    assistant_projection_cache_size: int = 0,
 ):
     """Build model-specific StagePayload <-> scheduler adapters for talker."""
     prefill_builder = TalkerPrefillBuilder(
@@ -1073,6 +1074,7 @@ def make_talker_scheduler_adapters(
         codec_think_eos_id=codec_think_eos_id,
         codec_pad_id=codec_pad_id,
         speaker_map=speaker_map,
+        assistant_projection_cache_size=assistant_projection_cache_size,
     )
 
     def _resolve_talker_sampling_config(params: dict[str, Any]) -> dict[str, Any]:

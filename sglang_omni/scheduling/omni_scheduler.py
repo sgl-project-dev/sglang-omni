@@ -500,6 +500,9 @@ class OmniScheduler:
         self._prefill_start_done: set[str] = set()
         self._prefill_end_done: set[str] = set()
 
+    def is_request_aborted(self, request_id: str) -> bool:
+        return request_id in self._aborted_request_ids
+
     def bind_model_runner(self, model_runner: Any) -> None:
         """Attach a custom runner and its SGLang execution-contract bridge.
 
@@ -1500,17 +1503,12 @@ class OmniScheduler:
         live batch carries no token side channel under the upstream FutureMap
         contract.
         """
-        from sglang.srt.managers.scheduler import GenerationBatchResult
-
         mr_output = self._model_runner.execute_resolve(pending_step)
         if mr_output is None:
             return _FAILED_BATCH_RESULT
         self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
-        return GenerationBatchResult(
-            logits_output=None,
-            next_token_ids=mr_output.next_token_ids,
-            can_run_cuda_graph=mr_output.can_run_cuda_graph,
-        )
+        # Note (wenyao): retain pinned host IDs instead of waiting behind launch N+1.
+        return self._make_batch_result(mr_output)
 
     def _handle_batch_failure(self, batch: Any, error: Exception) -> None:
         reqs = list(batch.reqs)
@@ -2363,25 +2361,36 @@ class OmniScheduler:
         """
         # A request retracted at step S is still in step S+1's lagged batch;
         # drop it like a prior-step finish so its KV is not re-freed.
-        pre_finished = [r.finished() or r.is_retracted for r in batch.reqs]
+        reqs = batch.reqs
+        pre_finished = [r.finished() or r.is_retracted for r in reqs]
         # rids finished/retracted in a prior step (overrun): suppress their emit
-        skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
+        skip_rids = {reqs[i].rid for i, was in enumerate(pre_finished) if was}
+        keep = [i for i, was_finished in enumerate(pre_finished) if not was_finished]
+        token_rows = keep
+        launched_count = len(sched_output.requests)
+        if len(reqs) != launched_count:
+            # Note (wenyao): Aborts shrink the pending batch while tokens keep launch
+            # order; remapping prevents survivors from receiving aborted requests' tokens.
+            launch_rows = {
+                request.request_id: i for i, request in enumerate(sched_output.requests)
+            }
+            token_rows = [launch_rows[reqs[i].rid] for i in keep]
+            skip_rids.update(launch_rows.keys() - {req.rid for req in reqs})
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
         )
         if result is _FAILED_BATCH_RESULT:
             return
-        keep = [i for i, was_finished in enumerate(pre_finished) if not was_finished]
-        if len(keep) < len(batch.reqs):
-            if result.next_token_ids is not None and keep:
-                idx = torch.tensor(keep, device=result.next_token_ids.device)
+        if len(keep) < launched_count:
+            if result.next_token_ids is not None and token_rows:
+                idx = torch.tensor(token_rows, device=result.next_token_ids.device)
                 result.next_token_ids = result.next_token_ids[idx]
             # Drop overrun reqs from the batch. NOT filter_batch(): batch is a
             # ScheduleBatch.copy() which omits seq_lens (it carries only the
             # fields process_batch_result needs). process_batch_result_decode
             # zips batch.reqs with next_token_ids and uses Req attributes (not
             # positional batch tensors), so trimming reqs in lockstep suffices.
-            batch.reqs = [batch.reqs[i] for i in keep]
+            batch.reqs = [reqs[i] for i in keep]
         if batch.reqs:
             self.process_batch_result(batch, result)
 
@@ -2511,14 +2520,11 @@ class OmniScheduler:
                 time.sleep(0.001)
                 continue
 
-            if (
-                self._async_pending is not None
-                and self.is_mixed_chunk
-                and (
-                    self.chunked_req is not None
-                    or (self.waiting_queue and not self.running_batch.batch_is_full)
-                )
+            if self._async_pending is not None and (
+                self.chunked_req is not None
+                or (self.waiting_queue and not self.running_batch.batch_is_full)
             ):
+                # Note (wenyao): pending decode must not starve non-mixed prefill admission.
                 self._resolve_pending_async()
 
             batch = self.get_next_batch_to_run()

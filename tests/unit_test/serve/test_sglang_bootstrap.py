@@ -70,8 +70,10 @@ def test_runtime_configuration_reports_explicit_phase_backends(
     )
 
 
+@pytest.mark.parametrize("deferred", [False, True])
 def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     monkeypatch,
+    deferred: bool,
 ) -> None:
     events: list[str] = []
     monkeypatch.setattr(
@@ -123,16 +125,30 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
         chunked_prefill_size=8,
         max_prefill_tokens=16,
     )
-    infrastructure = bootstrap.create_sglang_infrastructure(server_args, 0)
 
-    assert events == [
+    def model_post_load_hook(model) -> None:
+        assert model is FakeRunner.model
+        events.append("model_post_load_hook")
+
+    infrastructure = bootstrap.create_sglang_infrastructure(
+        server_args,
+        0,
+        defer_cuda_graph_capture=deferred,
+        model_post_load_hook=model_post_load_hook,
+    )
+
+    expected_events = [
         "runtime_configuration",
         "model_worker",
         "alloc_memory_pool",
         "init_attention_backends",
-        "init_cuda_graphs",
-        "get_memory_pool",
+        "model_post_load_hook",
     ]
+    if not deferred:
+        expected_events.append("init_cuda_graphs")
+    expected_events.append("get_memory_pool")
+
+    assert events == expected_events
     assert infrastructure[0].model_runner.model is FakeRunner.model
 
 

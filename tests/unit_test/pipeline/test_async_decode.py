@@ -853,7 +853,7 @@ def test_custom_logit_processor_transitions_async_sync_async():
     ),
     [
         pytest.param(True, False, "waiting", False, id="mixed-waiting-prefill"),
-        pytest.param(False, False, "waiting", True, id="non-mixed-prefill"),
+        pytest.param(False, False, "waiting", False, id="non-mixed-prefill"),
         pytest.param(True, True, "chunked", False, id="mixed-chunked-prefill"),
     ],
 )

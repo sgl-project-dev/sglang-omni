@@ -100,6 +100,8 @@ tests/
     │   ├── test_sglang_ar_budget.py
     │   ├── test_streaming.py
     │   ├── test_talker.py
+    │   ├── test_talker_assistant_projection_cache.py
+    │   ├── test_talker_prefill_coalesce_port.py
     │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
     │   ├── test_talker_feedback_write.py
@@ -209,6 +211,7 @@ tests/
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
     │   ├── test_openai_api.py
+    │   ├── test_sglang_bootstrap.py
     │   ├── test_speech_to_text.py
     │   ├── test_subtitles.py
     │   ├── test_transcription_chunking.py
@@ -606,6 +609,23 @@ that happened to contain an older version of the test.
     `_rollback_decode_prep_after_skip` idempotency contract, projected prefill
     tensor storage/slicing, decode feedback/text FIFO consumption, and replay
     of generated-token input embeds after decode retract
+  - `test_talker_assistant_projection_cache.py`: bounded LRU reuse,
+    weight/loader/context invalidation, queued-row ownership, and
+    cross-stream recomputation. CPU cases use synthetic weights; CUDA
+    BF16 cases are marked `accelerator`. Run the hardware cases with:
+
+    ```bash
+    pytest tests/unit_test/qwen3_omni/test_talker_assistant_projection_cache.py -m accelerator -q
+    ```
+  - `test_talker_prefill_coalesce_port.py`: CPU admission thresholds,
+    FIFO/deadline preservation, abort and partial-admission behavior,
+    idle/chunked-prefill bypass, and scheduler/bootstrap option wiring.
+  - Talker lookahead row ownership, stale/aborted/retracted row rejection,
+    feedback timing, staged token preservation, and seeded-history
+    eligibility (`test_talker_row_ownership.py`, `test_talker.py`).
+    Nonzero minimum-token constraints keep the synchronous path.
+    Predictor scratch tests check default-off behavior, immutable
+    configuration, graph ownership, and parity with poisoned unused rows.
   - Code2Wav streaming/cleanup behavior plus bounded batching deadlines,
     fire rules, sub-batch decomposition, output equivalence, and lifecycle
   - Code2Wav CUDA Graph lifecycle, exact-shape replay, atomic rollback, memory

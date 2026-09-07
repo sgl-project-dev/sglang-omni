@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from typing import Any
 
 from sglang_omni.models.qwen3_omni.config import MIN_PARTIAL_START_CHUNKS
+from sglang_omni.profiler.event_recorder import emit as _emit_event
+from sglang_omni.profiler.event_recorder import get_recorder as _get_event_recorder
 from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -39,6 +42,10 @@ def configure_talker_server_args(
 class QwenTalkerScheduler(OmniScheduler):
     """Talker scheduler with Qwen-specific request and decode readiness."""
 
+    _chunk_wait_steps: int = 0
+    _critical_gate_episode: dict[str, Any] | None = None
+    _critical_gate_id: int = 0
+
     def __init__(
         self,
         *args: Any,
@@ -56,6 +63,99 @@ class QwenTalkerScheduler(OmniScheduler):
         self._enable_partial_start = bool(enable_partial_start)
         self._partial_start_min_chunks = int(partial_start_min_chunks)
         self._im_end_token_id = im_end_token_id
+
+    def get_new_batch_prefill(self, running_batch):
+        plan = super().get_new_batch_prefill(running_batch)
+        if plan.batch_to_run is not None and plan.batch_to_run.forward_mode.is_extend():
+            histogram = getattr(self, "_prefill_batch_histogram", None)
+            if histogram is None:
+                histogram = self._prefill_batch_histogram = {}
+            size = len(plan.batch_to_run.reqs)
+            histogram[size] = histogram.get(size, 0) + 1
+        return plan
+
+    def _admin_model_info(self):
+        response = super()._admin_model_info()
+        response["data"]["talker_prefill_batching"] = {
+            "target_requests": self.prefill_coalesce_requests,
+            "max_wait_ms": self.prefill_coalesce_wait_s * 1000,
+            "when_idle": self.prefill_coalesce_when_idle,
+            # Note (wenyao): MessagePack's strict map keys reject integer histogram keys.
+            "batch_histogram": {
+                str(size): count
+                for size, count in getattr(self, "_prefill_batch_histogram", {}).items()
+            },
+        }
+        return response
+
+    def _profile_decode_gate(self, batch: Any, *, blocked: bool) -> None:
+        # Note (wenyao): Per-poll profiling repeats the same blocked state,
+        # so each wait episode records only its boundary events.
+        run_id = _get_event_recorder().active_run_id()
+        episode = self._critical_gate_episode
+        if episode is not None and episode["run_id"] != run_id:
+            self._critical_gate_episode = episode = None
+        if blocked:
+            if episode is not None:
+                return
+            request_ids = []
+            missing_feedback = []
+            missing_text = []
+            ready_count = 0
+            for req in batch.reqs:
+                rid = getattr(req, "rid", None)
+                request_ids.append(rid)
+                data = getattr(req, "_omni_data", None)
+                feedback = getattr(data, "pending_feedback_queue", None)
+                text = getattr(data, "pending_text_queue", None)
+                feedback_ready = feedback is not None and len(feedback) > 0
+                text_ready = (text is not None and len(text) > 0) or (
+                    getattr(data, "thinker_chunks_done", False)
+                    and getattr(data, "tts_pad_embed", None) is not None
+                )
+                if not feedback_ready:
+                    missing_feedback.append(rid)
+                if not text_ready:
+                    missing_text.append(rid)
+                ready_count += int(feedback_ready and text_ready)
+            self._critical_gate_id += 1
+            metadata = {
+                "gate_id": self._critical_gate_id,
+                "participant_request_ids": request_ids,
+                "missing_feedback_request_ids": missing_feedback,
+                "missing_text_request_ids": missing_text,
+                "ready_count": ready_count,
+                "batch_size": len(request_ids),
+            }
+            episode = {
+                "run_id": run_id,
+                "start_ns": time.perf_counter_ns(),
+                "wait_steps": self._chunk_wait_steps,
+                "metadata": metadata,
+            }
+            self._critical_gate_episode = episode
+            _emit_event(
+                request_id=request_ids[0] if request_ids else "",
+                stage=None,
+                event_name="talker_decode_gate_blocked",
+                metadata=metadata,
+            )
+        elif episode is not None:
+            self._critical_gate_episode = None
+            metadata = episode["metadata"]
+            _emit_event(
+                request_id=(metadata["participant_request_ids"] or [""])[0],
+                stage=None,
+                event_name="talker_decode_gate_released",
+                metadata={
+                    **metadata,
+                    "elapsed_wall_ns": time.perf_counter_ns() - episode["start_ns"],
+                    "deferred_steps": self._chunk_wait_steps - episode["wait_steps"],
+                    "releasing_request_ids": [
+                        getattr(req, "rid", None) for req in batch.reqs
+                    ],
+                },
+            )
 
     def _count_usable_prefetched_chunks(self, prefetched: list[Any]) -> int:
         im_end = self._im_end_token_id
@@ -99,12 +199,16 @@ class QwenTalkerScheduler(OmniScheduler):
             and batch.forward_mode.is_decode()
             and self._model_runner is not None
             and hasattr(self._model_runner, "is_decode_batch_ready")
-            and not self._model_runner.is_decode_batch_ready(batch)
         ):
-            logger.debug(
-                "Deferring decode batch until talker feedback/text input is ready"
-            )
-            return False
+            ready = self._model_runner.is_decode_batch_ready(batch)
+            if _get_event_recorder().is_active():
+                self._profile_decode_gate(batch, blocked=not ready)
+            if not ready:
+                self._chunk_wait_steps += 1
+                logger.debug(
+                    "Deferring decode batch until talker feedback/text input is ready"
+                )
+                return False
         return True
 
     def get_next_batch_to_run(self) -> Any | None:

@@ -8,6 +8,8 @@ This module mirrors HF's talker prefill layout, then keeps HF's
 from __future__ import annotations
 
 import json
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -151,6 +153,7 @@ class TalkerPrefillBuilder:
         codec_think_eos_id: int,
         codec_pad_id: int,
         speaker_map: dict[str, int] | None = None,
+        assistant_projection_cache_size: int = 0,
     ) -> None:
         self._model = model
         model_dir = Path(model_path)
@@ -188,6 +191,18 @@ class TalkerPrefillBuilder:
         self._tts_special_cache: (
             tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None
         ) = None
+        if (
+            isinstance(assistant_projection_cache_size, bool)
+            or not isinstance(assistant_projection_cache_size, int)
+            or assistant_projection_cache_size < 0
+        ):
+            raise ValueError(
+                "assistant_projection_cache_size must be a nonnegative integer"
+            )
+        self._assistant_projection_cache_size = assistant_projection_cache_size
+        self._assistant_projection_cache: OrderedDict[int, torch.Tensor] = OrderedDict()
+        self._assistant_projection_cache_context: tuple | None = None
+        self._assistant_projection_cache_thread: int | None = None
 
     def build_prompt_prefill(
         self,
@@ -289,6 +304,17 @@ class TalkerPrefillBuilder:
     def project_assistant_chunk(self, chunk: Any) -> torch.Tensor:
         metadata = chunk.metadata or {}
         token_id = metadata.get("token_id")
+        cache_enabled = (
+            token_id is not None
+            and self._assistant_projection_cache_size > 0
+            and self._prepare_assistant_projection_cache()
+        )
+        if cache_enabled:
+            token_id = int(token_id)
+            cached = self._assistant_projection_cache.get(token_id)
+            if cached is not None:
+                self._assistant_projection_cache.move_to_end(token_id)
+                return cached
         if token_id is not None:
             chunk_tensor = self._load_prompt_token_embeddings(
                 torch.tensor([int(token_id)], dtype=torch.long)
@@ -298,7 +324,67 @@ class TalkerPrefillBuilder:
                 device=self._device, dtype=self._dtype
             ).unsqueeze(0)
         projected = self._model.text_projection(chunk_tensor)
-        return projected[0].detach()
+        row = projected[0].detach()
+        if cache_enabled:
+            # Note (wenyao): Queue views/copies and out-of-place feedback leave cached rows
+            # immutable and separate from CUDA-graph outputs; keep the single-row miss path.
+            self._assistant_projection_cache[token_id] = row
+            if (
+                len(self._assistant_projection_cache)
+                > self._assistant_projection_cache_size
+            ):
+                self._assistant_projection_cache.popitem(last=False)
+        return row
+
+    def _prepare_assistant_projection_cache(self) -> bool:
+        """Scope reuse to a weight generation and the producer's execution context.
+
+        Streaming chunks normally run on one scheduler thread and CUDA stream.
+        A different thread bypasses this cache; a different stream clears it, so
+        a hit never introduces a cross-stream dependency or allocator lifetime.
+        The method already detaches its result, including with grad enabled.
+        Mode changes still invalidate because they can select different kernels.
+        """
+        thread_id = threading.get_ident()
+        if self._assistant_projection_cache_thread is None:
+            self._assistant_projection_cache_thread = thread_id
+        elif self._assistant_projection_cache_thread != thread_id:
+            return False
+        stream_id = None
+        if self._device.type == "cuda":
+            # Note (wenyao): Captured intermediates can be overwritten on later replay.
+            if torch.cuda.is_current_stream_capturing():
+                return False
+            stream_id = torch.cuda.current_stream(self._device).cuda_stream
+        projection = self._model.text_projection
+        # Note (wenyao): Tensor versions miss .data-based loaders and inference
+        # tensors; the model epoch invalidates projections for those mutations.
+        weights = tuple(
+            (
+                id(value),
+                value.device,
+                value.dtype,
+                None if value.is_inference() else value._version,
+            )
+            for value in (*projection.parameters(), *projection.buffers())
+        )
+        context = (
+            id(self._model),
+            id(projection),
+            getattr(self._model, "_text_projection_cache_epoch", 0),
+            self._device,
+            self._dtype,
+            weights,
+            torch.is_grad_enabled(),
+            torch.is_inference_mode_enabled(),
+            torch.is_autocast_enabled(self._device.type),
+            torch.get_autocast_dtype(self._device.type),
+            stream_id,
+        )
+        if context != self._assistant_projection_cache_context:
+            self._assistant_projection_cache.clear()
+            self._assistant_projection_cache_context = context
+        return True
 
     def build_multimodal_mask(self, token_ids: torch.Tensor) -> torch.Tensor:
         mask = torch.zeros(token_ids.shape[0], dtype=torch.bool, device=self._device)

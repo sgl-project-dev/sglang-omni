@@ -821,6 +821,9 @@ class Qwen3OmniMoeTalkerCodePredictor(nn.Module):
 class Qwen3OmniTalker(nn.Module):
     """Talker: Text-to-Audio generation model."""
 
+    _code_predictor_skip_scratch_writes: bool = False
+    _code_predictor_scratch_configured: bool = False
+
     def __init__(
         self,
         config,
@@ -1043,12 +1046,23 @@ class Qwen3OmniTalker(nn.Module):
             if req.rid != prev_rids[row_idx]:
                 return False
             out_len = len(req.output_ids) if req.output_ids else 0
-            if out_len != prev_lens[row_idx] + 1:
+            expected = prev_lens[row_idx] + 1
+            # Note (wenyao): host output_ids lag one launched step during lookahead.
+            if out_len != expected and not (
+                getattr(self, "_lookahead_prep", False) and out_len == expected - 1
+            ):
                 return False
 
         rep_rows = self._decode_prep_rep_rows
         if rep_rows is not None:
-            self._repetition_mask[rep_rows, self._sampled_token_ids[rep_rows]] = True
+            # Note (wenyao): a Python True scalar forces a blocking pageable upload.
+            true_scalar = getattr(self, "_rep_mask_true_dev", None)
+            if true_scalar is None or true_scalar.device != rep_rows.device:
+                true_scalar = torch.ones((), dtype=torch.bool, device=rep_rows.device)
+                self._rep_mask_true_dev = true_scalar
+            self._repetition_mask.index_put_(
+                (rep_rows, self._sampled_token_ids[rep_rows]), true_scalar
+            )
         for row_idx in range(len(prev_lens)):
             prev_lens[row_idx] += 1
         return True
@@ -1548,6 +1562,17 @@ class Qwen3OmniTalker(nn.Module):
 
         return graph.replay(layer0_codes, talker_hidden)
 
+    def configure_predictor_scratch_writes(self, *, skip_unused: bool = False) -> None:
+        """Bind the predictor scratch behavior once, before graph capture."""
+        if type(skip_unused) is not bool:
+            raise TypeError("code_predictor_skip_scratch_writes must be a bool")
+        if self._code_predictor_scratch_configured or self._predictor_decode_graphs:
+            raise RuntimeError(
+                "Predictor scratch writes must be configured before capture"
+            )
+        self._code_predictor_skip_scratch_writes = skip_unused
+        self._code_predictor_scratch_configured = True
+
     def _code_predictor_forward_incremental_eager(
         self,
         layer0_codes: torch.Tensor,
@@ -1567,7 +1592,9 @@ class Qwen3OmniTalker(nn.Module):
             )
 
         predictor_input = self._predictor_input_buffer[:batch_size]
-        predictor_input.zero_()
+        skip_scratch_writes = self._code_predictor_skip_scratch_writes
+        if not skip_scratch_writes:
+            predictor_input.zero_()
         num_groups = self.config.num_code_groups
         runtime_single_token = seq_len == 1
         if runtime_single_token:
@@ -1624,7 +1651,8 @@ class Qwen3OmniTalker(nn.Module):
                 new_embed = self.code_predictor.model.codec_embedding[layer_idx](
                     next_code
                 ).to(dtype=predictor_input.dtype)
-                predictor_input[:, layer_idx + 2, :] = new_embed[:, 0, :]
+                if not skip_scratch_writes:
+                    predictor_input[:, layer_idx + 2, :] = new_embed[:, 0, :]
                 pos_summed.add_(new_embed[:, 0, :])
                 if layer_idx < num_groups - 2:
                     last_hidden = self._predictor_forward_one_token(
@@ -1752,6 +1780,11 @@ class Qwen3OmniTalker(nn.Module):
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]) -> None:
         """Load weights from HuggingFace checkpoint."""
+        # Note (wenyao): Invalidate before loading so partial failures and .data writes
+        # that bypass tensor versions cannot leave stale projected-token caches.
+        self._text_projection_cache_epoch = (
+            getattr(self, "_text_projection_cache_epoch", 0) + 1
+        )
         from sglang.srt.layers.moe.fused_moe_triton.layer import FusedMoE
 
         params_dict = self._cached_params_dict

@@ -771,7 +771,13 @@ def test_omni_scheduler_resolve_drops_retracted_req() -> None:
     retr = SimpleNamespace(rid="retr", finished=lambda: False, is_retracted=True)
     batch = SimpleNamespace(reqs=[keep, retr])
 
-    scheduler._resolve_and_process(batch, object(), object())
+    sched_output = SimpleNamespace(
+        requests=[
+            SimpleNamespace(request_id="keep"),
+            SimpleNamespace(request_id="retr"),
+        ]
+    )
+    scheduler._resolve_and_process(batch, sched_output, object())
 
     assert captured["skip_rids"] == {"retr"}
     assert captured["reqs"] == ["keep"]

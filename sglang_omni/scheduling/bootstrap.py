@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from sglang_omni.utils.gpu_compat import (
@@ -107,8 +108,13 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
+    model_post_load_hook: Callable[[Any], None] | None = None,
 ):
-    """Create SGLang worker, memory pools, and tree cache."""
+    """Create the worker, pools, and cache.
+
+    The optional model hook runs once after pool/backend initialization and
+    before native warmup can capture model-specific graphs.
+    """
     # ModelRunner.__init__ publishes server_args as the process-wide runtime
     # context; publishing again would silently reconfigure whatever already runs
     # here, so an engine is only built where the context is unpublished. A
@@ -179,6 +185,8 @@ def create_sglang_infrastructure(
     model_runner = model_worker.model_runner
     model_runner.alloc_memory_pool()
     model_runner.init_attention_backends()
+    if model_post_load_hook is not None:
+        model_post_load_hook(model_runner.model)
 
     if not defer_cuda_graph_capture:
         init_sglang_cuda_graphs(model_worker)

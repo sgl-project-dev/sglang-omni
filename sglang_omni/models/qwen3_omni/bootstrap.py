@@ -140,9 +140,18 @@ def create_talker_scheduler(
     total_gpu_memory_fraction: float | None = None,
     enable_partial_start: bool = False,
     partial_start_min_chunks: int = 5,
+    enable_async_decode: bool = False,
+    async_decode_min_batch_size: int = 2,
+    code_predictor_skip_scratch_writes: bool = False,
+    assistant_projection_cache_size: int = 0,
+    prefill_coalesce_requests: int = 0,
+    prefill_coalesce_wait_ms: float = 40.0,
+    prefill_coalesce_when_idle: bool = False,
 ):
     """Create the Qwen talker scheduler."""
     del speech_enabled
+    if type(code_predictor_skip_scratch_writes) is not bool:
+        raise TypeError("code_predictor_skip_scratch_writes must be a bool")
     from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 
     from sglang_omni.models.qwen3_omni.request_builders import (
@@ -179,6 +188,9 @@ def create_talker_scheduler(
         weight_prefix=weight_prefix,
         total_gpu_memory_fraction=total_gpu_memory_fraction,
         defer_cuda_graph_capture=want_cuda_graph,
+        model_post_load_hook=lambda model: model.configure_predictor_scratch_writes(
+            skip_unused=code_predictor_skip_scratch_writes
+        ),
     )
     # Note:(Chenchen Hong) align the talker vocab to the codec vocab: post1 sizes
     # the repetition-penalty orchestrator from model_config.vocab_size (the
@@ -239,9 +251,12 @@ def create_talker_scheduler(
         user_token_id=root_config.user_token_id,
         assistant_token_id=root_config.assistant_token_id,
         speaker_map=talker_config.speaker_id,
+        assistant_projection_cache_size=assistant_projection_cache_size,
     )
 
     scheduler = QwenTalkerScheduler(
+        enable_async_decode=enable_async_decode,
+        async_decode_min_batch_size=async_decode_min_batch_size,
         tp_worker=model_worker,
         tree_cache=tree_cache,
         req_to_token_pool=req_to_token_pool,
@@ -255,12 +270,18 @@ def create_talker_scheduler(
         enable_partial_start=enable_partial_start,
         partial_start_min_chunks=partial_start_min_chunks,
         im_end_token_id=root_config.im_end_token_id,
+        prefill_coalesce_requests=prefill_coalesce_requests,
+        prefill_coalesce_wait_ms=prefill_coalesce_wait_ms,
+        prefill_coalesce_when_idle=prefill_coalesce_when_idle,
     )
 
     model_runner = QwenTalkerModelRunner(
         model_worker,
         output_proc,
         scheduler.outbox,
+        request_is_aborted=(
+            scheduler.is_request_aborted if enable_async_decode else None
+        ),
         feedback_enabled=feedback_enabled,
     )
     scheduler.bind_model_runner(model_runner)
