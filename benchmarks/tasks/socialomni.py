@@ -137,7 +137,7 @@ async def request_chat_completion(
     api_key_env: str | None = None,
     max_attempts: int = 3,
 ) -> RequestResult:
-    """Send one completion with bounded retry and preserved HTTP error text."""
+    """Send a chat completion, retrying transient errors up to max_attempts."""
     request_started = time.perf_counter()
     last = RequestResult(request_id=request_id, error="not attempted")
     for attempt in range(max_attempts):
@@ -362,7 +362,7 @@ async def run_level2_model(
     warmup: int | None = None,
     disable_tqdm: bool = False,
 ) -> tuple[list[dict[str, Any]], list[RequestResult], float]:
-    """Prepare prefixes, then run decision and gold-response cohorts separately."""
+    """Prepare video prefixes, then run decisions and gold-positive responses."""
     records: list[dict[str, Any]] = []
     prepared: list[tuple[SocialOmniLevel2Sample, Path]] = []
     requests: list[RequestResult] = []
@@ -396,7 +396,6 @@ async def run_level2_model(
 
     by_id = {record["sample_id"]: record for record in records}
     measured_wall_s = 0.0
-    # Each phase uses the upstream runner; warmup results never enter records.
     for phase in ("when", "response"):
         cohort = [
             item for item in prepared if phase == "when" or item[0].gold_when == "YES"
@@ -460,7 +459,7 @@ async def run_judges(
     timeout_s: int,
     disable_tqdm: bool = False,
 ) -> tuple[list[RequestResult], list[dict[str, str]]]:
-    """Run one upstream runner per judge, preserving each endpoint's limit."""
+    """Score responses with each judge's configured concurrency limit."""
     by_id = {sample.sample_id: sample for sample in samples}
     eligible = [
         record
@@ -517,7 +516,7 @@ async def run_judges(
                 )
             return result
 
-        # Judges score saved responses; extra warmup calls would spend judge quota.
+        # Disable warmup to avoid duplicate paid judge requests.
         runner = BenchmarkRunner(
             RunConfig(
                 max_concurrency=judge.max_concurrency,

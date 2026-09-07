@@ -296,19 +296,12 @@ at one annotated time, using only the re-encoded audio-video prefix ending at
 that time, and evaluates a generated continuation on gold-positive states.
 Neither model prompt receives the reference transcript or continuation.
 
-This benchmark requires a Qwen3-Omni server that forwards `use_audio_in_video`
-and decodes the video audio track. That server support is a separate model
-change; installing the benchmark alone does not enable it. Run the server in
+The Qwen3-Omni server must support `use_audio_in_video` and decode the video's
+audio track. Run the server in
 text-only mode with a context limit sufficient for the selected videos.
 
-Dataset loading and fixed-prefix media preparation live in `dataset/socialomni.py`;
-request construction and protocol phases live in `tasks/socialomni.py`;
-paper metrics live in `metrics/socialomni.py`; the `eval/` entry point wires
-them together. All model phases use `BenchmarkRunner`, the shared executor
-that handles concurrent requests, warmup, and elapsed-time measurement.
-Judges use one runner per endpoint with their configured concurrency limits.
-SocialOmni enables environment proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`,
-and `NO_PROXY`) through the runner's opt-in `trust_env` setting.
+Model requests use `--max-concurrency`; judge concurrency is configured per
+endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
 
 The public dataset downloader pins Hugging Face revision
 `3b76009b45090eaa54007454c93a831f3cc8e1e6`.
@@ -362,13 +355,13 @@ model phase repeats its first sample once per concurrent worker for warmup;
 `--warmup N` overrides the count and `--warmup 0` disables it. Warmup results
 are discarded by the shared runner. Judges use no warmup to avoid duplicate
 paid scoring requests. Model wall time sums the two measured runner phases
-and excludes media preparation, warmup, and judge scoring; these timings are
-not directly comparable with older runs that included media preparation.
+and excludes media preparation, warmup, and judge scoring.
 Prefix preparation failures stay in the sample records and fixed denominator.
 
 Dataset preparation defaults to `benchmarks/cache/socialomni/`; `--local-dir`
-overrides it. The default prefix cache is `benchmarks/cache/socialomni-prefixes/`, and result
-JSON files go to `benchmarks/results/socialomni/`; both are ignored by Git.
+overrides it. Prefixes are cached in `benchmarks/cache/socialomni-prefixes/`;
+result JSON files go to `benchmarks/results/socialomni/`. All three directories
+are ignored by Git.
 The result records whether the local metadata matches the pinned revision. This
 is a metadata identity check; local media files are validated as samples are
 loaded, but are not hashed in full at startup.

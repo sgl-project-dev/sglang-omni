@@ -13,7 +13,7 @@ SOCIALOMNI_SCORE_BUCKETS = frozenset({0, 25, 50, 75, 100})
 
 
 class JudgeCompletenessError(ValueError):
-    """Raised when a generated response lacks all three fixed judge scores."""
+    """A response has missing or invalid judge scores."""
 
 
 def _ratio(numerator: float, denominator: float) -> float:
