@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import importlib
-import torch
-
 from typing import Any
+
+import torch
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages

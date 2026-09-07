@@ -8,8 +8,8 @@ import logging
 import math
 import os
 from collections import Counter
-from dataclasses import dataclass, field
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
 import torch
