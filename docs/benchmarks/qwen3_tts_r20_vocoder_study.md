@@ -711,3 +711,16 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
   `codec_frame_position` 是可推导的镜像;staging 环深度手工推导自 keep=1;worker 上下文用
   threading.local + getattr;ready event 走 metadata 键而非消息字段;factory 与 scheduler 默认值
   不一致;WARM 图 1..8 全桶捕获中 {1,3,5,6,7}×B4/B8 基本不命中;capture 后逐图 gc/empty_cache。
+
+**第十三轮结果与 PR(2026-09-06 21:50 PT)**:PR sgl-project/sglang-omni#1998 已开(分支
+`qwen3-tts-full-prefill-graph`,基于 main,20 文件 +78/−16),已打 `run-ci`、请默认评审。
+验证(#1997 树,同一 harness):
+- 与"prefill 图关闭"(eager)的输出一致性,61 条 prompt、client seed 7、请求 seed 1234:**首秒音频
+  两种后端对每条 prompt 都 bit 级一致**;整段 PCM 完全相同的比例:贪心 breakable 84% / full 84%,
+  采样 breakable 92% / full 74%——差异都出现在首秒之后的采样平局翻转,说明 full 图的 logits 与
+  eager 的距离比 breakable 略大;质量由 CI 的 TTS stage 2/3(WER、一致性)把关。
+- r20 三 seed,100% 完成:full underrun 0.68 / 0.43 / 0.00%(均值 0.37%)对 breakable 3.24 / 1.64 /
+  2.08%(2.32%);first playable p50 62-63 对 66-67ms,p95 80-84 对 90-96;可闻 TTFA p50 67-70
+  对 78-89ms。r1 首帧 35.6 → 32.1ms。
+- 注意前一轮 "d-default 对 d-pfull" 的对照无效:主机树上 PR 3 的默认已是 full,两臂其实都是 full;
+  本轮改为显式 `breakable` 臂后才是真对照。
