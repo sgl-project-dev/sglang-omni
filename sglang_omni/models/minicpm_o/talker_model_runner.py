@@ -88,30 +88,46 @@ class MiniCPMOTalkerModelRunner(ModelRunner):
             return
         vocab = logits.shape[1]
         device = logits.device
-        rows: list[int] = []
-        toks: list[int] = []
-        alphas: list[float] = []
+        penalized_rows: list[int] = []
+        penalties: list[float] = []
+        windows: list[list[int]] = []
         for row_idx, sched_req in enumerate(requests):
             data = sched_req.data
             penalty = float(data.talker_model_inputs.get("rep_penalty", 1.0))
             if penalty == 1.0:
                 continue
-            window = data.req.output_ids[-REP_PENALTY_WINDOW:]
-            counts: dict[int, int] = {}
-            for tok in window:
-                tok = int(tok)
-                if 0 <= tok < vocab:
-                    counts[tok] = counts.get(tok, 0) + 1
-            for tok, count in counts.items():
-                rows.append(row_idx)
-                toks.append(tok)
-                alphas.append(penalty**count)
-        if not rows:
+            window = [
+                tok
+                for tok in map(int, data.req.output_ids[-REP_PENALTY_WINDOW:])
+                if 0 <= tok < vocab
+            ]
+            if not window:
+                continue
+            penalized_rows.append(row_idx)
+            penalties.append(penalty)
+            windows.append(window)
+        if not penalized_rows:
             return
+        # Vectorized window counting: pad the ragged windows into a dummy bin
+        # at index `vocab` and scatter_add once per batch, instead of building
+        # per-request Python count dicts on the decode hot path.
+        num = len(windows)
+        window_ids = torch.full((num, REP_PENALTY_WINDOW), vocab, dtype=torch.long)
+        for i, window in enumerate(windows):
+            window_ids[i, : len(window)] = torch.tensor(window, dtype=torch.long)
+        window_ids = window_ids.to(device)
+        counts = torch.zeros(num, vocab + 1, dtype=torch.float32, device=device)
+        counts.scatter_add_(
+            1, window_ids, torch.ones_like(window_ids, dtype=torch.float32)
+        )
+        counts = counts[:, :vocab]
+        alphas = (
+            torch.tensor(penalties, dtype=torch.float32, device=device).unsqueeze(1)
+            ** counts
+        )
+        rows_t = torch.tensor(penalized_rows, dtype=torch.long, device=device)
         orig_dtype = logits.dtype
-        rows_t = torch.tensor(rows, dtype=torch.long, device=device)
-        toks_t = torch.tensor(toks, dtype=torch.long, device=device)
-        alphas_t = torch.tensor(alphas, dtype=torch.float32, device=device)
-        scores = logits[rows_t, toks_t].to(torch.float32)
-        scores = torch.where(scores < 0, scores * alphas_t, scores / alphas_t)
-        logits[rows_t, toks_t] = scores.to(orig_dtype)
+        scores = logits[rows_t].to(torch.float32)
+        penalized = torch.where(scores < 0, scores * alphas, scores / alphas)
+        scores = torch.where(counts > 0, penalized, scores)
+        logits[rows_t] = scores.to(orig_dtype)
