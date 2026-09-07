@@ -36,13 +36,22 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
         self._video_token_id = -1
         self._audio_token_id = -1
 
+        # Per-request GPU-side hidden-state accumulators; flushed to CPU once
+        # per request in on_request_finished.
+        self._pending_hidden: dict[str, list[Any]] = {}
+
     # The base ThinkerModelRunner pins both hooks to NULL (qwen3_omni captures
     # hidden states via forward hooks instead). MiniCPM-o's talker consumes the
     # per-step last-layer hidden state through the output processor, so request
-    # capture here. FULL rather than LAST: decode CUDA graphs are captured with
-    # FULL (enable_return_hidden_states) and their can_run gate requires an
-    # exact hidden-mode match; for decode both modes return the same rows, and
-    # post_process_outputs keeps only the last row per request anyway.
+    # capture here. FULL rather than LAST for both phases: with
+    # enable_return_hidden_states the prefill and decode CUDA graphs are
+    # captured with FULL, and their can_run gates require an exact hidden-mode
+    # match — requesting LAST would demote every prefill to eager. For decode
+    # both modes return the same rows, and post_process_outputs keeps only the
+    # last row per request anyway; the prefill-side waste is the FULL
+    # materialization of all prompt positions when only the last is used.
+    # TODO: request LAST for prefill once sglang lets a LAST request replay a
+    # FULL-captured graph (or captures prefill graphs per requested mode).
     def requested_capture_hidden_mode_prefill(
         self, schedule_batch: Any, requests: list
     ) -> Any:
@@ -69,9 +78,14 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
 
         ``_finalize`` merges ``extra`` into ``extra_model_outputs`` with a
         plain ``update``, which would keep only the final step's hidden. The
-        talker needs the whole sequence, so collect each step's vector into
-        ``hidden_states_seq``: entry 0 is the last prompt position (prefill),
-        entry i>0 is the position of output token i-1 (its decode-step input).
+        talker needs the whole sequence, so collect each step's vector: entry
+        0 is the last prompt position (prefill), entry i>0 is the position of
+        output token i-1 (its decode-step input).
+
+        The vectors stay on the GPU here; one stack + copy per request in
+        ``on_request_finished`` replaces a synchronous D2H copy per request
+        per decode step. ``clone()`` is required: the slice aliases the CUDA
+        graph's output buffer, which the next replay overwrites.
         """
         del result
         for sched_req in scheduler_output.requests:
@@ -83,5 +97,19 @@ class MiniCPMOThinkerModelRunner(ThinkerModelRunner):
             if hidden is None:
                 continue
             hidden = hidden.reshape(-1, hidden.shape[-1])[-1]
-            seq = sched_req.data.extra_model_outputs.setdefault("hidden_states_seq", [])
-            seq.append(hidden.detach().to("cpu"))
+            seq = self._pending_hidden.setdefault(sched_req.request_id, [])
+            seq.append(hidden.detach().clone())
+
+    def on_request_finished(self, request_id: str, req_data: Any) -> None:
+        """Flush the request's hidden accumulator with a single D2H copy."""
+        import torch
+
+        seq = self._pending_hidden.pop(request_id, None)
+        if not seq:
+            return
+        stacked = torch.stack(seq).to("cpu")
+        req_data.extra_model_outputs["hidden_states_seq"] = list(stacked.unbind(0))
+
+    def reset_request(self, request_id: str) -> None:
+        """Drop accumulated hidden states on abort (no terminal flush runs)."""
+        self._pending_hidden.pop(request_id, None)
