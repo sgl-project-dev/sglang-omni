@@ -78,10 +78,7 @@ impl DurationHistogram {
 
     fn observe(&self, duration: Duration) {
         let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
-        let index = DURATION_BUCKETS
-            .iter()
-            .position(|bucket| micros <= bucket.upper_micros)
-            .unwrap_or(DURATION_BUCKETS.len());
+        let index = DURATION_BUCKETS.partition_point(|bucket| bucket.upper_micros < micros);
         self.buckets[index].fetch_add(1, Ordering::Relaxed);
         let _updated = self
             .sum_micros
@@ -725,6 +722,20 @@ mod tests {
             HttpRoute::from_path("/unbounded/client/path"),
             HttpRoute::Unknown
         );
+    }
+
+    #[test]
+    fn duration_histogram_uses_inclusive_bounds_and_an_overflow_bucket() {
+        let histogram = super::DurationHistogram::new();
+        histogram.observe(Duration::from_micros(10));
+        histogram.observe(Duration::from_micros(11));
+        histogram.observe(Duration::from_micros(240_000_001));
+
+        let snapshot = histogram.snapshot();
+        assert_eq!(snapshot.buckets[0], 1);
+        assert_eq!(snapshot.buckets[1], 1);
+        assert_eq!(snapshot.buckets[super::DURATION_BUCKETS.len()], 1);
+        assert_eq!(snapshot.count(), 3);
     }
 
     #[test]
