@@ -1730,7 +1730,6 @@ class Qwen3TTSStreamingVocoderScheduler(
                     waveform = (
                         incremental_graphs.decode_slots(gpu_input, incremental.slots)
                         if incremental_graphs is not None
-                        and incremental_graphs.arena_bound
                         else None
                     )
                     if waveform is None:

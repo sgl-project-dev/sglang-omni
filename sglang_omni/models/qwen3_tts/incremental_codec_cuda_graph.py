@@ -14,10 +14,8 @@ from typing import Any, Literal
 
 import torch
 
-from sglang_omni.models.qwen3_tts.incremental_codec import (
-    Qwen3TTSIncrementalCodecState,
-    Qwen3TTSIncrementalDecoder,
-)
+from sglang_omni.models.qwen3_tts.codec_state_arena import Qwen3TTSCodecStateArena
+from sglang_omni.models.qwen3_tts.incremental_codec import Qwen3TTSIncrementalDecoder
 
 logger = logging.getLogger(__name__)
 
@@ -30,27 +28,12 @@ class IncrementalCodecGraphKey:
     batch_bucket: int
 
 
-@dataclass(frozen=True, slots=True)
-class IncrementalCodecGraphResult:
-    """Borrowed outputs from one graph replay.
-
-    The caller must enqueue every state scatter and waveform read before the
-    next replay of the same runner. Only the first ``batch_size`` rows are real;
-    padded rows are never returned.
-    """
-
-    waveform: torch.Tensor
-    state: Qwen3TTSIncrementalCodecState
-
-
 @dataclass(slots=True)
 class _CapturedIncrementalCodecGraph:
     graph: torch.cuda.CUDAGraph
     static_codes: torch.Tensor
-    input_state: Qwen3TTSIncrementalCodecState | None
-    output_state: Qwen3TTSIncrementalCodecState | None
+    static_index: torch.Tensor
     waveform: torch.Tensor
-    static_index: torch.Tensor | None = None
 
 
 @dataclass(slots=True)
@@ -64,113 +47,6 @@ class _CaptureResourceSet:
 
 class _CaptureFailure(RuntimeError):
     pass
-
-
-def _make_output_state_shell(
-    state: Qwen3TTSIncrementalCodecState,
-) -> Qwen3TTSIncrementalCodecState:
-    """Create an output shell that initially references the input tensors."""
-
-    return Qwen3TTSIncrementalCodecState(
-        frame_position=state.frame_position,
-        transformer_context_length=state.transformer_context_length,
-        frame_positions=state.frame_positions,
-        transformer_keys=dict(state.transformer_keys),
-        transformer_values=dict(state.transformer_values),
-        conv_histories=dict(state.conv_histories),
-        transconv_overlaps=dict(state.transconv_overlaps),
-    )
-
-
-def _slice_state_rows(
-    state: Qwen3TTSIncrementalCodecState,
-    rows: int,
-) -> Qwen3TTSIncrementalCodecState:
-    if state.frame_positions is None:
-        raise RuntimeError("incremental Codec graph output is missing frame positions")
-    return Qwen3TTSIncrementalCodecState(
-        frame_position=0,
-        transformer_context_length=state.transformer_context_length,
-        frame_positions=state.frame_positions[:rows],
-        transformer_keys={
-            key: value[:rows] for key, value in state.transformer_keys.items()
-        },
-        transformer_values={
-            key: value[:rows] for key, value in state.transformer_values.items()
-        },
-        conv_histories={
-            key: value[:rows] for key, value in state.conv_histories.items()
-        },
-        transconv_overlaps={
-            key: value[:rows] for key, value in state.transconv_overlaps.items()
-        },
-    )
-
-
-def _copy_tensor_rows(
-    destination: torch.Tensor,
-    source: torch.Tensor,
-    *,
-    rows: int,
-    name: str,
-) -> None:
-    expected = (rows, *destination.shape[1:])
-    if tuple(source.shape) != expected:
-        raise RuntimeError(
-            f"incremental Codec graph expected {expected} for {name}, "
-            f"got {tuple(source.shape)}"
-        )
-    if source.dtype != destination.dtype or source.device != destination.device:
-        raise RuntimeError(
-            f"incremental Codec graph expected {destination.device}/{destination.dtype} "
-            f"for {name}, got {source.device}/{source.dtype}"
-        )
-    destination[:rows].copy_(source)
-    if rows < int(destination.shape[0]):
-        destination[rows:].zero_()
-
-
-def _copy_state_rows(
-    destination: Qwen3TTSIncrementalCodecState,
-    source: Qwen3TTSIncrementalCodecState,
-    *,
-    rows: int,
-) -> None:
-    if destination.frame_positions is None or source.frame_positions is None:
-        raise RuntimeError("incremental Codec graph requires per-row frame positions")
-    _copy_tensor_rows(
-        destination.frame_positions,
-        source.frame_positions,
-        rows=rows,
-        name="frame_positions",
-    )
-
-    mappings = (
-        ("transformer_keys", destination.transformer_keys, source.transformer_keys),
-        (
-            "transformer_values",
-            destination.transformer_values,
-            source.transformer_values,
-        ),
-        ("conv_histories", destination.conv_histories, source.conv_histories),
-        (
-            "transconv_overlaps",
-            destination.transconv_overlaps,
-            source.transconv_overlaps,
-        ),
-    )
-    for label, destination_mapping, source_mapping in mappings:
-        if destination_mapping.keys() != source_mapping.keys():
-            raise RuntimeError(
-                f"incremental Codec graph {label} keys do not match the state spec"
-            )
-        for key, destination_tensor in destination_mapping.items():
-            _copy_tensor_rows(
-                destination_tensor,
-                source_mapping[key],
-                rows=rows,
-                name=f"{label}.{key}",
-            )
 
 
 class Qwen3TTSIncrementalCodecCudaGraphRunner:
@@ -201,7 +77,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         min_free_gb: float = 3.0,
         enabled: bool = True,
         compile_fresh_frames: Sequence[int] = (),
-        arena: Any = None,
+        arena: Qwen3TTSCodecStateArena,
         stream_priority: int = 0,
     ) -> None:
         self._decoder = decoder
@@ -382,19 +258,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             self._warmup_capture_shape(key, static_codes, resources)
             current_stream = torch.cuda.current_stream(self._device)
             compiled = key.fresh_frames in self._compile_fresh_frames
-            if self._arena is not None:
-                static_index = self._scratch_index(key.batch_bucket)
-                input_state = output_state = None
-                resources.keepalives.append(static_index)
-            else:
-                static_index = None
-                input_state = self._decoder.init_state(
-                    key.batch_bucket,
-                    device=self._device,
-                    dtype=self._dtype,
-                )
-                output_state = _make_output_state_shell(input_state)
-                resources.keepalives.extend((input_state, output_state))
+            static_index = self._scratch_index(key.batch_bucket)
+            resources.keepalives.append(static_index)
             graph = torch.cuda.CUDAGraph()
             resources.keepalives.append(graph)
             capture_stream.wait_stream(current_stream)
@@ -408,16 +273,11 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
                         capture_error_mode="thread_local",
                     ),
                 ):
-                    if static_index is not None:
-                        state = self._arena.gather_by_index(static_index)
-                        waveform = self._decoder.decode(
-                            static_codes, state, compiled=compiled
-                        )
-                        self._arena.scatter_by_index(static_index, state)
-                    else:
-                        waveform = self._decoder.decode(
-                            static_codes, output_state, compiled=compiled
-                        )
+                    state = self._arena.gather_by_index(static_index)
+                    waveform = self._decoder.decode(
+                        static_codes, state, compiled=compiled
+                    )
+                    self._arena.scatter_by_index(static_index, state)
             finally:
                 torch.cuda.set_stream(current_stream)
             resources.keepalives.append(waveform)
@@ -426,10 +286,8 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             return _CapturedIncrementalCodecGraph(
                 graph=graph,
                 static_codes=static_codes,
-                input_state=input_state,
-                output_state=output_state,
-                waveform=waveform,
                 static_index=static_index,
+                waveform=waveform,
             )
         except BaseException:
             synchronized = self._retain_capture_resources_if_unsynchronized(resources)
@@ -457,16 +315,9 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         capture_stream.wait_stream(torch.cuda.current_stream(self._device))
         with torch.cuda.stream(capture_stream), torch.inference_mode():
             for _ in range(self._WARMUP_ITERATIONS):
-                if self._arena is not None:
-                    warmup_state = self._arena.gather_by_index(
-                        self._scratch_index(key.batch_bucket)
-                    )
-                else:
-                    warmup_state = self._decoder.init_state(
-                        key.batch_bucket,
-                        device=self._device,
-                        dtype=self._dtype,
-                    )
+                warmup_state = self._arena.gather_by_index(
+                    self._scratch_index(key.batch_bucket)
+                )
                 resources.keepalives.append(warmup_state)
                 self._decoder.decode(
                     static_codes,
@@ -486,7 +337,7 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             return False
         try:
             capture_stream.synchronize()
-        except BaseException:
+        except Exception:
             self._retained_capture_resources.append(resources)
             logger.exception(
                 "Qwen3-TTS incremental Codec capture stream could not be "
@@ -570,65 +421,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             )
         )
 
-    def decode(
-        self,
-        codes: torch.Tensor,
-        state: Qwen3TTSIncrementalCodecState,
-    ) -> IncrementalCodecGraphResult | None:
-        """Replay the smallest captured bucket that fits this cohort."""
-
-        if os.getpid() != self._owner_pid:
-            raise RuntimeError(
-                "Qwen3-TTS incremental Codec graph runner belongs to PID "
-                f"{self._owner_pid}, but was used in PID {os.getpid()}"
-            )
-        if not self._enabled or not self._graphs:
-            self._misses["disabled_or_uncaptured"] += 1
-            return None
-        self._validate_codes(codes)
-        if int(codes.shape[2]) not in self._fresh_frames:
-            self._misses["uncaptured_fresh_frames"] += 1
-            return None
-
-        batch_size = int(codes.shape[0])
-        bucket = next(
-            (
-                size
-                for size in self._batch_sizes
-                if size >= batch_size
-                and IncrementalCodecGraphKey(int(codes.shape[2]), size) in self._graphs
-            ),
-            None,
-        )
-        if bucket is None:
-            self._misses["missing_batch_bucket"] += 1
-            return None
-
-        key = IncrementalCodecGraphKey(int(codes.shape[2]), bucket)
-        entry = self._graphs[key]
-        entry.static_codes[:batch_size].copy_(codes)
-        if batch_size < bucket:
-            entry.static_codes[batch_size:].zero_()
-        _copy_state_rows(entry.input_state, state, rows=batch_size)
-        try:
-            entry.graph.replay()
-        except Exception as exc:
-            self._replay_failures += 1
-            reason = f"runtime_replay_failed: {type(exc).__name__}: {exc}"
-            # Drop the last local graph reference before shared-pool cleanup.
-            entry = None
-            self._disable_runtime(reason)
-            logger.exception(
-                "Qwen3-TTS incremental Codec graph replay disabled the %s runner",
-                self._mode,
-            )
-            raise
-        self._replays += 1
-        return IncrementalCodecGraphResult(
-            waveform=entry.waveform[:batch_size],
-            state=_slice_state_rows(entry.output_state, batch_size),
-        )
-
     def _scratch_index(self, bucket: int) -> torch.Tensor:
         return torch.full(
             (int(bucket),),
@@ -636,10 +428,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             dtype=torch.long,
             device=self._device,
         )
-
-    @property
-    def arena_bound(self) -> bool:
-        return self._arena is not None
 
     def decode_slots(
         self, codes: torch.Tensor, slots: Sequence[int]
@@ -649,8 +437,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         Returns the borrowed waveform rows, or None on a graph miss. Rows past
         the cohort read and write the arena's scratch row.
         """
-        if self._arena is None:
-            raise RuntimeError("decode_slots requires an arena-bound runner")
         if os.getpid() != self._owner_pid:
             raise RuntimeError(
                 "Qwen3-TTS incremental Codec graph runner belongs to PID "
@@ -679,7 +465,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
             self._misses["missing_batch_bucket"] += 1
             return None
         entry = self._graphs[IncrementalCodecGraphKey(int(codes.shape[2]), bucket)]
-        assert entry.static_index is not None
         entry.static_index[:batch_size].copy_(self._arena.stage_index(slots))
         if batch_size < bucket:
             entry.static_index[batch_size:].fill_(int(self._arena.scratch_slot))
@@ -690,7 +475,6 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
         except Exception as exc:
             self._replay_failures += 1
             reason = f"runtime_replay_failed: {type(exc).__name__}: {exc}"
-            entry = None
             self._disable_runtime(reason)
             logger.exception(
                 "Qwen3-TTS incremental Codec graph replay disabled the %s runner",
@@ -791,6 +575,5 @@ class Qwen3TTSIncrementalCodecCudaGraphRunner:
 
 __all__ = [
     "IncrementalCodecGraphKey",
-    "IncrementalCodecGraphResult",
     "Qwen3TTSIncrementalCodecCudaGraphRunner",
 ]
