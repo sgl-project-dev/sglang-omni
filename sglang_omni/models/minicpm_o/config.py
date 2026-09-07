@@ -151,7 +151,9 @@ def _speech_stages() -> list[StageConfig]:
         # The sglang talker is a second engine; it cannot share the thinker's
         # process (one torch tensor-parallel group per process).
         _talker_stage(gpu=0, process="talker"),
-        _code2wav_stage(gpu=0, process="pipeline"),
+        # The CFM flow's 10-step iterative vocode would contend with the
+        # thinker/encoders if run on the pipeline process's event loop.
+        _code2wav_stage(gpu=0, process="code2wav"),
     ]
 
 

@@ -191,33 +191,54 @@ def create_code2wav_executor(
     model_path: str,
     *,
     device: str | None = None,
+    float16: bool = False,
+    max_batch_size: int = 8,
+    max_batch_wait_ms: int = 2,
 ):
     from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
     from sglang_omni.models.minicpm_o.request_builders import TALKER_STAGE
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
     from sglang_omni.utils.audio_payload import audio_waveform_payload
     from sglang_omni.utils.device import resolve_device_spec
 
-    model = MiniCPMOCode2Wav(model_path, device=resolve_device_spec(device))
+    model = MiniCPMOCode2Wav(
+        model_path, device=resolve_device_spec(device), float16=float16
+    )
 
-    def _vocode(payload: StagePayload) -> StagePayload:
-        state = MiniCPMOPipelineState.from_dict(payload.data)
-        talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-        result = model(codec_tokens=talker_out["codec_tokens"])
-        # Terminal payload goes back through msgpack: keep only the audio
-        # fields, no tensors from the pipeline state.
-        payload.data = dict(
-            audio_waveform_payload(
-                result["waveform"],
-                sample_rate=int(result["sample_rate"]),
-                modality="audio",
-                source_hint="MiniCPM-o",
+    class _Vocoder(BatchVocoderBase):
+        def prepare_item(self, payload: StagePayload):
+            state = MiniCPMOPipelineState.from_dict(payload.data)
+            talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
+            return state, talker_out["codec_tokens"]
+
+        async def decode_batch(self, items):
+            # Token2wav's flow.inference is single-sequence; batching merges
+            # scheduling (one event-loop turn per batch) while vocoding
+            # stays sequential, like the fun_cosyvoice3 vocoder.
+            results = []
+            for _, codec_tokens in items:
+                out = model(codec_tokens=codec_tokens)
+                results.append((out["waveform"], int(out["sample_rate"])))
+            return results
+
+        def store_result(self, payload, state, wav, sample_rate):
+            del state
+            # Terminal payload goes back through msgpack: keep only the audio
+            # fields, no tensors from the pipeline state.
+            payload.data = dict(
+                audio_waveform_payload(
+                    wav,
+                    sample_rate=sample_rate,
+                    modality="audio",
+                    source_hint="MiniCPM-o",
+                )
             )
-        )
-        return payload
+            return payload
 
-    return SimpleScheduler(_vocode)
+    return _Vocoder().build_scheduler(
+        max_batch_size=max_batch_size, max_batch_wait_ms=max_batch_wait_ms
+    )
 
 
 def create_decode_executor(model_path: str):
