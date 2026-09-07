@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -38,6 +38,7 @@ struct Worker {
     health_requests: Arc<AtomicUsize>,
     application_requests: Arc<AtomicUsize>,
     captured: Arc<Mutex<Vec<Captured>>>,
+    response_gate: Arc<(Mutex<bool>, Condvar)>,
     thread: Option<JoinHandle<()>>,
     _guard: Rc<MutexGuard<'static, ()>>,
 }
@@ -93,11 +94,13 @@ impl Worker {
         let health_requests = Arc::new(AtomicUsize::new(0));
         let application_requests = Arc::new(AtomicUsize::new(0));
         let captured = Arc::new(Mutex::new(Vec::new()));
+        let response_gate = Arc::new((Mutex::new(false), Condvar::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_healthy = Arc::clone(&healthy);
         let thread_health_requests = Arc::clone(&health_requests);
         let thread_application_requests = Arc::clone(&application_requests);
         let thread_captured = Arc::clone(&captured);
+        let thread_response_gate = Arc::clone(&response_gate);
         let thread = thread::spawn(move || {
             let mut connections = Vec::new();
             while !thread_stop.load(Ordering::Acquire) {
@@ -107,6 +110,7 @@ impl Worker {
                         let healthy = Arc::clone(&thread_healthy);
                         let health_requests = Arc::clone(&thread_health_requests);
                         let application_requests = Arc::clone(&thread_application_requests);
+                        let response_gate = Arc::clone(&thread_response_gate);
                         connections.push(thread::spawn(move || {
                             serve_connection(
                                 stream,
@@ -115,6 +119,7 @@ impl Worker {
                                 health_requests,
                                 application_requests,
                                 behavior,
+                                response_gate,
                             );
                         }));
                     }
@@ -145,6 +150,7 @@ impl Worker {
             health_requests,
             application_requests,
             captured,
+            response_gate,
             thread: Some(thread),
             _guard: guard,
         }
@@ -173,6 +179,14 @@ impl Worker {
         }
     }
 
+    fn release_response(&self) {
+        let (released, changed) = &*self.response_gate;
+        *released
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        changed.notify_all();
+    }
+
     fn set_healthy(&self, healthy: bool) -> usize {
         self.healthy.store(healthy, Ordering::Release);
         self.health_requests.load(Ordering::Acquire)
@@ -192,6 +206,7 @@ impl Worker {
 
 impl Drop for Worker {
     fn drop(&mut self) {
+        self.release_response();
         self.stop.store(true, Ordering::Release);
         let _wake = TcpStream::connect(self.address);
         if let Some(thread) = self.thread.take() {
@@ -221,6 +236,7 @@ fn serve_connection(
     health_requests: Arc<AtomicUsize>,
     application_requests: Arc<AtomicUsize>,
     behavior: WorkerBehavior,
+    response_gate: Arc<(Mutex<bool>, Condvar)>,
 ) {
     stream
         .set_nonblocking(false)
@@ -290,6 +306,14 @@ fn serve_connection(
                 thread::sleep(Duration::from_millis(750));
                 write_response(&mut stream, b"E\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
             }
+            b"controlled-stream" => {
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\nB\r\ndata: one\n\n\r\n",
+                );
+                wait_for_response_release(&response_gate);
+                write_response(&mut stream, b"E\r\ndata: [DONE]\n\n\r\n0\r\n\r\n");
+            }
             b"disconnect-hold" => {
                 write_response(
                     &mut stream,
@@ -300,6 +324,13 @@ fn serve_connection(
             }
             b"timeout" => {
                 thread::sleep(Duration::from_millis(750));
+                write_response(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
+                );
+            }
+            b"controlled-headers" => {
+                wait_for_response_release(&response_gate);
                 write_response(
                     &mut stream,
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}",
@@ -335,6 +366,16 @@ fn serve_connection(
             ),
         }
     }
+}
+
+fn wait_for_response_release(response_gate: &(Mutex<bool>, Condvar)) {
+    let (released, changed) = response_gate;
+    let released = released.lock().expect("lock response gate");
+    let (released, timeout) = changed
+        .wait_timeout_while(released, DEADLINE, |released| !*released)
+        .expect("wait for response release");
+    drop(released);
+    assert!(!timeout.timed_out(), "response release was not signalled");
 }
 
 fn read_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
@@ -835,7 +876,7 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     let router = RouterProcess::start(worker.address, 1, 500, false);
 
     let address = router.address;
-    let slow = thread::spawn(move || post(address, b"slow", Some("slow-id")));
+    let slow = thread::spawn(move || post(address, b"controlled-stream", Some("slow-id")));
     worker.wait_for_requests(1);
     let metrics_deadline = Instant::now() + Duration::from_secs(1);
     loop {
@@ -862,6 +903,7 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     let overloaded = post(router.address, b"{}", None);
     assert_eq!(status(&overloaded), 429);
 
+    worker.release_response();
     let slow_response = slow.join().expect("join slow client");
     assert_eq!(status(&slow_response), 200);
     assert!(slow_response.windows(6).any(|part| part == b"[DONE]"));
@@ -908,7 +950,7 @@ fn client_disconnect_before_response_headers_is_observed_at_the_http_boundary() 
     let mut client = TcpStream::connect(router.address).expect("connect pre-header client");
     client
         .write_all(
-            b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 7\r\nConnection: close\r\n\r\ntimeout",
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 18\r\nConnection: close\r\n\r\ncontrolled-headers",
         )
         .expect("write pre-header request");
     worker.wait_for_application_requests(1);
@@ -931,6 +973,7 @@ fn client_disconnect_before_response_headers_is_observed_at_the_http_boundary() 
         );
         thread::sleep(Duration::from_millis(5));
     }
+    worker.release_response();
 }
 
 #[test]

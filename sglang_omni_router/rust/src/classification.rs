@@ -370,11 +370,11 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn running_timeout_records_one_terminal_outcome() {
         let metrics = RouterMetrics::new();
         let executor = ClassificationExecutor::for_test_with_metrics(1, Arc::clone(&metrics));
-        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(0);
         let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
         let task = tokio::spawn({
             let executor = Arc::clone(&executor);
@@ -392,7 +392,11 @@ mod tests {
                     .await
             }
         });
-        entered_rx.await.expect("classification entered");
+        tokio::task::yield_now().await;
+        entered_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("classification entered");
+        tokio::time::advance(Duration::from_millis(21)).await;
 
         assert_eq!(
             task.await.expect("join classification"),
@@ -405,6 +409,7 @@ mod tests {
             ),
             1
         );
+        tokio::time::resume();
         release_tx.send(()).expect("release classification");
         tokio::time::timeout(Duration::from_secs(1), async {
             while metrics
