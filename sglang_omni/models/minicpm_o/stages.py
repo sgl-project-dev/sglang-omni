@@ -35,15 +35,6 @@ def create_preprocessing_executor(
     return SimpleScheduler(_preprocess)
 
 
-def create_aggregate_executor():
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
-
-    def _identity(payload: StagePayload) -> StagePayload:
-        return payload
-
-    return SimpleScheduler(_identity)
-
-
 ENCODER_CACHE_MAX_ENTRIES = 64
 ENCODER_CACHE_MAX_BYTES = 4 * 1024**3
 

@@ -21,7 +21,6 @@ IMAGE_STAGE = "image_encoder"
 AUDIO_STAGE = "audio_encoder"
 THINKER_STAGE = "thinker"
 DECODE_STAGE = "decode"
-MM_AGGREGATE_STAGE = "mm_aggregate"
 TALKER_STAGE = "talker"
 CODE2WAV_STAGE = "code2wav"
 
@@ -74,11 +73,11 @@ def resolve_preprocessing_next_stages(
     state = MiniCPMOPipelineState.from_dict(output.data)
     return [
         *_encoder_stages_with_model_inputs(state.encoder_inputs),
-        MM_AGGREGATE_STAGE,
+        THINKER_STAGE,
     ]
 
 
-def resolve_mm_aggregate_wait_sources(
+def resolve_thinker_wait_sources(
     request_id: str,
     from_stage: str,
     payload: StagePayload,
@@ -101,7 +100,7 @@ def project_preprocessing_to_audio_encoder(payload: StagePayload) -> StagePayloa
     return _project_preprocessing_to_encoder(payload, stage_name=AUDIO_STAGE)
 
 
-def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload:
+def project_preprocessing_to_thinker(payload: StagePayload) -> StagePayload:
     state = MiniCPMOPipelineState.from_dict(payload.data)
     projected = MiniCPMOPipelineState(
         prompt=dict(state.prompt) if isinstance(state.prompt, dict) else None,
@@ -112,7 +111,7 @@ def project_preprocessing_to_mm_aggregate(payload: StagePayload) -> StagePayload
     return _payload_with_state(payload, projected)
 
 
-def project_encoder_to_mm_aggregate(payload: StagePayload) -> StagePayload:
+def project_encoder_to_thinker(payload: StagePayload) -> StagePayload:
     state = MiniCPMOPipelineState.from_dict(payload.data)
     if len(state.encoder_outs) != 1:
         raise ValueError(
