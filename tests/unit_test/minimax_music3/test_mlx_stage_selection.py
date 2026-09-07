@@ -23,8 +23,12 @@ def test_create_ar_executor_selects_native_mlx(
     observed = {}
 
     class Scheduler:
-        def __init__(self, model_path, *, revision):
-            observed.update(model_path=model_path, revision=revision)
+        def __init__(self, model_path, *, revision, serial_offload):
+            observed.update(
+                model_path=model_path,
+                revision=revision,
+                serial_offload=serial_offload,
+            )
 
     monkeypatch.setitem(
         sys.modules,
@@ -41,7 +45,33 @@ def test_create_ar_executor_selects_native_mlx(
     assert observed == {
         "model_path": "mlx-community/MiniMax-Music3-mxfp8",
         "revision": "revision-a",
+        "serial_offload": False,
     }
+
+
+def test_create_ar_executor_forwards_serial_offload_to_mlx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _select_mlx(monkeypatch)
+    observed = {}
+
+    class Scheduler:
+        def __init__(self, model_path, *, revision, serial_offload):
+            observed.update(
+                model_path=model_path,
+                revision=revision,
+                serial_offload=serial_offload,
+            )
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.minimax_music3.mlx.ar_scheduler",
+        SimpleNamespace(MiniMaxMusic3MlxARScheduler=Scheduler),
+    )
+
+    stages.create_ar_executor("artifact", enable_serial_offload=True)
+
+    assert observed["serial_offload"] is True
 
 
 def test_create_acoustic_executor_selects_native_mlx(
@@ -55,7 +85,9 @@ def test_create_acoustic_executor_selects_native_mlx(
         dit_steps = 4
         dit_cfg_scale = 1.25
 
-        def __init__(self, model_path, *, revision, dit_steps, dit_cfg_scale):
+        def __init__(
+            self, model_path, *, revision, dit_steps, dit_cfg_scale, serial_offload
+        ):
             self.dit_steps = dit_steps
             self.dit_cfg_scale = dit_cfg_scale
             observed.update(
@@ -63,6 +95,7 @@ def test_create_acoustic_executor_selects_native_mlx(
                 revision=revision,
                 dit_steps=dit_steps,
                 dit_cfg_scale=dit_cfg_scale,
+                serial_offload=serial_offload,
             )
 
     monkeypatch.setitem(
@@ -84,7 +117,34 @@ def test_create_acoustic_executor_selects_native_mlx(
         "revision": "revision-b",
         "dit_steps": 4,
         "dit_cfg_scale": 1.25,
+        "serial_offload": False,
     }
+
+
+def test_create_acoustic_executor_forwards_serial_offload_to_mlx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _select_mlx(monkeypatch)
+    observed = {}
+
+    class Decoder:
+        dtype = "bfloat16"
+        dit_steps = 4
+        dit_cfg_scale = 1.25
+
+        def __init__(self, model_path, **kwargs):
+            del model_path
+            observed.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sglang_omni.models.minimax_music3.mlx.acoustic",
+        SimpleNamespace(MiniMaxMusic3MlxAcousticDecoder=Decoder),
+    )
+
+    stages.create_dit_dav_executor("artifact", enable_serial_offload=True)
+
+    assert observed["serial_offload"] is True
 
 
 @pytest.mark.parametrize("option", ["cache_dit", "breakable_cuda_graph"])

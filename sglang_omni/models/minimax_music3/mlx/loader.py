@@ -18,6 +18,8 @@ from .dit import FlowMatchingTransformer
 from .fusion import ConditionEncoder
 from .vocoder import Vocoder
 
+MlxArtifact = tuple[Path, dict[str, Any], ModelConfig]
+
 
 def _make_qwen3(config: ModelConfig) -> Qwen3Model:
     return Qwen3Model(
@@ -116,6 +118,13 @@ def _read_config(model_dir: Path) -> tuple[dict[str, Any], ModelConfig]:
     return raw, config
 
 
+def resolve_mlx_artifact(model_path: str, revision: str | None = None) -> MlxArtifact:
+    """Resolve a revision once and retain its immutable local snapshot path."""
+    model_dir = _resolve_model_directory(model_path, revision)
+    raw_config, config = _read_config(model_dir)
+    return model_dir, raw_config, config
+
+
 def _load_component_weights(
     model_dir: Path,
     prefixes: tuple[str, ...],
@@ -184,9 +193,12 @@ def _load_split_model(
     revision: str | None,
     model_cls: type[nn.Module],
     prefixes: tuple[str, ...],
+    *,
+    artifact: MlxArtifact | None = None,
 ) -> nn.Module:
-    model_dir = _resolve_model_directory(model_path, revision)
-    raw_config, config = _read_config(model_dir)
+    model_dir, raw_config, config = artifact or resolve_mlx_artifact(
+        model_path, revision
+    )
     model = model_cls(config)
     weights = _load_component_weights(model_dir, prefixes)
     _apply_quantization(model, raw_config, weights)
@@ -199,30 +211,38 @@ def _load_split_model(
 def load_mlx_ar_model(
     model_path: str,
     revision: str | None = None,
+    *,
+    artifact: MlxArtifact | None = None,
 ) -> MiniMaxMusic3MlxARModel:
     return _load_split_model(
         model_path,
         revision,
         MiniMaxMusic3MlxARModel,
         ("language_model.", "rvq_depth_decoder."),
+        artifact=artifact,
     )
 
 
 def load_mlx_acoustic_model(
     model_path: str,
     revision: str | None = None,
+    *,
+    artifact: MlxArtifact | None = None,
 ) -> MiniMaxMusic3MlxAcousticModel:
     return _load_split_model(
         model_path,
         revision,
         MiniMaxMusic3MlxAcousticModel,
         ("condition_encoder.", "transformer.", "vocoder."),
+        artifact=artifact,
     )
 
 
 __all__ = [
-    "MiniMaxMusic3MlxARModel",
     "MiniMaxMusic3MlxAcousticModel",
+    "MiniMaxMusic3MlxARModel",
+    "MlxArtifact",
     "load_mlx_acoustic_model",
     "load_mlx_ar_model",
+    "resolve_mlx_artifact",
 ]

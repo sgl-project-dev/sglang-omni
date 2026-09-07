@@ -13,6 +13,44 @@ mx = pytest.importorskip("mlx.core")
 nn = pytest.importorskip("mlx.nn")
 
 
+def _write_tiny_artifact(tmp_path: Path):
+    from mlx.utils import tree_flatten
+
+    from sglang_omni.models.minimax_music3.mlx.config import ModelConfig
+    from sglang_omni.models.minimax_music3.mlx.loader import (
+        MiniMaxMusic3MlxAcousticModel,
+        MiniMaxMusic3MlxARModel,
+    )
+
+    config = ModelConfig.tiny()
+    ar_model = MiniMaxMusic3MlxARModel(config)
+    acoustic_model = MiniMaxMusic3MlxAcousticModel(config)
+    for model in (ar_model, acoustic_model):
+        nn.quantize(
+            model,
+            group_size=32,
+            bits=8,
+            mode="mxfp8",
+            class_predicate=model.model_quant_predicate,
+        )
+    mx.eval(ar_model.parameters(), acoustic_model.parameters())
+    raw_config = config.to_dict()
+    raw_config["architectures"] = ["MiniMaxMusic3ForConditionalGeneration"]
+    raw_config["quantization"] = {
+        "group_size": 32,
+        "bits": 8,
+        "mode": "mxfp8",
+    }
+    (tmp_path / "config.json").write_text(json.dumps(raw_config))
+    weights = dict(
+        tree_flatten(ar_model.parameters()) + tree_flatten(acoustic_model.parameters())
+    )
+    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    del ar_model, acoustic_model, weights
+    mx.clear_cache()
+    return config
+
+
 def test_tiny_ar_and_acoustic_pipeline_is_finite() -> None:
     from sglang_omni.models.minimax_music3.mlx.ar import generate_frame_hiddens
     from sglang_omni.models.minimax_music3.mlx.config import ModelConfig
@@ -58,40 +96,12 @@ def test_tiny_ar_and_acoustic_pipeline_is_finite() -> None:
 
 
 def test_split_loader_reads_one_converted_artifact(tmp_path: Path) -> None:
-    from mlx.utils import tree_flatten
-
-    from sglang_omni.models.minimax_music3.mlx.config import ModelConfig
     from sglang_omni.models.minimax_music3.mlx.loader import (
-        MiniMaxMusic3MlxAcousticModel,
-        MiniMaxMusic3MlxARModel,
         load_mlx_acoustic_model,
         load_mlx_ar_model,
     )
 
-    config = ModelConfig.tiny()
-    ar_model = MiniMaxMusic3MlxARModel(config)
-    acoustic_model = MiniMaxMusic3MlxAcousticModel(config)
-    for model in (ar_model, acoustic_model):
-        nn.quantize(
-            model,
-            group_size=32,
-            bits=8,
-            mode="mxfp8",
-            class_predicate=model.model_quant_predicate,
-        )
-    mx.eval(ar_model.parameters(), acoustic_model.parameters())
-    raw_config = config.to_dict()
-    raw_config["architectures"] = ["MiniMaxMusic3ForConditionalGeneration"]
-    raw_config["quantization"] = {
-        "group_size": 32,
-        "bits": 8,
-        "mode": "mxfp8",
-    }
-    (tmp_path / "config.json").write_text(json.dumps(raw_config))
-    weights = dict(
-        tree_flatten(ar_model.parameters()) + tree_flatten(acoustic_model.parameters())
-    )
-    mx.save_safetensors(str(tmp_path / "model.safetensors"), weights)
+    config = _write_tiny_artifact(tmp_path)
 
     loaded_ar = load_mlx_ar_model(str(tmp_path))
     loaded_acoustic = load_mlx_acoustic_model(str(tmp_path))
@@ -106,6 +116,59 @@ def test_split_loader_reads_one_converted_artifact(tmp_path: Path) -> None:
         loaded_acoustic.transformer.transformer_blocks[0].ff_in,
         nn.QuantizedLinear,
     )
+
+
+def test_ar_same_seed_is_stable_across_reload(tmp_path: Path) -> None:
+    from sglang_omni.models.minimax_music3.mlx.ar import generate_frame_hiddens
+    from sglang_omni.models.minimax_music3.mlx.loader import load_mlx_ar_model
+
+    config = _write_tiny_artifact(tmp_path)
+    text_ids = mx.array([[1, 2, 3], [1, 2, 3]], dtype=mx.int32)
+
+    first_model = load_mlx_ar_model(str(tmp_path))
+    first = generate_frame_hiddens(
+        first_model.language_model,
+        first_model.rvq_depth_decoder,
+        config,
+        text_ids,
+        max_frames=2,
+        seed=17,
+    )
+    mx.eval(first)
+    first_np = np.array(first, copy=True)
+    del first, first_model
+    mx.clear_cache()
+
+    second_model = load_mlx_ar_model(str(tmp_path))
+    second = generate_frame_hiddens(
+        second_model.language_model,
+        second_model.rvq_depth_decoder,
+        config,
+        text_ids,
+        max_frames=2,
+        seed=17,
+    )
+    mx.eval(second)
+
+    np.testing.assert_array_equal(np.asarray(second), first_np)
+
+
+def test_acoustic_release_reduces_active_mlx_allocation(tmp_path: Path) -> None:
+    from sglang_omni.models.minimax_music3.mlx.acoustic import (
+        MiniMaxMusic3MlxAcousticDecoder,
+    )
+
+    _write_tiny_artifact(tmp_path)
+    decoder = MiniMaxMusic3MlxAcousticDecoder(str(tmp_path), serial_offload=True)
+    before = mx.get_active_memory()
+
+    decoder.ensure_resident()
+    loaded = mx.get_active_memory()
+    decoder.release_residency()
+    released = mx.get_active_memory()
+
+    assert loaded > before
+    assert released < loaded
 
 
 @pytest.mark.parametrize(

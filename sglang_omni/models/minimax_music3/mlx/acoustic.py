@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
 import mlx.core as mx
@@ -11,8 +12,15 @@ import torch
 
 from ..acoustic import _derive_seed
 from ..chunking import overlap_mel_length
+from ..serial_offload import get_coordinator
 from .euler import denoise_chunk
-from .loader import MiniMaxMusic3MlxAcousticModel, load_mlx_acoustic_model
+from .loader import (
+    MiniMaxMusic3MlxAcousticModel,
+    load_mlx_acoustic_model,
+    resolve_mlx_artifact,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class MiniMaxMusic3MlxAcousticDecoder:
@@ -25,17 +33,31 @@ class MiniMaxMusic3MlxAcousticDecoder:
         revision: str | None = None,
         dit_steps: int = 30,
         dit_cfg_scale: float = 1.7,
+        serial_offload: bool = False,
     ) -> None:
         if dit_steps < 1:
             raise ValueError("MiniMax Music 3 dit_steps must be positive")
         if dit_cfg_scale < 0:
             raise ValueError("MiniMax Music 3 dit_cfg_scale must be non-negative")
-        self.model: MiniMaxMusic3MlxAcousticModel = load_mlx_acoustic_model(
-            model_path,
-            revision,
-        )
+        self.serial_offload = bool(serial_offload)
+        self._artifact = resolve_mlx_artifact(model_path, revision)
+        self.model: MiniMaxMusic3MlxAcousticModel | None = None
+        if not self.serial_offload:
+            self.model = load_mlx_acoustic_model(
+                model_path,
+                revision,
+                artifact=self._artifact,
+            )
         self.device = "mps"
-        self.dtype = self.model.condition_encoder.proj.weight.dtype
+        self.dtype = (
+            self.model.condition_encoder.proj.weight.dtype
+            if self.model is not None
+            else str(
+                self._artifact[1].get("torch_dtype")
+                or self._artifact[1].get("dtype")
+                or "artifact"
+            )
+        )
         self.dit_steps = int(dit_steps)
         self.dit_cfg_scale = float(dit_cfg_scale)
         self.attention_backend = "mlx_sdpa"
@@ -43,6 +65,34 @@ class MiniMaxMusic3MlxAcousticDecoder:
         self.cache_dit = False
         self.breakable_cuda_graph = False
         self._mlx_thread_stream = mx.new_thread_local_stream(mx.gpu)
+        if self.serial_offload:
+            get_coordinator().enable()
+
+    def ensure_resident(self) -> None:
+        if self.model is not None:
+            return
+        with mx.stream(self._mlx_thread_stream):
+            self.model = load_mlx_acoustic_model(
+                str(self._artifact[0]),
+                artifact=self._artifact,
+            )
+        self.dtype = self.model.condition_encoder.proj.weight.dtype
+        logger.info(
+            "MiniMax Music 3 MLX acoustic loaded active=%.2fGiB cache=%.2fGiB",
+            mx.get_active_memory() / 1024**3,
+            mx.get_cache_memory() / 1024**3,
+        )
+
+    def release_residency(self) -> None:
+        if not self.serial_offload:
+            return
+        mx.synchronize(self._mlx_thread_stream)
+        self.model = None
+        logger.info(
+            "MiniMax Music 3 MLX acoustic released active=%.2fGiB cache=%.2fGiB",
+            mx.get_active_memory() / 1024**3,
+            mx.get_cache_memory() / 1024**3,
+        )
 
     def decode_with_state(
         self,
@@ -56,6 +106,9 @@ class MiniMaxMusic3MlxAcousticDecoder:
     ) -> tuple[torch.Tensor, mx.array, mx.array]:
         if should_abort is not None and should_abort():
             raise InterruptedError("MiniMax Music 3 MLX acoustic generation aborted")
+        self.ensure_resident()
+        if self.model is None:
+            raise RuntimeError("MiniMax Music 3 MLX acoustic model is not loaded")
         hidden_np = hidden.detach().to(device="cpu", dtype=torch.float32).numpy()
         with mx.stream(self._mlx_thread_stream):
             hidden_mx = mx.array(hidden_np)[None].astype(self.dtype)
