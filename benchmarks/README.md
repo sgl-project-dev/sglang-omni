@@ -297,8 +297,20 @@ that time, and evaluates a generated continuation on gold-positive states.
 Neither model prompt receives the reference transcript or continuation.
 
 The Qwen3-Omni server must support `use_audio_in_video` and decode the video's
-audio track. Run the server in
-text-only mode with a context limit sufficient for the selected videos.
+audio track. Start a text-only server with a context limit sufficient for the
+selected videos:
+
+```bash
+python -m sglang_omni.cli serve \
+    --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
+    --text-only --port 8000 --model-name qwen3-omni \
+    --preprocessing.factory.max_seq_len 65536 \
+    --thinker.factory.max_seq_len 65536
+```
+
+The example sets a 65,536-token context limit for both preprocessing and model
+execution. Adjust it and the GPU configuration for the selected videos and
+available hardware; see [Qwen3-Omni configuration](../docs/basic_usage/qwen3_omni.md).
 Run the benchmark on the server host or use a shared filesystem with identical
 media paths. `--base-url` is the server root, such as `http://localhost:8000`.
 
@@ -317,7 +329,7 @@ The judge configuration contains exactly the fixed names `gpt-4o`,
 `gemini-2.5-pro`, and `qwen3-omni`. Each entry declares an OpenAI-compatible
 endpoint, the environment variable holding its API key, and a concurrency
 limit. The output records the environment variable name, never its value. Start
-from `configs/socialomni_judges.example.json`.
+from [`configs/socialomni_judges.example.json`](configs/socialomni_judges.example.json).
 
 ```bash
 # Deterministic smoke set: both Level 1 visibility strata and Level 2 YES/NO.
