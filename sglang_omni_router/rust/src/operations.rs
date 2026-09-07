@@ -504,7 +504,7 @@ fn render_worker_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
         .map(|worker| worker.active_requests)
         .sum();
     output.push_str(
-        "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load; speech batches are item-weighted.\n",
+        "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load. Speech batches are item-weighted.\n",
     );
     output.push_str("# TYPE sglang_omni_router_worker_active_requests gauge\n");
     let _ = writeln!(
@@ -1078,7 +1078,7 @@ mod tests {
                 "sglang_omni_router_admission_in_flight{class=\"transcription_http\"} 4\n",
                 "sglang_omni_router_admission_in_flight{class=\"speech_websocket\"} 5\n",
                 "sglang_omni_router_admission_in_flight{class=\"realtime_websocket\"} 6\n",
-                "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load; speech batches are item-weighted.\n",
+                "# HELP sglang_omni_router_worker_active_requests Aggregate active worker load. Speech batches are item-weighted.\n",
                 "# TYPE sglang_omni_router_worker_active_requests gauge\n",
                 "sglang_omni_router_worker_active_requests 4\n",
                 "# HELP sglang_omni_router_worker_capacity_limit Aggregate configured worker capacity.\n",

@@ -313,7 +313,7 @@ blocking-executor wait, and execution for each request kind. Blocking work that
 outlives a caller timeout or cancellation records its phase durations when that
 work starts or finishes, without changing the caller's terminal outcome.
 WebSocket termination counters distinguish setup from active relay and record
-one bounded terminal cause per upgraded session; they do not measure completion
+one bounded terminal cause per upgraded session. They do not measure completion
 of the bounded close handshake. HTTP response-body counters distinguish
 complete bodies, upstream body errors, and bodies dropped before completion.
 The post-commit relay-failure counter is the upstream-error subset.
@@ -326,7 +326,7 @@ Operations responses snapshot router-local state and never contact workers.
 Admission values come from the semaphores that enforce router limits. Worker
 load comes from the same counters used by `least_requests`. Metric labels use
 fixed vocabularies instead of worker IDs, model IDs, request IDs, paths, or
-client input. Listener usage includes the slot reserved by the pending accept;
+client input. Listener usage includes the slot reserved by the pending accept.
 registered WebSocket sessions represent callbacks retained for shutdown.
 
 Structured logging covers lifecycle events, health transitions, and exceptional
