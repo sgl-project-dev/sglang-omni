@@ -13,8 +13,8 @@ use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
 use crate::metrics::{
     ClassificationKind, ClassificationOutcome, ClassificationPhase, DURATION_BUCKETS,
-    HttpBodyTermination, HttpRoute, Rejection, RouterMetrics, StatusClass, WebsocketPhase,
-    WebsocketProtocol, WebsocketTermination,
+    DurationHistogramSnapshot, HttpBodyTermination, HttpRoute, Rejection, RouterMetrics,
+    StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
 };
 use crate::worker_pool::{
     OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
@@ -289,33 +289,11 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     output.push_str("# TYPE sglang_omni_router_http_response_header_duration_seconds histogram\n");
     for route in HttpRoute::ALL {
         let histogram = metrics.response_header_duration(route);
-        let mut cumulative = 0_u64;
-        for (index, bucket) in DURATION_BUCKETS.iter().enumerate() {
-            cumulative = cumulative.saturating_add(histogram.buckets[index]);
-            let _ = writeln!(
-                output,
-                "sglang_omni_router_http_response_header_duration_seconds_bucket{{route=\"{}\",le=\"{}\"}} {cumulative}",
-                route.label(),
-                bucket.label
-            );
-        }
-        cumulative = cumulative.saturating_add(histogram.buckets[DURATION_BUCKETS.len()]);
-        let _ = writeln!(
+        render_histogram(
             output,
-            "sglang_omni_router_http_response_header_duration_seconds_bucket{{route=\"{}\",le=\"+Inf\"}} {cumulative}",
-            route.label()
-        );
-        let sum_seconds = histogram.sum_micros as f64 / 1_000_000.0;
-        let _ = writeln!(
-            output,
-            "sglang_omni_router_http_response_header_duration_seconds_sum{{route=\"{}\"}} {sum_seconds}",
-            route.label()
-        );
-        let _ = writeln!(
-            output,
-            "sglang_omni_router_http_response_header_duration_seconds_count{{route=\"{}\"}} {}",
-            route.label(),
-            histogram.count()
+            "sglang_omni_router_http_response_header_duration_seconds",
+            &[("route", route.label())],
+            &histogram,
         );
     }
 
@@ -339,37 +317,11 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     for kind in ClassificationKind::ALL {
         for phase in ClassificationPhase::ALL {
             let histogram = metrics.classification_duration(kind, phase);
-            let mut cumulative = 0_u64;
-            for (index, bucket) in DURATION_BUCKETS.iter().enumerate() {
-                cumulative = cumulative.saturating_add(histogram.buckets[index]);
-                let _ = writeln!(
-                    output,
-                    "sglang_omni_router_classification_duration_seconds_bucket{{kind=\"{}\",phase=\"{}\",le=\"{}\"}} {cumulative}",
-                    kind.label(),
-                    phase.label(),
-                    bucket.label
-                );
-            }
-            cumulative = cumulative.saturating_add(histogram.buckets[DURATION_BUCKETS.len()]);
-            let _ = writeln!(
+            render_histogram(
                 output,
-                "sglang_omni_router_classification_duration_seconds_bucket{{kind=\"{}\",phase=\"{}\",le=\"+Inf\"}} {cumulative}",
-                kind.label(),
-                phase.label()
-            );
-            let sum_seconds = histogram.sum_micros as f64 / 1_000_000.0;
-            let _ = writeln!(
-                output,
-                "sglang_omni_router_classification_duration_seconds_sum{{kind=\"{}\",phase=\"{}\"}} {sum_seconds}",
-                kind.label(),
-                phase.label()
-            );
-            let _ = writeln!(
-                output,
-                "sglang_omni_router_classification_duration_seconds_count{{kind=\"{}\",phase=\"{}\"}} {}",
-                kind.label(),
-                phase.label(),
-                histogram.count()
+                "sglang_omni_router_classification_duration_seconds",
+                &[("kind", kind.label()), ("phase", phase.label())],
+                &histogram,
             );
         }
     }
@@ -458,6 +410,42 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
             metrics.http_body_terminations(termination)
         );
     }
+}
+
+fn render_histogram(
+    output: &mut String,
+    name: &str,
+    labels: &[(&str, &str)],
+    histogram: &DurationHistogramSnapshot,
+) {
+    let render_labels = |output: &mut String| {
+        for (index, (key, value)) in labels.iter().enumerate() {
+            if index != 0 {
+                output.push(',');
+            }
+            let _ = write!(output, "{key}=\"{value}\"");
+        }
+    };
+
+    let mut cumulative = 0_u64;
+    for (index, bucket) in DURATION_BUCKETS.iter().enumerate() {
+        cumulative = cumulative.saturating_add(histogram.buckets[index]);
+        let _ = write!(output, "{name}_bucket{{");
+        render_labels(output);
+        let _ = writeln!(output, ",le=\"{}\"}} {cumulative}", bucket.label);
+    }
+    cumulative = cumulative.saturating_add(histogram.buckets[DURATION_BUCKETS.len()]);
+    let _ = write!(output, "{name}_bucket{{");
+    render_labels(output);
+    let _ = writeln!(output, ",le=\"+Inf\"}} {cumulative}");
+
+    let sum_seconds = histogram.sum_micros as f64 / 1_000_000.0;
+    let _ = write!(output, "{name}_sum{{");
+    render_labels(output);
+    let _ = writeln!(output, "}} {sum_seconds}");
+    let _ = write!(output, "{name}_count{{");
+    render_labels(output);
+    let _ = writeln!(output, "}} {}", histogram.count());
 }
 
 fn render_probe_metrics(output: &mut String, snapshot: &OperationsSnapshot) {
