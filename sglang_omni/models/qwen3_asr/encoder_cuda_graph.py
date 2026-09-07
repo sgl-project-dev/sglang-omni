@@ -97,11 +97,14 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         self._failed: set[Hashable] = set()
         # Ascend fused attention consumes actual_seq_lengths as a host-side
         # operator parameter. It cannot safely change that list by copying a
-        # device tensor before replay. Keep graph memory bounded by admitting
-        # at most one real window signature for each token bucket; other
-        # signatures use the correct eager path.
-        self._npu_signature_by_bucket: dict[int, tuple[int, ...]] = {}
-        self._npu_declined_buckets: set[int] = set()
+        # device tensor before replay. Real encoder batches can nevertheless
+        # produce several window layouts for the same token bucket (most
+        # commonly one per encoder batch size), so retain a bounded global set
+        # of exact signatures rather than pinning one signature per bucket.
+        # max_batch_size is both the number of normal batch-size shapes and a
+        # deployment-controlled hard bound on graph memory growth.
+        self._npu_signature_capacity = max_batch_size
+        self._npu_signature_capacity_reported = False
         self._reported_replays: set[Hashable] = set()
         self._replay_count = 0
         self._replay_buckets: Counter[int] = Counter()
@@ -264,20 +267,17 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         if graph_key in self._failed:
             return self._fallback("capture_failed")
 
-        if self._is_npu:
-            admitted = self._npu_signature_by_bucket.get(bucket_size)
-            if admitted is not None and admitted != effective_window_lens:
-                if bucket_size not in self._npu_declined_buckets:
-                    logger.warning(
-                        "[qwen3-asr] NPU encoder graph bucket=%d already owns "
-                        "another window signature; mismatched signatures stay eager",
-                        bucket_size,
-                    )
-                    self._npu_declined_buckets.add(bucket_size)
-                return self._fallback("npu_signature_mismatch")
-
         entry = self._graphs.get(graph_key)
         if entry is None:
+            if self._is_npu and len(self._graphs) >= self._npu_signature_capacity:
+                if not self._npu_signature_capacity_reported:
+                    logger.warning(
+                        "[qwen3-asr] NPU encoder graph signature capacity=%d "
+                        "exhausted; unseen signatures stay eager",
+                        self._npu_signature_capacity,
+                    )
+                    self._npu_signature_capacity_reported = True
+                return self._fallback("npu_signature_capacity")
             try:
                 entry = self._capture(
                     bucket_size,
@@ -293,8 +293,6 @@ class Qwen3ASREncoderLayerStackGraphRunner:
                 self._failed.add(graph_key)
                 return self._fallback("capture_failed")
             self._graphs[graph_key] = entry
-            if self._is_npu:
-                self._npu_signature_by_bucket[bucket_size] = effective_window_lens
 
         entry.hidden_states[:total].copy_(hidden_states)
         if not self._is_npu:
@@ -332,6 +330,10 @@ class Qwen3ASREncoderLayerStackGraphRunner:
         return {
             "enabled": True,
             "npu_lazy_signature_capture": self._is_npu,
+            "npu_signature_capacity": (
+                int(self._npu_signature_capacity) if self._is_npu else None
+            ),
+            "npu_signature_count": len(self._graphs) if self._is_npu else None,
             "configured_buckets": [int(bucket) for bucket in self._buckets],
             "captured_graph_count": len(self._graphs),
             "captured_buckets": {

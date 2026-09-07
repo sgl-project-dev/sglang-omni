@@ -39,4 +39,3 @@ def test_fair_device_execution_guard_serves_waiters_in_ticket_order() -> None:
     assert not first.is_alive()
     assert all(not waiter.is_alive() for waiter in waiters)
     assert order == [0, 1, 2]
-

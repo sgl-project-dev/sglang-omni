@@ -133,7 +133,7 @@ def test_npu_capture_materializes_sequence_boundaries_on_host():
     assert cu_seqlens.tolist() == [0, 4, 7, 8]
 
 
-def test_npu_replay_admits_only_one_window_signature_per_bucket():
+def test_npu_replay_admits_multiple_signatures_with_global_bound():
     replayed = []
     captured = []
     runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
@@ -141,8 +141,8 @@ def test_npu_replay_admits_only_one_window_signature_per_bucket():
     runner._max_seqlen = 8
     runner._failed = set()
     runner._graphs = {}
-    runner._npu_signature_by_bucket = {}
-    runner._npu_declined_buckets = set()
+    runner._npu_signature_capacity = 2
+    runner._npu_signature_capacity_reported = False
     runner._reported_replays = set()
     runner._replay_count = 0
     runner._replay_buckets = Counter()
@@ -168,12 +168,17 @@ def test_npu_replay_admits_only_one_window_signature_per_bucket():
     assert len(replayed) == 2
     assert runner._reported_replays == {(8, (4, 4))}
 
-    # The same token bucket with different host-side sequence boundaries must
-    # use eager rather than replaying a graph with stale op parameters.
-    assert runner.run(hidden_states, [2, 2]) is None
-    assert captured == [(8, (4, 4))]
-    assert runner._npu_declined_buckets == {8}
-    assert runner._eager_fallback_reasons == {"npu_signature_mismatch": 1}
+    # A second exact host-side layout in the same token bucket gets its own
+    # graph, so neither replay can observe stale operator parameters.
+    assert runner.run(hidden_states, [2, 2]) is not None
+    assert captured == [(8, (4, 4)), (8, (2, 2, 4))]
+    assert len(replayed) == 3
+
+    # Graph memory remains globally bounded. A third unseen signature falls
+    # back explicitly rather than evicting live graph memory or growing it.
+    assert runner.run(hidden_states, [1, 3]) is None
+    assert captured == [(8, (4, 4)), (8, (2, 2, 4))]
+    assert runner._eager_fallback_reasons == {"npu_signature_capacity": 1}
 
 
 def test_encoder_graph_model_info_reports_replay_and_fallbacks():
@@ -182,6 +187,7 @@ def test_encoder_graph_model_info_reports_replay_and_fallbacks():
     runner._buckets = (128, 256)
     runner._graphs = {(128, (64, 64)): object()}
     runner._failed = {(256, (128, 128))}
+    runner._npu_signature_capacity = 8
     runner._replay_count = 3
     runner._replay_buckets = Counter({128: 3})
     runner._eager_fallback_reasons = Counter({"npu_signature_mismatch": 2})
@@ -189,6 +195,8 @@ def test_encoder_graph_model_info_reports_replay_and_fallbacks():
     assert runner.model_info() == {
         "enabled": True,
         "npu_lazy_signature_capture": True,
+        "npu_signature_capacity": 8,
+        "npu_signature_count": 1,
         "configured_buckets": [128, 256],
         "captured_graph_count": 1,
         "captured_buckets": {"128": 1},

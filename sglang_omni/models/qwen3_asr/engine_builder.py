@@ -217,11 +217,13 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         *,
         generation_cuda_graph_enabled: bool,
     ) -> None:
-        reference = next(model.audio_tower.parameters())
+        audio_tower = getattr(model, "audio_tower", None)
+        reference = next(audio_tower.parameters()) if audio_tower is not None else None
         self._device_execution_guard = (
             FairDeviceExecutionGuard()
             if (
-                reference.device.type == "npu"
+                reference is not None
+                and reference.device.type == "npu"
                 and generation_cuda_graph_enabled
                 and self.enable_pre_lm_encoder
             )
