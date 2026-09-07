@@ -256,13 +256,11 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     output.push_str("# TYPE sglang_omni_router_http_requests_total counter\n");
     for route in HttpRoute::ALL {
         let count = metrics.requests(route);
-        if count != 0 {
-            let _ = writeln!(
-                output,
-                "sglang_omni_router_http_requests_total{{route=\"{}\"}} {count}",
-                route.label()
-            );
-        }
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_http_requests_total{{route=\"{}\"}} {count}",
+            route.label()
+        );
     }
 
     output.push_str(
@@ -272,14 +270,12 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     for route in HttpRoute::ALL {
         for status in StatusClass::ALL {
             let count = metrics.responses(route, status);
-            if count != 0 {
-                let _ = writeln!(
-                    output,
-                    "sglang_omni_router_http_response_headers_total{{route=\"{}\",status=\"{}\"}} {count}",
-                    route.label(),
-                    status.label()
-                );
-            }
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_http_response_headers_total{{route=\"{}\",status=\"{}\"}} {count}",
+                route.label(),
+                status.label()
+            );
         }
     }
 
@@ -288,14 +284,12 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     for route in HttpRoute::ALL {
         for fault in HttpFault::ALL {
             let count = metrics.faults(route, fault);
-            if count != 0 {
-                let _ = writeln!(
-                    output,
-                    "sglang_omni_router_http_faults_total{{route=\"{}\",code=\"{}\"}} {count}",
-                    route.label(),
-                    fault.code()
-                );
-            }
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_http_faults_total{{route=\"{}\",code=\"{}\"}} {count}",
+                route.label(),
+                fault.code()
+            );
         }
     }
 
@@ -305,13 +299,11 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
     output.push_str("# TYPE sglang_omni_router_rejections_total counter\n");
     for rejection in Rejection::ALL {
         let count = metrics.rejections(rejection);
-        if count != 0 {
-            let _ = writeln!(
-                output,
-                "sglang_omni_router_rejections_total{{resource=\"{}\"}} {count}",
-                rejection.label()
-            );
-        }
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_rejections_total{{resource=\"{}\"}} {count}",
+            rejection.label()
+        );
     }
 
     output.push_str(
@@ -607,7 +599,7 @@ mod tests {
 
     use crate::error::HttpFault;
     use crate::lifecycle::State as LifecycleState;
-    use crate::metrics::{HttpRoute, Rejection, RouterMetrics};
+    use crate::metrics::{HttpRoute, Rejection, RouterMetrics, StatusClass};
     use crate::worker_pool::{
         AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
         ProbeSnapshot, SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
@@ -755,8 +747,62 @@ mod tests {
             &resources(),
             &metrics,
         );
+        let mut positions = Vec::new();
+        for route in HttpRoute::ALL {
+            let sample = format!(
+                "sglang_omni_router_http_requests_total{{route=\"{}\"}} 0\n",
+                route.label()
+            );
+            positions.push(rendered.find(&sample).expect("zero request sample"));
+        }
+        for route in HttpRoute::ALL {
+            for status in StatusClass::ALL {
+                let sample = format!(
+                    "sglang_omni_router_http_response_headers_total{{route=\"{}\",status=\"{}\"}} 0\n",
+                    route.label(),
+                    status.label()
+                );
+                positions.push(rendered.find(&sample).expect("zero response sample"));
+            }
+        }
+        for route in HttpRoute::ALL {
+            for fault in HttpFault::ALL {
+                let sample = format!(
+                    "sglang_omni_router_http_faults_total{{route=\"{}\",code=\"{}\"}} 0\n",
+                    route.label(),
+                    fault.code()
+                );
+                positions.push(rendered.find(&sample).expect("zero fault sample"));
+            }
+        }
+        for rejection in Rejection::ALL {
+            let sample = format!(
+                "sglang_omni_router_rejections_total{{resource=\"{}\"}} 0\n",
+                rejection.label()
+            );
+            positions.push(rendered.find(&sample).expect("zero rejection sample"));
+        }
+        assert_eq!(positions.len(), 340);
+        assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+
+        let without_zero_request_samples = rendered
+            .lines()
+            .filter(|line| {
+                !(line.ends_with(" 0")
+                    && [
+                        "sglang_omni_router_http_requests_total{",
+                        "sglang_omni_router_http_response_headers_total{",
+                        "sglang_omni_router_http_faults_total{",
+                        "sglang_omni_router_rejections_total{",
+                    ]
+                    .iter()
+                    .any(|prefix| line.starts_with(prefix)))
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
         assert_eq!(
-            rendered,
+            without_zero_request_samples,
             concat!(
                 "# HELP sglang_omni_router_lifecycle Router lifecycle state.\n",
                 "# TYPE sglang_omni_router_lifecycle gauge\n",
