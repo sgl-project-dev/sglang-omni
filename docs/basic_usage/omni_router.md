@@ -309,11 +309,14 @@ The response-header histogram measures from router boundary entry until an HTTP
 response is available. It does not measure response-body completion, streaming
 TTFT, or WebSocket-session duration. Requests cancelled before that boundary
 are counted separately. Classification histograms separate slot wait,
-blocking-executor wait, and execution for each request kind. WebSocket
-termination counters distinguish setup from active relay and record one bounded
-reason per upgraded session. HTTP response-body counters distinguish complete
-bodies, upstream body errors, and bodies dropped before completion. The
-post-commit relay-failure counter is the upstream-error subset.
+blocking-executor wait, and execution for each request kind. Blocking work that
+outlives a caller timeout or cancellation records its phase durations when that
+work starts or finishes, without changing the caller's terminal outcome.
+WebSocket termination counters distinguish setup from active relay and record
+one bounded terminal cause per upgraded session; they do not measure completion
+of the bounded close handshake. HTTP response-body counters distinguish
+complete bodies, upstream body errors, and bodies dropped before completion.
+The post-commit relay-failure counter is the upstream-error subset.
 `/diagnostics` returns bounded deterministic JSON for the same router-local
 state and marks the configured voice owner. Each diagnostic worker includes
 its latest probe result, HTTP status when present, observation time, transition
