@@ -572,6 +572,7 @@ impl RouterProcess {
         };
         process.wait_live();
         process.wait_ready();
+        process.wait_for_healthy_workers(workers.len());
         process
     }
 
@@ -607,6 +608,32 @@ impl RouterProcess {
                 panic!("router exited before readiness: {status}");
             }
             assert!(Instant::now() < deadline, "router did not become ready");
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn wait_for_healthy_workers(&mut self, count: usize) {
+        let expected =
+            format!("sglang_omni_router_workers_by_health{{health=\"healthy\"}} {count}\n");
+        let deadline = Instant::now() + DEADLINE;
+        loop {
+            if let Ok(response) = raw_request(
+                self.address,
+                b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+            ) && response.starts_with(b"HTTP/1.1 200")
+                && response
+                    .windows(expected.len())
+                    .any(|window| window == expected.as_bytes())
+            {
+                return;
+            }
+            if let Some(status) = self.child.try_wait().expect("poll router health") {
+                panic!("router exited before every worker was healthy: {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "not every configured worker became healthy"
+            );
             thread::sleep(Duration::from_millis(5));
         }
     }
