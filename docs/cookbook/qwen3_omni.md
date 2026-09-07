@@ -22,6 +22,352 @@ uv pip install --prerelease=allow "sglang-omni==0.1.4"
 
 See [Installation](../get_started/installation.md) for Docker digests and source installs.
 
+<a id="apple-silicon-mlx-and-torch-mps"></a>
+### Apple Silicon (MLX and Torch MPS)
+
+Qwen3-Omni also runs on macOS Apple Silicon (`arm64`), reusing the same Apple
+platform policy, MPS device selection, and `SGLANG_USE_MLX` backend switch
+introduced for [Qwen3-ASR](qwen3_asr.md#apple-silicon-mlx). Install with
+[`install.sh`](../../install.sh) (see
+[Installation](../get_started/installation.md#macos-apple-silicon)) or build
+the environment manually as described in the Qwen3-ASR Apple guide — the same
+`.venv-apple` environment and SGLang `all_mps` extra serve both models.
+
+Two checkpoint layouts are supported, one per backend:
+
+| Backend | Env var | Checkpoint layout |
+|---|---|---|
+| Torch MPS (default) | `SGLANG_USE_MLX` unset | Dense, officially supported split Hugging Face checkpoint (thinker/talker/code2wav weights plus the official processor/tokenizer assets). |
+| MLX | `SGLANG_USE_MLX=1` | Component-aware affine 4-bit export, or the prepared `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit` checkpoint described below. Thinker/talker stay in MLX INT4; Torch-owned code2wav must be dense. |
+
+Launch commands and the full Apple runtime profile (one Metal device, greedy
+generation, eager execution, SHM transport, no CUDA-only features) are in the
+[Qwen3-Omni usage guide](../basic_usage/qwen3_omni.md#apple-silicon-mlx-and-torch-mps).
+
+Before attempting a production-size MLX checkpoint, confirm it is at most
+30 GiB on disk and that its documented or measured peak working set is at most
+40 GiB. The default backend tests in
+`tests/test_ci/test_qwen3_omni_apple.py` use deterministic test-sized weights.
+Its opt-in community-checkpoint core and semantic matrices instead load the
+pinned trained 30B 4-bit checkpoint described below (see `tests/README.md`).
+Passing the tiny tests alone does not establish production-size checkpoint
+memory safety or semantic correctness.
+
+#### Public 4-bit checkpoint
+
+The public
+[`mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit`](https://huggingface.co/mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit)
+checkpoint can be used for Apple MLX serving. Pin revision
+`93b3cbddd65ed4babff8f22fba491cdba7a21778` so the commands and tensor layout
+remain reproducible.
+
+Its thinker and talker are already MLX affine INT4 (`group_size=64`), while
+the vision/audio towers and code predictor are dense. Code2wav is also
+MLX-quantized, but the current code2wav stage runs in Torch MPS. Before speech
+serving, run the preparation command once to create dense BF16 code2wav
+weights under the local checkpoint's `code2wav/` directory. Text-only serving
+does not need this preparation. The loader automatically restores the
+checkpoint's channel-last vision/audio convolution kernels to the shapes
+expected by Torch.
+
+Set the repository and environment paths:
+
+```bash
+export REPO="/path/to/sglang-omni"
+export PY="$REPO/.venv-apple/bin/python"
+export MODEL_DIR="$HOME/models/Qwen3-Omni-30B-A3B-Instruct-4bit-93b3cbdd"
+export MODEL_REVISION="93b3cbddd65ed4babff8f22fba491cdba7a21778"
+cd "$REPO"
+```
+
+Download the exact checkpoint:
+
+```bash
+"$PY" - <<'PY'
+import os
+from huggingface_hub import snapshot_download
+
+path = snapshot_download(
+    repo_id="mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit",
+    revision=os.environ["MODEL_REVISION"],
+    local_dir=os.path.expanduser(os.environ["MODEL_DIR"]),
+)
+print(path)
+PY
+```
+
+Prepare the dense code2wav sidecar once before speech serving and inspect its
+provenance:
+
+```bash
+"$PY" -m sglang_omni.models.qwen3_omni.mlx.prepare_checkpoint \
+  --model-path "$MODEL_DIR"
+cat "$MODEL_DIR/code2wav/conversion.json"
+du -sh "$MODEL_DIR/code2wav"
+```
+
+The canonical production-size Apple launch is the hybrid MLX profile: thinker
+and talker run with the pinned MLX INT4 checkpoint while the Torch-owned
+vision/audio towers and dense code2wav sidecar run on Torch MPS. This is the
+verified production-size path. Keep the launcher in the foreground for normal
+operation so logs and Ctrl-C remain attached to the supervising terminal:
+
+```bash
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
+  --model-path "$MODEL_DIR" \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+For MLX text-only serving, use the same preset with `--text-only`; this mode
+does not require the code2wav sidecar:
+
+```bash
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
+  --model-path "$MODEL_DIR" \
+  --text-only \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+Poll readiness from a second terminal:
+
+```bash
+until curl -fsS http://127.0.0.1:8008/v1/models >/dev/null; do
+  sleep 2
+done
+```
+
+Ctrl-C in the foreground terminal, or the external supervisor managing that
+foreground process, terminates the canonical launcher.
+
+For automated Bash smoke-test scripts only, start the same command in the
+background and capture its exact process id. Use a ten-minute readiness deadline
+(each HTTP probe is bounded to five seconds), fail early if the child exits, and
+show the server log tail on readiness failure. The traps stop only that child,
+including when readiness or a smoke request fails:
+
+```bash
+set -e
+
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mlx \
+  --model-path "$MODEL_DIR" \
+  --host 127.0.0.1 \
+  --port 8008 >qwen3-omni-apple.log 2>&1 &
+SERVER_PID=$!
+trap 'kill -TERM "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" || true' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+DEADLINE=$((SECONDS + 600))
+while true; do
+  if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+    echo "Qwen3-Omni exited before readiness; server log:" >&2
+    tail -n 100 qwen3-omni-apple.log >&2
+    exit 1
+  fi
+  if (( SECONDS >= DEADLINE )); then
+    echo "Timed out waiting for /v1/models after 600 seconds; server log:" >&2
+    tail -n 100 qwen3-omni-apple.log >&2
+    exit 1
+  fi
+  if curl -fsS --max-time 5 http://127.0.0.1:8008/v1/models >/dev/null; then
+    break
+  fi
+  sleep 2
+done
+
+# Run smoke requests here.
+
+kill -TERM "$SERVER_PID"
+wait "$SERVER_PID" || true
+trap - EXIT INT TERM
+```
+
+Dense Torch MPS uses the official split Hugging Face checkpoint and avoids the
+MLX sidecar, but it requires substantially more unified memory. The dense MPS
+backend, including generated speech, is not production-qualified. For dense MPS
+text-only testing:
+
+```bash
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mps \
+  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --text-only \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+For dense MPS speech-mode testing, omit `--text-only` explicitly:
+
+```bash
+"$PY" examples/run_omni.py qwen3-apple-server \
+  --backend mps \
+  --model-path /absolute/path/to/Qwen3-Omni-30B-A3B-Instruct \
+  --host 127.0.0.1 \
+  --port 8008
+```
+
+Expect higher memory use and treat the generated WAV as structurally valid
+only, not semantically production-qualified.
+
+Send a text request:
+
+```bash
+curl -fsS http://127.0.0.1:8008/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3-omni",
+    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+    "modalities": ["text"],
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": -1
+  }' | tee text-response.json
+```
+
+Keep the foreground hybrid MLX speech server running for the following text and
+audio examples.
+
+Send a non-streamed text-and-audio request:
+
+```bash
+curl -fsS http://127.0.0.1:8008/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3-omni",
+    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+    "modalities": ["text", "audio"],
+    "audio": {"voice": "chelsie", "format": "wav"},
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": -1,
+    "talker_temperature": 0,
+    "talker_top_p": 1,
+    "talker_top_k": -1,
+    "talker_max_new_tokens": 128
+  }' | tee speech-response.json
+```
+
+Decode and inspect the returned WAV:
+
+```bash
+"$PY" - <<'PY'
+import base64
+import json
+import soundfile as sf
+
+response = json.load(open("speech-response.json", encoding="utf-8"))
+message = response["choices"][0]["message"]
+open("speech-response.wav", "wb").write(base64.b64decode(message["audio"]["data"]))
+audio, rate = sf.read("speech-response.wav")
+print({"text": message["content"], "samples": len(audio), "sample_rate": rate})
+PY
+file speech-response.wav
+```
+
+Send the same request over SSE:
+
+```bash
+curl -NfsS http://127.0.0.1:8008/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3-omni",
+    "messages": [{"role": "user", "content": "Say hello in one short sentence."}],
+    "modalities": ["text", "audio"],
+    "audio": {"voice": "chelsie", "format": "wav"},
+    "max_tokens": 32,
+    "temperature": 0,
+    "top_p": 1,
+    "top_k": -1,
+    "talker_temperature": 0,
+    "talker_top_p": 1,
+    "talker_top_k": -1,
+    "talker_max_new_tokens": 128,
+    "stream": true
+  }' | tee speech-response.sse
+grep -F 'data: [DONE]' speech-response.sse
+```
+
+Run the opt-in real-checkpoint qualification, which repeats text and speech
+requests in one server lifetime managed by the test harness:
+
+```bash
+export QWEN3_OMNI_APPLE_REAL_MODEL="$MODEL_DIR"
+export QWEN3_OMNI_APPLE_REAL_REVISION="$MODEL_REVISION"
+export QWEN3_OMNI_APPLE_ARTIFACTS="$PWD/.qwen3-omni-apple-artifacts"
+"$PY" -m pytest \
+  tests/test_ci/test_qwen3_omni_apple.py::test_qwen3_omni_mlx_community_core_matrix \
+  -v -s
+```
+
+#### Real semantic qualification
+
+The core matrix above verifies serving structure and transport. The separate
+real semantic qualification verifies the meaning of every text response and
+of every synthesized speech response; it is not the deterministic tiny
+checkpoint matrix.
+
+The fixture generator requires the macOS `say` and `sw_vers` commands, FFmpeg
+on `PATH`, and `/System/Library/Fonts/Supplemental/Arial Bold.ttf`. The real
+qualification fails if these prerequisites are missing; its font is not
+replaced by the portable font used in unit tests.
+Speech verification uses the following pinned Whisper checkpoint and downloads
+approximately 967 MB on first use:
+
+| Field | Pinned value |
+|---|---|
+| Model | `openai/whisper-small.en` |
+| Revision | `e8727524f962ee844a7319d92be39ac1bd25655a` |
+| `model.safetensors` size | `966992008` bytes |
+| `model.safetensors` SHA-256 | `6014ac49b506df900f66f4aca6b0801eed7245594ace97bcaf73e0ae5b863066` |
+
+Run the complete Apple serving file, including the opt-in semantic matrix,
+against the pinned prepared checkpoint, using the `REPO`, `PY`, `MODEL_DIR`,
+and `MODEL_REVISION` variables set above:
+
+```bash
+cd "$REPO"
+export QWEN3_OMNI_APPLE_REAL_MODEL="$MODEL_DIR"
+export QWEN3_OMNI_APPLE_REAL_REVISION="$MODEL_REVISION"
+export QWEN3_OMNI_APPLE_ARTIFACTS="$PWD/.qwen3-omni-apple-artifacts"
+export SGLANG_USE_MLX=1
+"$PY" -m pytest \
+  tests/test_ci/test_qwen3_omni_apple.py -v -s
+```
+
+Artifacts are written beneath
+`$QWEN3_OMNI_APPLE_ARTIFACTS/mlx-community-semantic-real/`. They include
+`semantic-run.json`, generated fixtures and provenance, and the server log.
+The manifests record backend/library versions, fixture tool versions, and
+measured input-audio durations. Because `say` has no standalone version, its
+provenance records the macOS version/build and executable SHA-256.
+
+Under `cases/`, `*.request.json` is saved before sending, and `*.sse` records
+wire bytes before parsing (including raw HTTP error bodies and interrupted
+streams). Parsed JSON retains partial text and failure diagnostics. Each
+`*.audio-NNN.wav` preserves an original audio chunk, including malformed
+containers; a combined `*.wav` is written only when decoding succeeds.
+
+A semantic pass means every case returned all explicit required facts, every
+text-only response omitted audio, and every requested speech response passed
+the waveform, transcription, and content-recall checks. A failure can be an
+honest model or backend quality limitation. Preserve the artifacts and report
+the missing facts; never hide a qualification failure by weakening the
+assertions or thresholds.
+
+Current real semantic qualification is 6/13: text, audio, and video controlled
+facts pass; image OCR still misses `42`; requested speech produces a structurally
+valid WAV, but the generated speech is not semantically qualified. Treat the
+hybrid MLX path as the verified production-size serving route, while keeping
+dense MPS and generated speech out of production qualification until these
+failures are resolved.
+
 ## Server Configuration
 
 Use the selector below to generate the exact launch command for your configuration.
@@ -110,3 +456,4 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
 - **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.
 - **Requests that exceed the model's context length are rejected with an error.** The preprocessor raises a `ValueError` when the prompt token count alone meets or exceeds `max_seq_len`, or when `prompt tokens + max_new_tokens ≥ max_seq_len`. Reduce input length or lower `max_tokens` to stay within the limit.
+- **Apple Silicon (MLX and Torch MPS) is single-device, single-request, and greedy-only.** `tp_size=1`, `max_running_requests=1`, and no CUDA graphs, radix cache, chunked prefill, `torch.compile`, partial-talker execution, or async decode lookahead. Backend selection never falls back between MLX and Torch MPS. See [Apple Silicon (MLX and Torch MPS)](#apple-silicon-mlx-and-torch-mps) above.

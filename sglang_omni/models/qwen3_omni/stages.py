@@ -925,10 +925,16 @@ def create_audio_encoder_executor(
     dtype: str | None = None,
     enable_layer_cuda_graph: bool = False,
 ):
+    from sglang_omni.platforms import current_platform
     from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
     from sglang_omni.utils.device import resolve_device_spec
 
     device = resolve_device_spec(device)
+    if current_platform.is_mps():
+        # Belt-and-suspenders alongside Qwen3OmniAudioEncoder's own
+        # device.type == "cuda" guard: the layer-stack CUDA graph runner is
+        # CUDA-only and must never be requested on Apple's Metal device.
+        enable_layer_cuda_graph = False
     model = Qwen3OmniAudioEncoder(
         model_path=model_path,
         device=device,
@@ -1023,6 +1029,7 @@ def create_sglang_thinker_executor_from_config(
     prefill_coalesce_when_idle: bool = False,
 ):
     """Returns OmniScheduler for thinker."""
+    explicit_overrides = dict(server_args_overrides or {})
     # note (luojiaxuan):
     # The thinker runs prefill XOR decode per scheduler step, so under
     # concurrent streaming a large fraction of steps are prefill-only while
@@ -1044,6 +1051,19 @@ def create_sglang_thinker_executor_from_config(
         sampling_backend="pytorch",
     )
     overrides["tp_size"] = tp_size
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        apply_qwen3_omni_apple_profile,
+        qwen3_omni_uses_apple_backend,
+    )
+
+    overrides = apply_qwen3_omni_apple_profile(
+        overrides,
+        explicit_overrides=explicit_overrides,
+        stage_name="thinker",
+    )
+    if qwen3_omni_uses_apple_backend():
+        enable_async_decode = False
+        prefill_coalesce_requests = 0
     from sglang_omni.platforms import current_platform
 
     if not current_platform.enable_thinker_decode_graph():
@@ -1171,6 +1191,7 @@ def create_talker_ar_executor_from_config(
     """Returns OmniScheduler for talker."""
     from sglang_omni.models.qwen3_omni.bootstrap import create_talker_scheduler
 
+    explicit_overrides = dict(server_args_overrides or {})
     # Note (Xuesong, Chenyang): cuda_graph defaults to ON for the talker
     # after #384, which routed talker MoE through `self.experts` (FusedMoE)
     # — the `fused_experts (full graph)` backend picked in #344. Caller can
@@ -1192,6 +1213,18 @@ def create_talker_ar_executor_from_config(
     if not stated_disable and not current_platform.enable_talker_graph():
         overrides["disable_cuda_graph"] = True
     overrides["tp_size"] = tp_size
+    from sglang_omni.models.qwen3_omni.apple_runtime import (
+        apply_qwen3_omni_apple_profile,
+        qwen3_omni_uses_apple_backend,
+    )
+
+    overrides = apply_qwen3_omni_apple_profile(
+        overrides,
+        explicit_overrides=explicit_overrides,
+        stage_name="talker_ar",
+    )
+    if qwen3_omni_uses_apple_backend():
+        enable_partial_start = False
     _apply_colocated_ar_memory_contract(
         overrides,
         stage_name="talker_ar",

@@ -12,6 +12,7 @@ import logging
 import queue
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 import numpy as np
@@ -82,11 +83,32 @@ def load_code2wav_model(
     """Load Code2Wav model from HF checkpoint."""
     from transformers import AutoConfig
 
-    from sglang_omni.models.weight_loader import load_module, resolve_dtype
+    from sglang_omni.models.weight_loader import (
+        load_module,
+        resolve_dtype,
+        resolve_model_path,
+    )
 
     torch_dtype = resolve_dtype(dtype)
     config = AutoConfig.from_pretrained(model_path, trust_remote_code=True)
     code2wav_config = config.code2wav_config
+    resolved_model_path = resolve_model_path(model_path)
+    sidecar_path = resolved_model_path / "code2wav"
+    has_sidecar = (sidecar_path / "model.safetensors").is_file() or (
+        sidecar_path / "model.safetensors.index.json"
+    ).is_file()
+    if has_sidecar:
+        from sglang_omni.models.qwen3_omni.mlx.checkpoint_compat import (
+            checkpoint_has_root_code2wav_weights,
+            validate_code2wav_sidecar_provenance,
+        )
+
+        if (sidecar_path / "conversion.json").is_file() or (
+            checkpoint_has_root_code2wav_weights(resolved_model_path)
+        ):
+            validate_code2wav_sidecar_provenance(resolved_model_path)
+    weight_path = str(sidecar_path) if has_sidecar else str(resolved_model_path)
+    weight_prefix = "" if has_sidecar else "code2wav."
 
     from transformers.models.qwen3_omni_moe.modeling_qwen3_omni_moe import (
         Qwen3OmniMoeCode2Wav,
@@ -95,11 +117,11 @@ def load_code2wav_model(
     model = Qwen3OmniMoeCode2Wav._from_config(code2wav_config)
     model = load_module(
         model,
-        model_path,
-        prefix="code2wav.",
+        weight_path,
+        prefix=weight_prefix,
         dtype=torch_dtype,
         device=device,
-        strict=False,
+        strict=has_sidecar,
     )
     return model.eval()
 
@@ -153,6 +175,14 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
     ):
         self._model = model
         self._device = torch.device(device)
+        if self._device.type == "mps":
+            # Note (Task 11): Apple exposes one Metal device with no CUDA
+            # events, pinned D2H buffers, or graph capture. Normalize here so
+            # direct construction (bypassing create_code2wav_scheduler) can
+            # never allocate any of that on MPS.
+            enable_output_overlap = False
+            enable_batching = False
+            enable_cuda_graph = False
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
         self._codec_eos_token_id = codec_eos_token_id
@@ -561,7 +591,11 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         with torch.no_grad():
-            if self._device.type != "cpu":
+            if self._device.type not in ("cpu", "mps"):
+                # Note (Task 11): CPU has no device module and Apple exposes a
+                # single Metal device with no CUDA-style "current device". Every
+                # other accelerator still needs its stage's device bound, or a
+                # forward placed on device 1 runs on the process default.
                 torch.get_device_module(self._device).set_device(self._device)
             if self._cuda_graph_runner is None:
                 result = Code2WavRunResult(
@@ -978,13 +1012,28 @@ def create_code2wav_scheduler(
             "on the code2wav stage"
         )
     concrete_device = torch.device(resolve_device_spec(device, gpu_id))
-    if concrete_device.type != "cpu" and concrete_device.index is None:
+    if concrete_device.type == "mps" and concrete_device.index is None:
+        # Note (Task 11): Apple exposes exactly one Metal device and has no
+        # CUDA-style "current device"; torch.get_device_module() with no
+        # argument resolves the CUDA module, so it must never be called here.
+        concrete_device = current_platform.get_device(0)
+    elif concrete_device.type not in ("cpu", "mps") and concrete_device.index is None:
         concrete_device = current_platform.get_device(
             torch.get_device_module().current_device()
         )
     device = str(concrete_device)
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
+    if enable_cuda_graph and concrete_device.type != "cuda":
+        # Note (Task 11): graph capture, its memory pool, and its replay buffers
+        # are CUDA-only. Gate here, before the build: leaving it to the
+        # scheduler's own normalization would already have captured graphs.
+        logger.info(
+            "Code2Wav CUDA graph requested on %s; graph capture is CUDA-only "
+            "and is disabled for this device",
+            device,
+        )
+        enable_cuda_graph = False
     model = load_code2wav_model(model_path, device=device, dtype=dtype)
     cuda_graph_runner = None
     if enable_cuda_graph:

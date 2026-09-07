@@ -635,6 +635,87 @@ with open("output.wav", "wb") as f:
     f.write(audio_data)
 ```
 
+<a id="apple-silicon-mlx-and-torch-mps"></a>
+## Apple Silicon (MLX and Torch MPS)
+
+Qwen3-Omni also runs on Apple Silicon (`arm64`) through the same backend
+switch used by Qwen3-ASR: `SGLANG_USE_MLX=1` selects the native MLX thinker
+and talker, and an unset (or falsy) `SGLANG_USE_MLX` selects the eager Torch
+MPS thinker and talker. Image/audio encoders and code2wav always run eagerly
+on Torch MPS in both modes. See the
+[Qwen3-Omni cookbook](../cookbook/qwen3_omni.md#apple-silicon-mlx-and-torch-mps)
+for installation prerequisites and supported checkpoint layouts.
+
+Text-only mode:
+
+```bash
+export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
+export SGLANG_USE_MLX=1
+sgl-omni serve \
+  --model-path "$QWEN3_OMNI_MODEL" \
+  --text-only \
+  --port 8008
+```
+
+```bash
+export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path "$QWEN3_OMNI_MODEL" \
+  --text-only \
+  --port 8008
+```
+
+Speech mode (text + audio output) uses the same env var and checkpoints,
+without `--text-only`:
+
+```bash
+export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
+export SGLANG_USE_MLX=1
+sgl-omni serve \
+  --model-path "$QWEN3_OMNI_MODEL" \
+  --port 8008
+```
+
+```bash
+export QWEN3_OMNI_MODEL="$HOME/.cache/sglang-omni/tiny-qwen3-omni"
+unset SGLANG_USE_MLX
+sgl-omni serve \
+  --model-path "$QWEN3_OMNI_MODEL" \
+  --port 8008
+```
+
+`$HOME/.cache/sglang-omni/tiny-qwen3-omni` above is the deterministic
+test-sized checkpoint built by the real-backend qualification harness
+(`tests/test_ci/test_qwen3_omni_apple.py`). It validates functionality on both
+backends but is **not** a production model — point `--model-path` at a real
+Qwen3-Omni checkpoint in the layout your backend expects once you have one.
+
+The Apple runtime profile is intentionally conservative and identical for
+both backends:
+
+- One Metal device (`tp_size=1`), `max_running_requests=1` — one request runs
+  at a time.
+- Greedy generation only; other sampling, penalty, and logprob combinations
+  are rejected at request time.
+- Eager execution — no CUDA graph capture, radix cache, chunked prefill,
+  `torch.compile`, partial-talker execution, or async decode lookahead.
+- SHM inter-stage transport, the same as CUDA single-node deployments.
+- Backend selection is strict: MLX never falls back to Torch MPS and vice
+  versa, so a load failure on one backend is a real failure, not a silent
+  fallback.
+
+Checkpoint layouts:
+
+- **Torch MPS** expects the dense, officially supported split Hugging Face
+  checkpoint layout (thinker/talker/code2wav weights alongside the official
+  processor and tokenizer assets).
+- **MLX** accepts affine 4-bit exports using checkpoint-declared group sizes
+  (currently 32 or 64). It supports both component-local thinker/talker
+  shards and the root-namespaced MLX-VLM layout used by
+  `mlx-community/Qwen3-Omni-30B-A3B-Instruct-4bit`. Quantized root code2wav
+  weights require the dense prepared sidecar described in the cookbook.
+
 ## Request Parameters
 
 The table below lists all parameters accepted by the `/v1/chat/completions` endpoint for Qwen3-Omni.
