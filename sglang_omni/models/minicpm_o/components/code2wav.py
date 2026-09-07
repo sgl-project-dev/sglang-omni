@@ -37,14 +37,21 @@ class MiniCPMOCode2Wav(nn.Module):
         prompt_wav: str | None = None,
     ) -> None:
         super().__init__()
-        del device  # Token2wav manages its own device placement (cuda).
         try:
             from stepaudio2 import Token2wav
         except ImportError as exc:
             raise ImportError(
-                "MiniCPM-o audio output requires stepaudio2; install via "
-                "pip install minicpmo-utils[all]"
+                "MiniCPM-o audio output requires stepaudio2; install the "
+                "minicpm-o extra (pip install 'sglang-omni[minicpm-o]')"
             ) from exc
+
+        # Token2wav hardcodes .cuda()/device="cuda" (current-device
+        # semantics), so honor the requested device by pinning the current
+        # CUDA device for construction and every vocode call.
+        dev = torch.device(device)
+        if dev.type != "cuda":
+            raise ValueError(f"Token2wav requires a CUDA device, got {device}")
+        self._device_ctx = torch.cuda.device(dev.index or 0)
 
         model_dir = str(resolve_model_path(model_path))
         asset_dir = os.path.join(model_dir, "assets", "token2wav")
@@ -53,7 +60,10 @@ class MiniCPMOCode2Wav(nn.Module):
                 f"token2wav assets not found at {asset_dir}; copy the "
                 "checkpoint's assets/token2wav directory next to the weights"
             )
-        self.token2wav = Token2wav(asset_dir, float16=float16, n_timesteps=n_timesteps)
+        with self._device_ctx:
+            self.token2wav = Token2wav(
+                asset_dir, float16=float16, n_timesteps=n_timesteps
+            )
 
         if prompt_wav is None:
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
@@ -84,7 +94,8 @@ class MiniCPMOCode2Wav(nn.Module):
                 "waveform": np.zeros(0, dtype=np.float32),
                 "sample_rate": OUTPUT_SAMPLE_RATE,
             }
-        waveform = self._vocode(tokens, prompt_wav or self._prompt_wav)
+        with self._device_ctx:
+            waveform = self._vocode(tokens, prompt_wav or self._prompt_wav)
         return {"waveform": waveform, "sample_rate": OUTPUT_SAMPLE_RATE}
 
     def _vocode(self, tokens: list[int], prompt_wav: str | None) -> np.ndarray:

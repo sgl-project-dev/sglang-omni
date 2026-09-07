@@ -106,6 +106,12 @@ fun-cosyvoice3 = [
     "matplotlib",
 ]
 
+minicpm-o = [
+    # Provides the top-level stepaudio2 package (Token2wav) and bundles
+    # s3tokenizer; [tts] pulls hyperpyyaml/onnxruntime.
+    "minicpmo-utils[tts]==1.0.6",
+]
+
 [project.scripts]
 sgl-omni = "sglang_omni.cli:app"
 sgl-omni-router = "sglang_omni_router.serve:main"
