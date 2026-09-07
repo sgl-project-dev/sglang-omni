@@ -697,7 +697,9 @@ class Qwen3TTSIncrementalDecoder:
             dtype=torch.long,
             device=parameter.device,
         )
-        state = self.init_state(shape[0], device=parameter.device, dtype=parameter.dtype)
+        state = self.init_state(
+            shape[0], device=parameter.device, dtype=parameter.dtype
+        )
         state.frame_positions = torch.zeros(
             shape[0], dtype=torch.long, device=parameter.device
         )

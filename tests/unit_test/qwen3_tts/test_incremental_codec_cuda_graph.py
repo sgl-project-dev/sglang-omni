@@ -394,7 +394,9 @@ def test_incremental_codec_launch_uses_graph_state_and_waveform() -> None:
     scatters = []
     arena = SimpleNamespace(
         scatter=lambda slots, state: scatters.append((slots, state)),
-        gather=lambda slots: (_ for _ in ()).throw(AssertionError("no gather on a hit")),
+        gather=lambda slots: (_ for _ in ()).throw(
+            AssertionError("no gather on a hit")
+        ),
     )
     scheduler._initial_incremental_decode_graphs = None
     scheduler._followup_incremental_graph_holders = (graph_runner,)

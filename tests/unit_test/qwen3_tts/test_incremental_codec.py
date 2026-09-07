@@ -873,12 +873,17 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
         assert waveform is not None
         actual.append(waveform.clone())
     torch.cuda.synchronize()
-    torch.testing.assert_close(torch.cat(actual, dim=-1), expected, rtol=2e-4, atol=2e-5)
+    torch.testing.assert_close(
+        torch.cat(actual, dim=-1), expected, rtol=2e-4, atol=2e-5
+    )
 
     advanced = arena.gather(slots)
     assert advanced.frame_positions.tolist() == [6, 6]
     torch.testing.assert_close(
-        advanced.transformer_keys[0], reference.transformer_keys[0], rtol=2e-4, atol=2e-5
+        advanced.transformer_keys[0],
+        reference.transformer_keys[0],
+        rtol=2e-4,
+        atol=2e-5,
     )
     untouched = arena.gather([bystander])
     assert untouched.frame_positions.tolist() == [0]
