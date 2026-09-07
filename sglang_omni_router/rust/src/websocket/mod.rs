@@ -19,6 +19,7 @@ use tokio_tungstenite::tungstenite::error::CapacityError;
 use crate::classification::ClassificationExecutor;
 use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
+use crate::metrics::ClassificationKind;
 use crate::request_id::CanonicalRequestId;
 use crate::speech_facts::{
     ScalarFactSeed, SpeechFields, named_voice as classify_named_voice,
@@ -188,20 +189,22 @@ async fn run_speech(
     };
     let classification_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
     let classify_trust = trust.clone();
-    let classified = setup_until(
+    let classified = setup_while_serving(
         &mut drain,
-        classification_deadline,
-        gateway
-            .classifier
-            .classify(classification_deadline, move || {
-                let requirement = classify_speech(config_text.as_bytes(), &classify_trust);
+        gateway.classifier.classify(
+            ClassificationKind::SpeechWebsocket,
+            classification_deadline,
+            move || {
+                let requirement = classify_speech(config_text.as_bytes(), &classify_trust)
+                    .map_err(|()| HttpFault::MalformedRequest)?;
                 Ok((config_text, requirement))
-            }),
+            },
+        ),
     )
     .await;
     let (config_text, requirement) = match classified {
-        Ok(Ok((text, Ok(requirement)))) => (text, requirement),
-        Ok(Ok((_text, Err(())))) => {
+        Ok(Ok((text, requirement))) => (text, requirement),
+        Ok(Err(HttpFault::MalformedRequest)) => {
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -221,12 +224,12 @@ async fn run_speech(
             .await;
             return;
         }
-        Err(termination) => {
+        Err(state) => {
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
                 &mut drain,
-                termination,
+                SetupTermination::Drain(state),
                 close_message(1011, "internal setup failure"),
             )
             .await;
@@ -609,6 +612,28 @@ async fn setup_until<T>(
                 Err(SetupTermination::Drain(DrainState::Forced))
             } else {
                 Err(SetupTermination::Drain(*drain.borrow()))
+            }
+        }
+    }
+}
+
+async fn setup_while_serving<T>(
+    drain: &mut watch::Receiver<DrainState>,
+    operation: impl Future<Output = T>,
+) -> Result<T, DrainState> {
+    let initial = *drain.borrow();
+    if initial != DrainState::Serving {
+        return Err(initial);
+    }
+    tokio::pin!(operation);
+    tokio::select! {
+        biased;
+        result = &mut operation => Ok(result),
+        changed = drain.changed() => {
+            if changed.is_err() {
+                Err(DrainState::Forced)
+            } else {
+                Err(*drain.borrow())
             }
         }
     }
@@ -1020,14 +1045,16 @@ mod tests {
     use tokio::sync::watch;
 
     use crate::classification::ClassificationExecutor;
+    use crate::error::HttpFault;
+    use crate::metrics::ClassificationKind;
     use crate::worker_pool::{
         ModelSelection, ProfileRequirement, ReferenceForm, SpeechResponseFormat, SpeechTask,
         StreamMode, TrustDomain,
     };
 
     use super::{
-        DrainState, EventKind, MAX_MESSAGE_BYTES, SetupTermination, is_speech_setup_event,
-        parse_event_kind, parse_speech_config, realtime_model, reference_forms, setup_until,
+        DrainState, EventKind, MAX_MESSAGE_BYTES, is_speech_setup_event, parse_event_kind,
+        parse_speech_config, realtime_model, reference_forms, setup_while_serving,
         speech_requirement, websocket_message_too_large,
     };
 
@@ -1038,19 +1065,22 @@ mod tests {
         let (_drain_sender, mut drain) = watch::channel(DrainState::Serving);
         let deadline = tokio::time::Instant::now() + Duration::from_millis(25);
 
-        let result = setup_until(
+        let result = setup_while_serving(
             &mut drain,
-            deadline,
-            ClassificationExecutor::for_test(1).classify(deadline, move || {
-                entered_tx.send(()).expect("classifier started");
-                release_rx.recv().expect("release classifier");
-                Ok(())
-            }),
+            ClassificationExecutor::for_test(1).classify(
+                ClassificationKind::SpeechWebsocket,
+                deadline,
+                move || {
+                    entered_tx.send(()).expect("classifier started");
+                    release_rx.recv().expect("release classifier");
+                    Ok(())
+                },
+            ),
         )
         .await;
 
         entered_rx.await.expect("classifier entered");
-        assert!(matches!(result, Err(SetupTermination::Deadline)));
+        assert_eq!(result, Ok(Err(HttpFault::UpstreamTimeout)));
         release_tx.send(()).expect("release classifier");
     }
 

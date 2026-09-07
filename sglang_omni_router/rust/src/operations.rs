@@ -11,7 +11,10 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
-use crate::metrics::{DURATION_BUCKETS, HttpRoute, Rejection, RouterMetrics, StatusClass};
+use crate::metrics::{
+    ClassificationKind, ClassificationOutcome, ClassificationPhase, DURATION_BUCKETS, HttpRoute,
+    Rejection, RouterMetrics, StatusClass,
+};
 use crate::worker_pool::{
     OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
 };
@@ -326,6 +329,64 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
             route.label(),
             metrics.cancelled_before_headers(route)
         );
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_classification_duration_seconds Classification phase duration.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_classification_duration_seconds histogram\n");
+    for kind in ClassificationKind::ALL {
+        for phase in ClassificationPhase::ALL {
+            let histogram = metrics.classification_duration(kind, phase);
+            let mut cumulative = 0_u64;
+            for (index, bucket) in DURATION_BUCKETS.iter().enumerate() {
+                cumulative = cumulative.saturating_add(histogram.buckets[index]);
+                let _ = writeln!(
+                    output,
+                    "sglang_omni_router_classification_duration_seconds_bucket{{kind=\"{}\",phase=\"{}\",le=\"{}\"}} {cumulative}",
+                    kind.label(),
+                    phase.label(),
+                    bucket.label
+                );
+            }
+            cumulative = cumulative.saturating_add(histogram.buckets[DURATION_BUCKETS.len()]);
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_classification_duration_seconds_bucket{{kind=\"{}\",phase=\"{}\",le=\"+Inf\"}} {cumulative}",
+                kind.label(),
+                phase.label()
+            );
+            let sum_seconds = histogram.sum_micros as f64 / 1_000_000.0;
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_classification_duration_seconds_sum{{kind=\"{}\",phase=\"{}\"}} {sum_seconds}",
+                kind.label(),
+                phase.label()
+            );
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_classification_duration_seconds_count{{kind=\"{}\",phase=\"{}\"}} {}",
+                kind.label(),
+                phase.label(),
+                histogram.count()
+            );
+        }
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_classifications_total Classification calls by outcome.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_classifications_total counter\n");
+    for kind in ClassificationKind::ALL {
+        for outcome in ClassificationOutcome::ALL {
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_classifications_total{{kind=\"{}\",outcome=\"{}\"}} {}",
+                kind.label(),
+                outcome.label(),
+                metrics.classification_outcome(kind, outcome)
+            );
+        }
     }
 
     output.push_str("# HELP sglang_omni_router_http_faults_total Router-generated HTTP faults.\n");
@@ -648,7 +709,10 @@ mod tests {
 
     use crate::error::HttpFault;
     use crate::lifecycle::State as LifecycleState;
-    use crate::metrics::{HttpRoute, Rejection, RouterMetrics, StatusClass};
+    use crate::metrics::{
+        ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpRoute, Rejection,
+        RouterMetrics, StatusClass,
+    };
     use crate::worker_pool::{
         AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
         ProbeSnapshot, SessionCapacitySnapshot, WorkerHealth, WorkerSnapshot,
@@ -854,13 +918,47 @@ mod tests {
                 );
             }
         }
+        for kind in ClassificationKind::ALL {
+            for phase in ClassificationPhase::ALL {
+                for sample in [
+                    format!(
+                        "sglang_omni_router_classification_duration_seconds_bucket{{kind=\"{}\",phase=\"{}\",le=\"+Inf\"}} 0\n",
+                        kind.label(),
+                        phase.label()
+                    ),
+                    format!(
+                        "sglang_omni_router_classification_duration_seconds_count{{kind=\"{}\",phase=\"{}\"}} 0\n",
+                        kind.label(),
+                        phase.label()
+                    ),
+                ] {
+                    assert!(
+                        rendered.contains(&sample),
+                        "missing metric sample: {sample}"
+                    );
+                }
+            }
+            for outcome in ClassificationOutcome::ALL {
+                let sample = format!(
+                    "sglang_omni_router_classifications_total{{kind=\"{}\",outcome=\"{}\"}} 0\n",
+                    kind.label(),
+                    outcome.label()
+                );
+                assert!(
+                    rendered.contains(&sample),
+                    "missing metric sample: {sample}"
+                );
+            }
+        }
 
         let without_zero_request_samples = rendered
             .lines()
             .filter(|line| {
                 let new_boundary_metric = line
                     .contains("sglang_omni_router_http_response_header_duration_seconds")
-                    || line.contains("sglang_omni_router_http_cancelled_before_headers_total");
+                    || line.contains("sglang_omni_router_http_cancelled_before_headers_total")
+                    || line.contains("sglang_omni_router_classification_duration_seconds")
+                    || line.contains("sglang_omni_router_classifications_total");
                 !new_boundary_metric
                     && !(line.ends_with(" 0")
                         && [
@@ -976,6 +1074,15 @@ mod tests {
             .extensions_mut()
             .insert(HttpFault::RouterOverloaded);
         metrics.record_response(HttpRoute::Speech, &response);
+        metrics.record_classification_duration(
+            ClassificationKind::Speech,
+            ClassificationPhase::Execution,
+            std::time::Duration::from_millis(1),
+        );
+        metrics.record_classification_outcome(
+            ClassificationKind::Speech,
+            ClassificationOutcome::Success,
+        );
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -989,6 +1096,8 @@ mod tests {
         for sample in [
             "sglang_omni_router_http_requests_total{route=\"speech\"} 1\n",
             "sglang_omni_router_http_response_headers_total{route=\"speech\",status=\"4xx\"} 1\n",
+            "sglang_omni_router_classification_duration_seconds_count{kind=\"speech\",phase=\"execution\"} 1\n",
+            "sglang_omni_router_classifications_total{kind=\"speech\",outcome=\"success\"} 1\n",
             "sglang_omni_router_http_faults_total{route=\"speech\",code=\"router_overloaded\"} 1\n",
             "sglang_omni_router_rejections_total{resource=\"admission_speech_http\"} 1\n",
             "sglang_omni_router_http_relay_failures_total 1\n",

@@ -84,7 +84,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
     let lifecycle = Arc::new(Lifecycle::starting());
     let metrics = RouterMetrics::new();
     let pool = Arc::new(WorkerPool::build(&config, Arc::clone(&metrics))?);
-    let classifier = ClassificationExecutor::new();
+    let classifier = ClassificationExecutor::new(Arc::clone(&metrics));
     let relay = HttpRelay::new(
         pool.http_client(),
         config

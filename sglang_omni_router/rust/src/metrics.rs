@@ -250,6 +250,93 @@ pub(crate) enum Rejection {
     RealtimeWebsocketWorker,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum ClassificationKind {
+    Chat,
+    Speech,
+    SpeechBatch,
+    Transcription,
+    Translation,
+    SpeechWebsocket,
+}
+
+impl ClassificationKind {
+    pub(crate) const ALL: [Self; 6] = [
+        Self::Chat,
+        Self::Speech,
+        Self::SpeechBatch,
+        Self::Transcription,
+        Self::Translation,
+        Self::SpeechWebsocket,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Speech => "speech",
+            Self::SpeechBatch => "speech_batch",
+            Self::Transcription => "transcription",
+            Self::Translation => "translation",
+            Self::SpeechWebsocket => "speech_websocket",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum ClassificationPhase {
+    SlotWait,
+    ExecutorWait,
+    Execution,
+}
+
+impl ClassificationPhase {
+    pub(crate) const ALL: [Self; 3] = [Self::SlotWait, Self::ExecutorWait, Self::Execution];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::SlotWait => "slot_wait",
+            Self::ExecutorWait => "executor_wait",
+            Self::Execution => "execution",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum ClassificationOutcome {
+    Success,
+    Error,
+    Timeout,
+    Cancelled,
+}
+
+impl ClassificationOutcome {
+    pub(crate) const ALL: [Self; 4] = [Self::Success, Self::Error, Self::Timeout, Self::Cancelled];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Error => "error",
+            Self::Timeout => "timeout",
+            Self::Cancelled => "cancelled",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 impl Rejection {
     pub(crate) const ALL: [Self; 10] = [
         Self::GlobalAdmission,
@@ -311,6 +398,10 @@ pub(crate) struct RouterMetrics {
     responses: [[AtomicU64; StatusClass::ALL.len()]; HttpRoute::ALL.len()],
     response_header_durations: [DurationHistogram; HttpRoute::ALL.len()],
     cancelled_before_headers: [AtomicU64; HttpRoute::ALL.len()],
+    classification_durations:
+        [[DurationHistogram; ClassificationPhase::ALL.len()]; ClassificationKind::ALL.len()],
+    classification_outcomes:
+        [[AtomicU64; ClassificationOutcome::ALL.len()]; ClassificationKind::ALL.len()],
     faults: [[AtomicU64; HttpFault::ALL.len()]; HttpRoute::ALL.len()],
     rejections: [AtomicU64; Rejection::ALL.len()],
     relay_failures: AtomicU64,
@@ -323,6 +414,12 @@ impl RouterMetrics {
             responses: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             response_header_durations: std::array::from_fn(|_| DurationHistogram::new()),
             cancelled_before_headers: std::array::from_fn(|_| AtomicU64::new(0)),
+            classification_durations: std::array::from_fn(|_| {
+                std::array::from_fn(|_| DurationHistogram::new())
+            }),
+            classification_outcomes: std::array::from_fn(|_| {
+                std::array::from_fn(|_| AtomicU64::new(0))
+            }),
             faults: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             rejections: std::array::from_fn(|_| AtomicU64::new(0)),
             relay_failures: AtomicU64::new(0),
@@ -349,6 +446,23 @@ impl RouterMetrics {
         self.cancelled_before_headers[route.index()].fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_classification_duration(
+        &self,
+        kind: ClassificationKind,
+        phase: ClassificationPhase,
+        duration: Duration,
+    ) {
+        self.classification_durations[kind.index()][phase.index()].observe(duration);
+    }
+
+    pub(crate) fn record_classification_outcome(
+        &self,
+        kind: ClassificationKind,
+        outcome: ClassificationOutcome,
+    ) {
+        self.classification_outcomes[kind.index()][outcome.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_rejection(&self, rejection: Rejection) {
         self.rejections[rejection.index()].fetch_add(1, Ordering::Relaxed);
     }
@@ -373,6 +487,22 @@ impl RouterMetrics {
         self.cancelled_before_headers[route.index()].load(Ordering::Relaxed)
     }
 
+    pub(crate) fn classification_duration(
+        &self,
+        kind: ClassificationKind,
+        phase: ClassificationPhase,
+    ) -> DurationHistogramSnapshot {
+        self.classification_durations[kind.index()][phase.index()].snapshot()
+    }
+
+    pub(crate) fn classification_outcome(
+        &self,
+        kind: ClassificationKind,
+        outcome: ClassificationOutcome,
+    ) -> u64 {
+        self.classification_outcomes[kind.index()][outcome.index()].load(Ordering::Relaxed)
+    }
+
     pub(crate) fn faults(&self, route: HttpRoute, fault: HttpFault) -> u64 {
         self.faults[route.index()][fault.index()].load(Ordering::Relaxed)
     }
@@ -394,7 +524,10 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Response, StatusCode};
 
-    use super::{HttpRoute, Rejection, RouterMetrics, StatusClass};
+    use super::{
+        ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpRoute, Rejection,
+        RouterMetrics, StatusClass,
+    };
     use crate::error::HttpFault;
 
     #[test]
@@ -426,6 +559,15 @@ mod tests {
         metrics.record_response(HttpRoute::Speech, &response);
         metrics.record_response_header_duration(HttpRoute::Speech, Duration::from_micros(750));
         metrics.record_cancelled_before_headers(HttpRoute::Chat);
+        metrics.record_classification_duration(
+            ClassificationKind::Speech,
+            ClassificationPhase::Execution,
+            Duration::from_micros(750),
+        );
+        metrics.record_classification_outcome(
+            ClassificationKind::Speech,
+            ClassificationOutcome::Success,
+        );
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -443,6 +585,16 @@ mod tests {
         assert_eq!(duration.sum_micros, 750);
         assert_eq!(duration.buckets[6], 1);
         assert_eq!(metrics.cancelled_before_headers(HttpRoute::Chat), 1);
+        let classification = metrics
+            .classification_duration(ClassificationKind::Speech, ClassificationPhase::Execution);
+        assert_eq!(classification.count(), 1);
+        assert_eq!(classification.sum_micros, 750);
+        assert_eq!(classification.buckets[6], 1);
+        assert_eq!(
+            metrics
+                .classification_outcome(ClassificationKind::Speech, ClassificationOutcome::Success),
+            1
+        );
         assert_eq!(metrics.rejections(Rejection::SpeechAdmission), 1);
         assert_eq!(metrics.relay_failures(), 1);
     }
@@ -457,6 +609,15 @@ mod tests {
         }
         for (index, rejection) in Rejection::ALL.into_iter().enumerate() {
             assert_eq!(rejection.index(), index);
+        }
+        for (index, kind) in ClassificationKind::ALL.into_iter().enumerate() {
+            assert_eq!(kind.index(), index);
+        }
+        for (index, phase) in ClassificationPhase::ALL.into_iter().enumerate() {
+            assert_eq!(phase.index(), index);
+        }
+        for (index, outcome) in ClassificationOutcome::ALL.into_iter().enumerate() {
+            assert_eq!(outcome.index(), index);
         }
         for (index, fault) in HttpFault::ALL.into_iter().enumerate() {
             assert_eq!(fault.index(), index);

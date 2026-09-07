@@ -14,7 +14,7 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::classification::ClassificationExecutor;
 use crate::error::HttpFault;
-use crate::metrics::{Rejection, RouterMetrics};
+use crate::metrics::{ClassificationKind, Rejection, RouterMetrics};
 use crate::request_id::REQUEST_ID_HEADER;
 use crate::worker_pool::{AdmissionError, DispatchError, RequestLease};
 
@@ -80,13 +80,14 @@ impl HttpRelay {
 
     pub(crate) async fn classify<T>(
         &self,
+        kind: ClassificationKind,
         deadline: tokio::time::Instant,
         operation: impl FnOnce() -> Result<T, HttpFault> + Send + 'static,
     ) -> Result<T, HttpFault>
     where
         T: Send + 'static,
     {
-        self.classifier.classify(deadline, operation).await
+        self.classifier.classify(kind, deadline, operation).await
     }
 
     pub(crate) async fn read_buffered(
@@ -413,7 +414,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use crate::classification::ClassificationExecutor;
-    use crate::metrics::Rejection;
+    use crate::metrics::{ClassificationKind, Rejection};
 
     use super::{
         HttpFault, HttpRelay, SharedUploadState, UploadState, check_precommit_deadline_at,
@@ -547,6 +548,7 @@ mod tests {
         let classifier = tokio::spawn(async move {
             relay
                 .classify(
+                    ClassificationKind::Chat,
                     tokio::time::Instant::now() + Duration::from_secs(1),
                     move || {
                         entered_tx.send(()).expect("announce classifier entry");
@@ -577,6 +579,7 @@ mod tests {
             async move {
                 relay
                     .classify(
+                        ClassificationKind::Chat,
                         tokio::time::Instant::now() + Duration::from_secs(1),
                         move || {
                             entered_tx.send(()).expect("announce classifier entry");
@@ -609,6 +612,7 @@ mod tests {
 
         let result = relay
             .classify(
+                ClassificationKind::Chat,
                 tokio::time::Instant::now() + Duration::from_millis(20),
                 move || {
                     ran_in_task.store(true, Ordering::Relaxed);
@@ -634,6 +638,7 @@ mod tests {
             async move {
                 relay
                     .classify(
+                        ClassificationKind::Chat,
                         tokio::time::Instant::now() + Duration::from_millis(50),
                         move || {
                             let _budget = budget_permit;
@@ -683,6 +688,7 @@ mod tests {
         let classifier = tokio::spawn(async move {
             relay
                 .classify(
+                    ClassificationKind::Chat,
                     tokio::time::Instant::now() + Duration::from_secs(1),
                     move || {
                         let _budget = budget_permit;
