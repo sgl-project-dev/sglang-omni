@@ -126,6 +126,7 @@ class Qwen3TTSCodecStateArena:
         """
         with self._lock:
             self._retired.add(slot)
+            self._release_events.pop(slot, None)
             if slot in self._free:
                 self._free.remove(slot)
 

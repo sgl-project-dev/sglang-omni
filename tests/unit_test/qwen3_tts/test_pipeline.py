@@ -2862,10 +2862,18 @@ def test_qwen3_tts_decode_launch_syncs_when_event_record_fails(
     assert not scheduler._cuda_decode_failed
 
     events.clear()
+    # note (luojiaxuan): the other pinned slot breaks the same way, and only
+    # then does the launch fall back to pageable transfers.
+    with pytest.raises(RuntimeError, match="event init failed"):
+        scheduler._launch_decode_plans([plan], stream=stream)
+    assert all(each.broken for each in scheduler._decode_staging.value)
+
+    events.clear()
     handle = scheduler._launch_decode_plans([plan], stream=stream)
     assert (
         handle.slot is None and "record" not in events
-    ), "later launches on this thread use pageable transfers"
+    ), "with both slots broken the launch uses pageable transfers"
+    assert "stream_synchronize" in events
     assert torch.equal(handle.resolve()[0], torch.ones(8))
 
 
@@ -3208,9 +3216,13 @@ def test_qwen3_tts_launch_failure_with_proven_completion_breaks_slot(
     scheduler._decoder = working_decoder
     events.clear()
     handle = scheduler._launch_decode_plans([plan], stream=stream)
-    assert handle.slot is None and "record" not in events
-    assert "stream_synchronize" in events
+    # note (luojiaxuan): the thread's other pinned slot takes over; the broken
+    # one is never picked again.
+    used = handle.slot
+    assert used is not None and used is not slot
+    assert not used.broken and "record" in events
     assert torch.equal(handle.resolve()[0], torch.ones(8))
+    assert scheduler._thread_decode_slot() is used
 
 
 def test_qwen3_tts_resolve_clone_failure_releases_slot(

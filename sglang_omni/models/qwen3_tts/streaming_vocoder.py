@@ -1580,9 +1580,13 @@ class Qwen3TTSStreamingVocoderScheduler(
 
     @staticmethod
     def _decode_stream_priority() -> int:
-        """One notch above the lowest priority: ahead of the talker, not maximal."""
+        """The second-highest priority: ahead of the talker's default stream,
+        with the top notch left free. A device with only two levels uses the
+        top one."""
         least_priority, greatest_priority = torch.cuda.Stream.priority_range()
-        return min(least_priority, greatest_priority + 1)
+        if greatest_priority + 1 < least_priority:
+            return greatest_priority + 1
+        return greatest_priority
 
     def _decode_stream_context(self) -> Any:
         if self._decode_stream is None:
@@ -1842,7 +1846,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             )
             self._decode_staging.value = slots
         for slot in slots:
-            if not slot.busy:
+            if not slot.busy and not slot.broken:
                 return slot
         return slots[0]
 
