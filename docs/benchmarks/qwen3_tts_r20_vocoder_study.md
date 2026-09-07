@@ -727,3 +727,5 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
 - **主机收尾(2026-09-06 22:00 PT)**:eval-h100 上任务容器 `sglang-omni-jaxan-1` 已停止并删除,
   map 记录已清(map 24 行、jaxan 容器 0 个);全部日志与 254 个输出目录留在
   `/data/jaxan/runs/20260902-mainline-nari-ab/`。后续若 CI 需要 GPU 复现,按规范新建容器。
+- **#1998 CI 全绿(2026-09-06 23:30 PT)**:32 个 check 通过(TTS CI 五个 stage 含 stage 3 一致性、
+  ASR、Qwen3-Omni 全部 stage、XPU 重跑通过;首轮 XPU 失败是镜像构建时 pip 下载超时,与代码无关)。
