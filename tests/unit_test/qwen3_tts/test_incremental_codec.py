@@ -17,9 +17,6 @@ from sglang_omni.models.qwen3_tts.incremental_codec import (
     incremental_causal_conv1d,
     incremental_causal_transconv1d,
 )
-from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
-    Qwen3TTSIncrementalCodecCudaGraphRunner,
-)
 
 
 def _random_partitions(total: int, seed: int) -> list[int]:
