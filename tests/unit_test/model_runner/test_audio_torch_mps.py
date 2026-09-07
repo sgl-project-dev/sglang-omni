@@ -114,3 +114,55 @@ def test_torch_runner_rejects_missing_or_disjoint_audio_span(token_ids):
         runner.custom_prefill_forward(
             None, SimpleNamespace(input_ids=torch.tensor(token_ids)), [request]
         )
+
+
+def test_audio_tower_runs_before_token_embedding():
+    # MPS dispatches a pending embedding kernel short when the data-dependent
+    # audio gather forces a device read after it, which leaves leading prompt
+    # rows unwritten. Keep the audio tower ahead of the token embedding.
+    from transformers import Qwen3Config, Qwen3ForCausalLM
+
+    from sglang_omni.models.qwen3_asr.torch_mps_runner import (
+        Qwen3ASRTorchMpsModelRunner,
+    )
+
+    torch.manual_seed(42)
+    model = (
+        Qwen3ForCausalLM(
+            Qwen3Config(
+                vocab_size=32,
+                hidden_size=8,
+                intermediate_size=16,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=4,
+                tie_word_embeddings=True,
+            )
+        )
+        .eval()
+        .to("cpu")
+    )
+    calls = []
+    model.model.embed_tokens.register_forward_pre_hook(lambda *_: calls.append("embed"))
+
+    def get_audio_feature(items):
+        calls.append("audio")
+        return torch.randn(2, 8)
+
+    runner = object.__new__(Qwen3ASRTorchMpsModelRunner)
+    runner.device = torch.device("cpu")
+    runner._past_key_values = {}
+    runner.model = SimpleNamespace(
+        language_model=model, get_audio_feature=get_audio_feature
+    )
+    runner._next_token_result = lambda tokens: tokens
+    item = SimpleNamespace(feature=torch.zeros(1), pad_value=999)
+    req = SimpleNamespace(
+        multimodal_inputs=SimpleNamespace(mm_items=[item], audio_token_id=10)
+    )
+    requests = [SimpleNamespace(request_id="one", data=SimpleNamespace(req=req))]
+    runner.custom_prefill_forward(
+        None, SimpleNamespace(input_ids=torch.tensor([1, 999, 999, 2])), requests
+    )
+    assert calls == ["audio", "embed"]

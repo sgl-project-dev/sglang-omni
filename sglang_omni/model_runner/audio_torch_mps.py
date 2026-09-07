@@ -94,8 +94,14 @@ class AudioTorchMpsModelRunner(ModelRunner):
             dtype=torch.long,
             device=self.device,
         )
+        # Run the audio tower before the token embedding. Its masked gather is
+        # data dependent, so it forces a device read, and on MPS an embedding
+        # kernel left pending across that read is dispatched short: leading rows
+        # of the prompt come back unwritten, or the gather itself selects zero
+        # frames and the encoder fails on an empty reshape.
+        audio_features = self.model.get_audio_feature([item])
         input_embeddings = language_model.model.embed_tokens(input_ids)
-        audio_features = self.model.get_audio_feature([item]).to(
+        audio_features = audio_features.to(
             device=self.device,
             dtype=input_embeddings.dtype,
         )
