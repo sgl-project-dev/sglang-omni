@@ -4,9 +4,75 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any
+from importlib import import_module
+from typing import Any, Callable
 
 from sglang_omni.model_runner.base import ModelRunner
+
+# Keep model imports lazy: importing the worker on CUDA/CPU must not import MLX.
+_MLX_RUNNER_FACTORIES: dict[str, str] = {
+    "Qwen3ASRForConditionalGeneration": (
+        "sglang_omni.models.qwen3_asr.mlx.runner:make_qwen3_asr_mlx_runner_class"
+    ),
+    "FishS2ProMlxModel": (
+        "sglang_omni.models.fishaudio_s2_pro.mlx.runner:make_fish_mlx_runner_class"
+    ),
+}
+
+
+def register_mlx_runner_factory(model_arch: str, factory_path: str) -> None:
+    """Register a lazy ``module:attribute`` runner-class factory."""
+    _MLX_RUNNER_FACTORIES[model_arch] = factory_path
+
+
+def resolve_mlx_runner_factory(model_arch: str | None) -> Callable[[], type]:
+    """Resolve an architecture without importing unrelated model backends."""
+    factory_path = _MLX_RUNNER_FACTORIES.get(model_arch)
+    if factory_path is None:
+        supported = ", ".join(sorted(_MLX_RUNNER_FACTORIES))
+        raise NotImplementedError(
+            f"Omni's MLX worker has no runner for architecture {model_arch!r}; "
+            f"supported architectures: {supported}"
+        )
+    module_name, _, attribute = factory_path.partition(":")
+    return getattr(import_module(module_name), attribute)
+
+
+def _create_registered_runner(runner_class: type) -> Any:
+    """Use SGLang's constructor contract unless the runner supplies an adapter.
+
+    Custom runners may expose ``from_runtime_config``, ``scheduler_model`` and
+    ``prepare_for_kv_cache_release(req)``. All runners expose ``pool_size``.
+    Absent hooks retain the standard SGLang MLX lifecycle. Both paths read the
+    published config bags, not the raw server args.
+    """
+    from sglang.srt.runtime_context import (
+        get_device,
+        get_exec,
+        get_memory,
+        get_model,
+        get_schedule,
+    )
+
+    custom_create = getattr(runner_class, "from_runtime_config", None)
+    if custom_create is not None:
+        return custom_create()
+    init_kwargs = {
+        "model_path": get_model().model_path,
+        "trust_remote_code": get_model().trust_remote_code,
+        "disable_radix_cache": get_memory().disable_radix_cache,
+        "mem_fraction_static": get_schedule().mem_fraction_static,
+        "quantization": get_model().quantization,
+        "revision": get_model().revision,
+        "enable_sampling": get_device().mlx_enable_sampling,
+        "sampling_rng_seed": get_device().random_seed,
+        "deterministic_seeding": (
+            get_exec().deterministic.enable_deterministic_inference
+        ),
+    }
+    if get_schedule().max_total_tokens is not None:
+        init_kwargs["pool_size"] = get_schedule().max_total_tokens
+    return runner_class(**init_kwargs)
 
 
 @dataclass(slots=True)
@@ -169,35 +235,13 @@ def create_mlx_model_worker(
     tp_rank: int = 0,
 ):
     """Construct an MLX worker with the same scheduler-facing contract as Omni."""
-    fish_mlx = config.model_arch_override == "FishS2ProMlxModel"
-    if config.model_arch_override == "Qwen3ASRForConditionalGeneration":
-        from sglang_omni.models.qwen3_asr.mlx.runner import (
-            make_qwen3_asr_mlx_runner_class,
-        )
-
-        runner_factory = make_qwen3_asr_mlx_runner_class
-    elif fish_mlx:
-        # Fish owns both AR networks and its codebook feedback. It uses the
-        # scheduler bookkeeping stub with a model-specific synchronous runner.
-        runner_factory = None
-    else:
-        raise NotImplementedError(
-            f"Omni's MLX worker does not support {config.model_arch_override}"
-        )
+    runner_factory = resolve_mlx_runner_factory(config.model_arch_override)
 
     from sglang.srt.distributed.parallel_state_wrapper import ParallelState
     from sglang.srt.hardware_backend.mlx.model_runner_stub import MlxModelRunnerStub
     from sglang.srt.hardware_backend.mlx.tp_worker import MlxTpModelWorker
     from sglang.srt.layers.dp_attention import compute_dp_attention_world_info
-    from sglang.srt.runtime_context import (
-        get_device,
-        get_exec,
-        get_memory,
-        get_model,
-        get_parallel,
-        get_schedule,
-        publish,
-    )
+    from sglang.srt.runtime_context import get_parallel, get_schedule, publish
     from sglang.srt.server_args import PortArgs
 
     class OmniMlxWorker(MlxTpModelWorker):
@@ -207,33 +251,7 @@ def create_mlx_model_worker(
 
         def _init_model_runner(self):
             MlxModelRunnerStub.validate_startup_weight_load_mode(self.server_args)
-            if fish_mlx:
-                from sglang_omni.models.fishaudio_s2_pro.mlx.runner import FishMlxModel
-
-                self._mlx_runner = FishMlxModel(
-                    get_model().model_path,
-                    context_length=get_model().context_length,
-                )
-                pool_size = get_schedule().max_total_tokens
-            else:
-                runner_class = runner_factory()
-                init_kwargs = {
-                    "model_path": get_model().model_path,
-                    "trust_remote_code": get_model().trust_remote_code,
-                    "disable_radix_cache": get_memory().disable_radix_cache,
-                    "mem_fraction_static": get_schedule().mem_fraction_static,
-                    "quantization": get_model().quantization,
-                    "revision": get_model().revision,
-                    "enable_sampling": get_device().mlx_enable_sampling,
-                    "sampling_rng_seed": get_device().random_seed,
-                    "deterministic_seeding": (
-                        get_exec().deterministic.enable_deterministic_inference
-                    ),
-                }
-                if get_schedule().max_total_tokens is not None:
-                    init_kwargs["pool_size"] = get_schedule().max_total_tokens
-                self._mlx_runner = runner_class(**init_kwargs)
-                pool_size = self._mlx_runner.pool_size
+            self._mlx_runner = _create_registered_runner(runner_factory())
             self._model_runner = MlxModelRunnerStub(
                 model_config=self.model_config,
                 mem_fraction_static=get_schedule().mem_fraction_static,
@@ -245,18 +263,20 @@ def create_mlx_model_worker(
                 req_to_token_pool=self.req_to_token_pool,
                 token_to_kv_pool_allocator=self.token_to_kv_pool_allocator,
                 memory_pool_config=self.memory_pool_config,
-                mlx_pool_size=pool_size,
+                mlx_pool_size=self._mlx_runner.pool_size,
             )
-            if fish_mlx:
-                self._model_runner.model = self._mlx_runner
+            scheduler_model = getattr(self._mlx_runner, "scheduler_model", None)
+            if scheduler_model is not None:
+                self._model_runner.model = scheduler_model
             self._mlx_active_rids = set()
             self._mlx_pool_initialized = False
 
         def prepare_for_kv_cache_release(self, req):
-            if not fish_mlx:
+            prepare = getattr(self._mlx_runner, "prepare_for_kv_cache_release", None)
+            if prepare is not None:
+                prepare(req)
+            else:
                 super().prepare_for_kv_cache_release(req)
-            # Fish has no auxiliary/radix state. Its scheduler completion/abort
-            # callbacks release the native per-request cache.
 
         def get_tp_group(self):
             return self.model_runner.tp_group
