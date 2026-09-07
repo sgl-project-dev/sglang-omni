@@ -40,6 +40,8 @@ def _write_video_with_audio(path: Path) -> None:
             str(path),
         ],
         check=True,
+        stdin=subprocess.DEVNULL,
+        timeout=30,
     )
 
 
