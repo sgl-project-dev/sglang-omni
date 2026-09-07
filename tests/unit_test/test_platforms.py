@@ -200,6 +200,13 @@ def test_xpu_keeps_the_qwen3_omni_talker_decode_eager() -> None:
     assert CPUOmniPlatform().enable_talker_graph() is True
 
 
+def test_xpu_keeps_the_zonos2_ar_engine_uncompiled() -> None:
+    """Inductor's per-bucket autotune here costs more than the startup budget."""
+    assert xpu_platform.XPUOmniPlatform().enable_zonos2_torch_compile() is False
+    assert OmniPlatform().enable_zonos2_torch_compile() is True
+    assert CPUOmniPlatform().enable_zonos2_torch_compile() is True
+
+
 def test_xpu_keeps_the_qwen3_omni_thinker_decode_eager() -> None:
     assert xpu_platform.XPUOmniPlatform().enable_thinker_decode_graph() is False
     assert OmniPlatform().enable_thinker_decode_graph() is True
@@ -247,3 +254,31 @@ def test_a_platform_declines_a_device_that_is_not_its_own() -> None:
     assert platform.get_device_graph_backend(torch.device("xpu", 0)) is None
     assert platform.get_device_graph_backend(torch.device("meta")) is None
     assert platform.get_device_graph_backend(torch.device("cpu")) is None
+
+
+def test_only_the_platforms_sglang_quantizes_on_claim_load_time_fp8() -> None:
+    """Tracks where SGLang's ``scaled_fp8_quant`` actually has an implementation.
+
+    It is defined twice: a HIP branch, and an else branch that calls
+    ``sgl_per_tensor_quant_fp8`` -- imported only under CUDA and MUSA. So CUDA,
+    ROCm and MUSA convert bf16 weights on the way in; everyone else would raise
+    NameError mid-load, which is not a fallback a caller can catch usefully.
+    """
+    from sglang_omni.platforms.apple import AppleOmniPlatform
+    from sglang_omni.platforms.musa import MUSAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+
+    expected = {
+        OmniPlatform: True,
+        CUDAOmniPlatform: True,
+        ROCMOmniPlatform: True,
+        MUSAOmniPlatform: True,
+        xpu_platform.XPUOmniPlatform: False,
+        NPUOmniPlatform: False,
+        CPUOmniPlatform: False,
+        AppleOmniPlatform: False,
+    }
+    for platform_class, supported in expected.items():
+        assert (
+            platform_class().supports_online_fp8_quantization() is supported
+        ), platform_class.__name__

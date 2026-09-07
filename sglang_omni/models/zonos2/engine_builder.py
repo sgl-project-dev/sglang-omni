@@ -18,11 +18,14 @@ from sglang_omni.models.zonos2.hf_config import (
 from sglang_omni.models.zonos2.streaming_contract import (
     DEFAULT_ZONOS2_PRODUCER_FIRST_FLUSH_ROWS,
 )
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.utils.checkpoint import resolve_checkpoint
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
 logger = logging.getLogger(__name__)
+
+_BF16_MEM_FRACTION_STATIC = 0.85
 
 
 def _build_config_shim(model_path: str, cfg: Zonos2Config) -> str:
@@ -160,7 +163,7 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
             # async-decode lookahead overlaps the resolve D2H with the next
             # forward; the overlap scheduler must be enabled for it.
             "disable_overlap_schedule": not self.async_decode,
-            "enable_torch_compile": True,
+            "enable_torch_compile": current_platform.enable_zonos2_torch_compile(),
             "mem_fraction_static": self.mem_fraction_static,
             "sampling_backend": "pytorch",
             "trust_remote_code": True,
@@ -169,7 +172,19 @@ class Zonos2EngineBuilder(TtsEngineBuilder):
         if self.fp8:
             # Dynamic FP8 on the MoE experts (bf16 -> fp8 at load, halving the
             # expert weights); bf16 nn.Linear projections are unaffected.
-            defaults["quantization"] = "fp8"
+            if current_platform.supports_online_fp8_quantization():
+                defaults["quantization"] = "fp8"
+            else:
+                defaults["mem_fraction_static"] = max(
+                    self.mem_fraction_static, _BF16_MEM_FRACTION_STATIC
+                )
+                logger.info(
+                    "ZONOS2 keeping bf16 MoE experts: %s has no load-time FP8 "
+                    "weight quantizer. Expect roughly double the expert weight "
+                    "footprint; mem_fraction_static raised to %s.",
+                    current_platform.device_type,
+                    defaults["mem_fraction_static"],
+                )
         return defaults
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:

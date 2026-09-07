@@ -38,6 +38,7 @@ from sglang_omni.scheduling.streaming_vocoder import (
     resolve_initial_codec_chunk_frames,
 )
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_device_spec
 
 # Process-wide cache: load the DAC checkpoint at most once per device.
 _vocoder_cache: tuple[str, Zonos2DACVocoder] | None = None
@@ -66,7 +67,7 @@ def _get_vocoder(device: str) -> Zonos2DACVocoder:
 def decode_to_pcm(
     audio_codes: torch.Tensor,
     eos_frame: int | None = None,
-    device: str = "cuda",
+    device: str | None = None,
 ) -> torch.Tensor:
     """Decode delayed ``[T, 9]`` AR codes to 1-D float32 PCM @ 44.1 kHz.
 
@@ -74,24 +75,28 @@ def decode_to_pcm(
         audio_codes: delayed per-frame codes ``[T, 9]`` (or batched ``[B, T, 9]``)
             straight from AR decode, before the delay is sheared out.
         eos_frame: number of aligned frames to keep before EOS, if known.
-        device: torch device the DAC model runs on.
+        device: torch device the DAC model runs on; ``None`` takes the host's.
 
     Returns:
         1-D ``float32`` PCM tensor at 44.1 kHz on CPU.
     """
-    return _get_vocoder(device).decode(audio_codes, eos_frame=eos_frame)
+    return _get_vocoder(resolve_device_spec(device)).decode(
+        audio_codes, eos_frame=eos_frame
+    )
 
 
 def decode_batch(
     audio_codes_list: list[torch.Tensor],
     eos_frames: list[int | None],
-    device: str = "cuda",
+    device: str | None = None,
 ) -> list[torch.Tensor]:
     """Batched analogue of ``decode_to_pcm``: one DAC forward for many items.
 
     Reuses the process-wide DAC cache, so no second checkpoint load.
     """
-    return _get_vocoder(device).decode_batch(audio_codes_list, eos_frames)
+    return _get_vocoder(resolve_device_spec(device)).decode_batch(
+        audio_codes_list, eos_frames
+    )
 
 
 # ---- streaming (incremental raised-cosine OLA) ----
@@ -203,7 +208,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
     def __init__(
         self,
         *,
-        device: str = "cuda",
+        device: str | None = None,
         compute_fn: Any = None,
         batch_compute_fn: Any = None,
         steady_chunk_frames: int = _STREAM_STEADY_CHUNK_FRAMES,
@@ -218,7 +223,7 @@ class Zonos2StreamingVocoderScheduler(StreamingVocoderBase[_Zonos2StreamState, N
             raise ValueError(
                 f"steady_chunk_frames must be positive, got {steady_chunk_frames}"
             )
-        self._device = device
+        self._device = resolve_device_spec(device)
         self._steady_chunk_frames = int(steady_chunk_frames)
         self._default_initial_chunk_frames = max(
             0, min(int(initial_chunk_frames), int(steady_chunk_frames))

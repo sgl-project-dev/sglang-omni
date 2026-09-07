@@ -85,8 +85,20 @@ class OmniPlatform(DeviceMixin):
     def enable_thinker_decode_graph(self) -> bool:
         return True
 
+    def enable_zonos2_torch_compile(self) -> bool:
+        """Whether ZONOS2's AR engine should ask SGLang for torch.compile."""
+        return True
+
     def get_decode_cuda_graph_backend(self) -> str | None:
         return None
+
+    def supports_online_fp8_quantization(self) -> bool:
+        """Whether SGLang can quantize bf16 weights to FP8 at load on this device.
+
+        A checkpoint that ships FP8 weights is a separate question; this is about
+        ``quantization="fp8"`` asking SGLang to convert on the way in.
+        """
+        return True
 
     def supports_torchaudio_resample(self) -> bool:
         """Check if current platform support torchaudio.functional.resample"""

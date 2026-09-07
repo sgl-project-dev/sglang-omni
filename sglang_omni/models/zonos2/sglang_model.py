@@ -21,6 +21,7 @@ from sglang_omni.models.zonos2.components.text_frontend import TTSSamplingParams
 from sglang_omni.models.zonos2.hf_config import Zonos2Config
 from sglang_omni.models.zonos2.radix_hash import poly_row_hash
 from sglang_omni.models.zonos2.sampler import sample_tts
+from sglang_omni.platforms import current_platform
 from sglang_omni.vendor.sglang.core import ForwardBatch
 from sglang_omni.vendor.sglang.layers import (
     RadixAttention,
@@ -346,7 +347,7 @@ class Zonos2SGLangModel(nn.Module):
         logits = logits.view(*logits.shape[:-1], self.n_codebooks, self.audio_vocab)
         return softcap(logits, self.config.loss_softcap)
 
-    # ---- opt-in tail CUDA graph (ZONOS2_FRAME_GRAPH) ----
+    # ---- opt-in tail device graph (ZONOS2_FRAME_GRAPH) ----
 
     @torch.no_grad()
     def _tail_compute(self, bs: int) -> None:
@@ -408,20 +409,29 @@ class Zonos2SGLangModel(nn.Module):
         self._tail_any_min_p = params.min_p > 0.0
         self._tail_buckets = sorted(buckets)
         self._tail_graphs = {}
-        s = torch.cuda.Stream()
-        s.wait_stream(torch.cuda.current_stream())
-        with torch.cuda.stream(s):
+
+        backend = current_platform.get_device_graph_backend(dev)
+        if backend is None:
+            raise RuntimeError(
+                f"ZONOS2 frame_graph was requested, but {current_platform.device_type!r} "
+                f"records no model-owned graphs on {dev}. Disable frame_graph for "
+                "this stage."
+            )
+        device_module = torch.get_device_module(dev)
+
+        s = device_module.Stream()
+        s.wait_stream(device_module.current_stream())
+        with device_module.stream(s):
             for bs in self._tail_buckets:
                 for _ in range(3):
                     self._tail_compute(bs)
-        torch.cuda.current_stream().wait_stream(s)
-        torch.cuda.synchronize()
+        device_module.current_stream().wait_stream(s)
+        device_module.synchronize()
         for bs in self._tail_buckets:
-            g = torch.cuda.CUDAGraph()
-            with torch.cuda.graph(g):
+            with backend.capture() as g:
                 self._tail_compute(bs)
             self._tail_graphs[bs] = g
-        torch.cuda.synchronize()
+        device_module.synchronize()
 
     @torch.no_grad()
     def run_tail_graph(

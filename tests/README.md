@@ -197,6 +197,16 @@ tests/
     │   ├── test_s0_gate.py
     │   ├── test_state_pool.py
     │   └── test_streaming_vocoder.py
+    ├── zonos2/
+    │   ├── test_component_caches.py
+    │   ├── test_engine_builder.py
+    │   ├── test_pipeline.py
+    │   ├── test_speaker_cache.py
+    │   ├── test_state_lifecycle.py
+    │   ├── test_streaming_vocoder.py
+    │   ├── test_tail_graph_capture.py
+    │   ├── test_tail_graph_replay.py
+    │   └── test_text_normalize_cache.py
     ├── router/
     │   ├── test_app.py
     │   └── test_core.py
@@ -727,7 +737,13 @@ that happened to contain an older version of the test.
   - pipeline configuration, text normalization, and speaker/component caches
   - streaming vocoder chunking and flush behavior
   - scheduler terminal/abort cleanup, complete row reset and reuse, mixed-batch
-    ownership, and async resolve contracts.
+    ownership, and async resolve contracts
+  - SGLang server-arg defaults: the FP8-if-the-device-can-quantize fallback and its
+    static-pool floor, the platform-driven `torch.compile` decision, and decode
+    graphs staying enabled for the platform backend
+  - per-frame tail-graph capture routed through the platform graph backend, plus a
+    real accelerator graph record/replay (`test_tail_graph_replay.py`, also run by
+    XPU CI) proving the sampler still draws fresh values on replay.
 
 - `unit_test/router/`: SGLang-Omni Router unit tests:
   - router CLI/config behavior

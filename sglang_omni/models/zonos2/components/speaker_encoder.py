@@ -27,6 +27,7 @@ from sglang_omni.scheduling.reference_encoder import (
     ReferenceEncodeService,
     TensorReferenceEncodeHook,
 )
+from sglang_omni.utils.device import resolve_device_spec
 
 SPEAKER_EMBEDDING_DIM = 2048
 
@@ -47,8 +48,9 @@ class Qwen3SpeakerEmbedding(nn.Module):
     F_MIN = 0.0
     F_MAX = 12_000.0
 
-    def __init__(self, device: str = "cuda", compile_forward: bool = False):
+    def __init__(self, device: str | None = None, compile_forward: bool = False):
         super().__init__()
+        device = resolve_device_spec(device)
         self.device = device
         self._compile_forward = compile_forward
         self._compiled = None
@@ -247,13 +249,13 @@ class SpeakerEncoder(TensorReferenceEncodeHook[_Zonos2RefInput]):
 
     def __init__(
         self,
-        device: str = "cuda",
+        device: str | None = None,
         cache_max_items: int = 256,
         compile_forward: bool = False,
     ):
         if int(cache_max_items) < 1:
             raise ValueError(f"cache_max_items must be >= 1, got {cache_max_items}")
-        self.device = device
+        self.device = resolve_device_spec(device)
         self._embedder: Qwen3SpeakerEmbedding | None = None
         self._embedder_lock = threading.Lock()
         # note (Yue Yin): opt-in compile kill-switch (default OFF for bit-for-bit

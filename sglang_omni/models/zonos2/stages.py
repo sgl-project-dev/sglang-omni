@@ -31,6 +31,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage, store_state
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
+from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ def create_preprocessing_executor(
 def create_speaker_encode_executor(
     model_path: str,
     *,
+    device: str | None = None,
     gpu_id: int | None = 0,
     speaker_cache_max_items: int = 256,
     max_concurrency: int = 4,
@@ -90,7 +92,7 @@ def create_speaker_encode_executor(
     from sglang_omni.models.zonos2.components.speaker_encoder import SpeakerEncoder
 
     encoder = SpeakerEncoder(
-        device=_device(gpu_id),
+        device=resolve_device_spec(device, gpu_id),
         cache_max_items=speaker_cache_max_items,
         compile_forward=spk_compile,
     )
@@ -113,6 +115,7 @@ def create_speaker_encode_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
+    device: str | None = None,
     gpu_id: int | None = 0,
     dac_batch: bool = False,
     vocoder_warmup: bool = False,
@@ -123,7 +126,7 @@ def create_vocoder_executor(
         decode_to_pcm,
     )
 
-    device = _device(gpu_id)
+    device = resolve_device_spec(device, gpu_id)
 
     def _result_payload(
         payload: StagePayload, state: Zonos2State, pcm: Any
@@ -213,16 +216,13 @@ def create_vocoder_executor(
     return scheduler
 
 
-def _device(gpu_id: int | None) -> str:
-    return f"cuda:{gpu_id}" if gpu_id is not None else "cpu"
-
-
 # ---- AR engine stage (OmniScheduler-backed ZONOS2 backbone) ----
 
 
 def create_sglang_omni_tts_engine_executor(
     model_path: str,
     *,
+    device: str | None = None,
     gpu_id: int | None = 0,
     dtype: str = "bfloat16",
     mem_fraction_static: float = 0.5,
@@ -250,9 +250,7 @@ def create_sglang_omni_tts_engine_executor(
         mem_fraction_static=mem_fraction_static,
     ).build(
         model_path,
-        # CUDA-only model: keep the pre-existing device rather than resolving through
-        # the ambient platform.
-        device="cuda:0",
+        device=device,
         gpu_id=gpu_id,
         dtype=dtype,
         server_args_overrides=server_args_overrides,

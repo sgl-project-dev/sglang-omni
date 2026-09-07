@@ -7,7 +7,6 @@ import threading
 import time
 from queue import Queue
 from types import SimpleNamespace
-from unittest import mock
 
 import pytest
 import torch
@@ -36,14 +35,6 @@ class _ModelHarness:
 
     def __init__(self, pool: Zonos2DecodeStatePool) -> None:
         self._decode_state_pool = pool
-
-
-class _FakeCopyStream:
-    def wait_event(self, _event) -> None:
-        pass
-
-    def synchronize(self) -> None:
-        pass
 
 
 def _model_and_pool() -> tuple[_ModelHarness, Zonos2DecodeStatePool]:
@@ -240,20 +231,88 @@ def test_resolve_collects_compact_metadata_without_releasing_state() -> None:
 
     runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
     runner.model = model
-    runner._copy_stream = _FakeCopyStream()
+    runner._copy_stream = None
     data = SimpleNamespace(output_codes=[], eos_frame=None)
     request = SimpleNamespace(request_id=request_id, data=data)
     codes = list(range(N_CODEBOOKS))
     packed = torch.tensor([codes + [1, 5]], dtype=torch.int64)
     next_ids = torch.tensor([123], dtype=torch.int64)
     result = SimpleNamespace(next_token_ids=None)
-    launch_buf = ([request], packed, N_CODEBOOKS, next_ids, object())
+    launch_buf = ([request], packed, N_CODEBOOKS, next_ids, None)
 
-    with mock.patch("torch.cuda.stream", lambda _stream: contextlib.nullcontext()):
-        runner._collect_resolve(launch_buf, result)
+    runner._collect_resolve(launch_buf, result)
 
+    assert runner._copy_stream is None
     assert data.output_codes[0].tolist() == codes
     assert data.eos_frame == 5
     assert torch.equal(result.next_token_ids, next_ids)
     assert pool.row_for(request_id) == row
     assert row not in pool._free_rows
+
+
+def test_resolve_takes_its_stream_from_the_tensors_own_accelerator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The D2H overlap must follow the device the codes live on, not torch.cuda.
+
+    A recording stand-in for the accelerator module stands in for a device this
+    host may not have, so the routing is observable without one. Naming
+    torch.cuda here would leave the stand-in untouched and fail the asserts.
+    """
+    seen: dict[str, object] = {}
+
+    class _Stream:
+        def wait_event(self, event) -> None:
+            seen["waited"] = event
+
+        def synchronize(self) -> None:
+            seen["synchronized"] = True
+
+    class _DeviceModule:
+        @staticmethod
+        def Stream(*, device):
+            seen["stream_device"] = device
+            return _Stream()
+
+        @staticmethod
+        @contextlib.contextmanager
+        def stream(stream):
+            seen["entered"] = stream
+            yield
+
+    fake_device = torch.device("privateuseone", 3)
+    host = torch.tensor([list(range(N_CODEBOOKS)) + [1, 5]], dtype=torch.int64)
+
+    class _OffDeviceTensor:
+        """Reports a device this host lacks; ``to('cpu')`` yields the real rows."""
+
+        device = fake_device
+
+        def to(self, target, non_blocking=False):
+            seen["copy"] = (target, non_blocking)
+            return host
+
+    monkeypatch.setattr(
+        torch,
+        "get_device_module",
+        lambda device: _DeviceModule if device == fake_device else None,
+    )
+
+    runner = Zonos2ModelRunner.__new__(Zonos2ModelRunner)
+    runner.model, _pool = _model_and_pool()
+    runner._copy_stream = None
+    data = SimpleNamespace(output_codes=[], eos_frame=None)
+    request = SimpleNamespace(request_id="req-stream", data=data)
+    event = object()
+
+    runner._collect_resolve(
+        ([request], _OffDeviceTensor(), N_CODEBOOKS, torch.tensor([1]), event), None
+    )
+
+    assert seen["stream_device"] == fake_device
+    assert seen["waited"] is event
+    assert isinstance(seen["entered"], _Stream)
+    assert seen["synchronized"] is True
+    assert seen["copy"] == ("cpu", True)
+    assert data.output_codes[0].tolist() == list(range(N_CODEBOOKS))
+    assert data.eos_frame == 5

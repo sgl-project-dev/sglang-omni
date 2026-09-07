@@ -54,6 +54,9 @@ class XPUOmniPlatform(OmniPlatform):
         # Capture leaves the scheduler thread's stream recording; host reads fail.
         return False
 
+    def enable_zonos2_torch_compile(self) -> bool:
+        return False
+
     def _get_device_graph_backend(self) -> DeviceGraphBackend:
         from sglang_omni.platforms.device_graph import XpuDeviceGraphBackend
 
@@ -64,6 +67,9 @@ class XPUOmniPlatform(OmniPlatform):
         from sglang.srt.model_executor.cuda_graph_config import Backend
 
         return Backend.FULL
+
+    def supports_online_fp8_quantization(self) -> bool:
+        return False
 
     def apply_model_worker_backend_policy(
         self,

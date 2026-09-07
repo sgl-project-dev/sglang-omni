@@ -28,6 +28,9 @@ _NONE_DEVICE_STAGES = {
     ("qwen3_omni", "audio_encoder"),
     ("qwen3_omni", "code2wav"),
     ("qwen3_omni", "image_encoder"),
+    ("zonos2", "speaker_encode"),
+    ("zonos2", "tts_engine"),
+    ("zonos2", "vocoder"),
 }
 
 
@@ -142,3 +145,64 @@ def test_qwen3_asr_stage_forwards_none_to_the_shared_builder(
     # Placement injects gpu_id only when the signature declares it. Without it the
     # builder resolved a bare accelerator and told SGLang card 0.
     assert seen["gpu_id"] == 1
+
+
+def test_zonos2_tts_engine_stage_forwards_none_to_the_shared_builder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The AR stage must hand None down rather than pin a literal card.
+
+    Patching the base builder's build() also proves it is the builder in play. What
+    build() then does with None is covered in test_server_args_builder_device.py.
+    """
+    from sglang_omni.models.zonos2 import stages
+    from sglang_omni.scheduling import engine_factory
+
+    seen: dict[str, object] = {}
+
+    def spy_build(self, model_path, **kwargs):
+        del self, model_path
+        seen.update(kwargs)
+        return SimpleNamespace()
+
+    monkeypatch.setattr(
+        engine_factory.SGLangGenerationEngineBuilder, "build", spy_build
+    )
+
+    stages.create_sglang_omni_tts_engine_executor("unused", device=None, gpu_id=1)
+
+    assert "device" in seen, "the factory did not route through the shared builder"
+    assert seen["device"] is None
+    assert seen["gpu_id"] == 1
+
+
+@pytest.mark.parametrize("factory_name", ["speaker_encode", "vocoder"])
+def test_zonos2_auxiliary_stages_resolve_none_through_the_shared_helper(
+    monkeypatch: pytest.MonkeyPatch, factory_name: str
+) -> None:
+    """The auxiliary stages must resolve device before touching their models.
+
+    Both factories load a real checkpoint (a Qwen3 encoder, a DAC) as their next
+    step, so resolution is observed by stopping inside the helper rather than by
+    letting the load proceed.
+    """
+    from sglang_omni.models.zonos2 import stages
+
+    seen: dict[str, object] = {}
+
+    class _Stop(Exception):
+        pass
+
+    def spy_resolve(device, index=None):
+        seen["device"] = device
+        seen["gpu_id"] = index
+        raise _Stop
+
+    monkeypatch.setattr(stages, "resolve_device_spec", spy_resolve)
+
+    with pytest.raises(_Stop):
+        getattr(stages, f"create_{factory_name}_executor")(
+            "unused", device=None, gpu_id=1
+        )
+
+    assert seen == {"device": None, "gpu_id": 1}
