@@ -313,6 +313,14 @@ fn serve_connection(
                 );
                 return;
             }
+            b"empty-body" => write_response(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            ),
+            b"response-trailers" => write_response(
+                &mut stream,
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nTrailer: X-Worker-Trailer\r\nConnection: close\r\n\r\n2\r\n{}\r\n0\r\nX-Worker-Trailer: done\r\n\r\n",
+            ),
             b"te-cl" => write_response(
                 &mut stream,
                 b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\nConnection: close\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
@@ -829,6 +837,22 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     let address = router.address;
     let slow = thread::spawn(move || post(address, b"slow", Some("slow-id")));
     worker.wait_for_requests(1);
+    let metrics_deadline = Instant::now() + Duration::from_secs(1);
+    loop {
+        let observed = metrics(router.address);
+        if observed.contains(
+            "sglang_omni_router_http_response_header_duration_seconds_count{route=\"chat\"} 1\n",
+        ) && observed.contains(
+            "sglang_omni_router_http_response_body_terminations_total{outcome=\"complete\"} 0\n",
+        ) {
+            break;
+        }
+        assert!(
+            Instant::now() < metrics_deadline,
+            "response-header observation did not precede body completion"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
     let oversized = raw_request(
         router.address,
         b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
@@ -854,6 +878,59 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     let head = response_head(&first).to_ascii_lowercase();
     assert_eq!(head.matches("cache-control:").count(), 2);
     assert!(head.contains("set-cookie: hidden=1"));
+}
+
+#[test]
+fn response_body_outcomes_cover_fixed_empty_and_trailer_boundaries() {
+    for (request, outcome) in [
+        (b"fixed-body".as_slice(), "complete"),
+        (b"empty-body".as_slice(), "complete"),
+        (b"response-trailers".as_slice(), "upstream_error"),
+    ] {
+        let worker = Worker::start();
+        let router = RouterProcess::start(worker.address, 1, 2_000, false);
+        let response = post(router.address, request, None);
+        assert_eq!(status(&response), 200);
+        let observed = metrics(router.address);
+        assert!(
+            observed.contains(&format!(
+                "sglang_omni_router_http_response_body_terminations_total{{outcome=\"{outcome}\"}} 1\n"
+            )),
+            "unexpected body termination metrics for {request:?}:\n{observed}"
+        );
+    }
+}
+
+#[test]
+fn client_disconnect_before_response_headers_is_observed_at_the_http_boundary() {
+    let worker = Worker::start();
+    let router = RouterProcess::start(worker.address, 1, 2_000, false);
+    let mut client = TcpStream::connect(router.address).expect("connect pre-header client");
+    client
+        .write_all(
+            b"POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: 7\r\nConnection: close\r\n\r\ntimeout",
+        )
+        .expect("write pre-header request");
+    worker.wait_for_application_requests(1);
+    drop(client);
+
+    let deadline = Instant::now() + Duration::from_millis(500);
+    loop {
+        let observed = metrics(router.address);
+        if observed
+            .contains("sglang_omni_router_http_cancelled_before_headers_total{route=\"chat\"} 1\n")
+        {
+            assert!(observed.contains(
+                "sglang_omni_router_http_response_header_duration_seconds_count{route=\"chat\"} 0\n"
+            ));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "pre-header client disconnect was not observed:\n{observed}"
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
 }
 
 #[test]
