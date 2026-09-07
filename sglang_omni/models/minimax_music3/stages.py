@@ -50,6 +50,7 @@ def create_ar_executor(
     max_concurrency: int = _DEFAULT_AR_CONCURRENCY,
     server_args_overrides: dict[str, Any] | None = None,
     mlx_model_revision: str | None = None,
+    torch_model_revision: str | None = None,
 ):
     if _use_mlx_backend():
         if not current_platform.is_mps():
@@ -61,6 +62,17 @@ def create_ar_executor(
             revision=mlx_model_revision,
         )
         logger.info("MiniMax Music 3 AR executor ready backend=mlx max_concurrency=1")
+        return scheduler
+    if current_platform.is_mps():
+        from .torch_mps import MiniMaxMusic3TorchMpsARScheduler
+
+        scheduler = MiniMaxMusic3TorchMpsARScheduler(
+            model_path,
+            revision=torch_model_revision,
+        )
+        logger.info(
+            "MiniMax Music 3 AR executor ready backend=torch_mps max_concurrency=1"
+        )
         return scheduler
     if device is None:
         if gpu_id is None or not (
@@ -112,6 +124,7 @@ def create_dit_dav_executor(
     cache_dit_residual_diff_threshold: float = 0.08,
     cache_dit_max_continuous_cached_steps: int = 1,
     mlx_model_revision: str | None = None,
+    torch_model_revision: str | None = None,
 ) -> MiniMaxMusic3AcousticScheduler:
     if _use_mlx_backend():
         if not current_platform.is_mps():
@@ -133,6 +146,36 @@ def create_dit_dav_executor(
         logger.info(
             "MiniMax Music 3 acoustic executor ready backend=mlx dtype=%s "
             "dit_steps=%d dit_cfg_scale=%.3f sample_rate=%d",
+            decoder.dtype,
+            decoder.dit_steps,
+            decoder.dit_cfg_scale,
+            OUTPUT_SAMPLE_RATE,
+        )
+        return MiniMaxMusic3AcousticScheduler(decoder)
+    if current_platform.is_mps():
+        if cache_dit:
+            raise ValueError("MiniMax Music 3 cache_dit is unavailable with Torch MPS")
+        if breakable_cuda_graph:
+            raise ValueError(
+                "MiniMax Music 3 breakable_cuda_graph is unavailable with Torch MPS"
+            )
+        from .torch_mps import resolve_torch_mps_directory
+
+        model_dir = resolve_torch_mps_directory(model_path, torch_model_revision)
+        decoder = MiniMaxMusic3AcousticDecoder(
+            str(model_dir),
+            device="mps",
+            dtype="bfloat16",
+            dit_steps=dit_steps,
+            dit_cfg_scale=dit_cfg_scale,
+            attention_backend="torch_sdpa",
+            cache_dit=False,
+            compile_acoustic=False,
+            breakable_cuda_graph=False,
+        )
+        logger.info(
+            "MiniMax Music 3 acoustic executor ready backend=torch_mps "
+            "dtype=%s dit_steps=%d dit_cfg_scale=%.3f sample_rate=%d",
             decoder.dtype,
             decoder.dit_steps,
             decoder.dit_cfg_scale,
