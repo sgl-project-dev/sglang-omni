@@ -1,10 +1,102 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use axum::http::{Response, StatusCode};
 
 use crate::error::HttpFault;
 use crate::worker_pool::CapacityClass;
+
+pub(crate) const DURATION_BUCKETS: [DurationBucket; 26] = [
+    DurationBucket::new(10, "0.00001"),
+    DurationBucket::new(25, "0.000025"),
+    DurationBucket::new(50, "0.00005"),
+    DurationBucket::new(100, "0.0001"),
+    DurationBucket::new(250, "0.00025"),
+    DurationBucket::new(500, "0.0005"),
+    DurationBucket::new(1_000, "0.001"),
+    DurationBucket::new(5_000, "0.005"),
+    DurationBucket::new(10_000, "0.01"),
+    DurationBucket::new(25_000, "0.025"),
+    DurationBucket::new(50_000, "0.05"),
+    DurationBucket::new(100_000, "0.1"),
+    DurationBucket::new(250_000, "0.25"),
+    DurationBucket::new(500_000, "0.5"),
+    DurationBucket::new(1_000_000, "1"),
+    DurationBucket::new(2_500_000, "2.5"),
+    DurationBucket::new(5_000_000, "5"),
+    DurationBucket::new(10_000_000, "10"),
+    DurationBucket::new(15_000_000, "15"),
+    DurationBucket::new(30_000_000, "30"),
+    DurationBucket::new(45_000_000, "45"),
+    DurationBucket::new(60_000_000, "60"),
+    DurationBucket::new(90_000_000, "90"),
+    DurationBucket::new(120_000_000, "120"),
+    DurationBucket::new(180_000_000, "180"),
+    DurationBucket::new(240_000_000, "240"),
+];
+pub(crate) const DURATION_BUCKET_COUNT: usize = DURATION_BUCKETS.len() + 1;
+
+#[derive(Clone, Copy)]
+pub(crate) struct DurationBucket {
+    pub(crate) upper_micros: u64,
+    pub(crate) label: &'static str,
+}
+
+impl DurationBucket {
+    const fn new(upper_micros: u64, label: &'static str) -> Self {
+        Self {
+            upper_micros,
+            label,
+        }
+    }
+}
+
+pub(crate) struct DurationHistogramSnapshot {
+    pub(crate) buckets: [u64; DURATION_BUCKET_COUNT],
+    pub(crate) sum_micros: u64,
+}
+
+impl DurationHistogramSnapshot {
+    pub(crate) fn count(&self) -> u64 {
+        self.buckets.iter().copied().fold(0, u64::saturating_add)
+    }
+}
+
+struct DurationHistogram {
+    buckets: [AtomicU64; DURATION_BUCKET_COUNT],
+    sum_micros: AtomicU64,
+}
+
+impl DurationHistogram {
+    fn new() -> Self {
+        Self {
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+            sum_micros: AtomicU64::new(0),
+        }
+    }
+
+    fn observe(&self, duration: Duration) {
+        let micros = u64::try_from(duration.as_micros()).unwrap_or(u64::MAX);
+        let index = DURATION_BUCKETS
+            .iter()
+            .position(|bucket| micros <= bucket.upper_micros)
+            .unwrap_or(DURATION_BUCKETS.len());
+        self.buckets[index].fetch_add(1, Ordering::Relaxed);
+        let _updated = self
+            .sum_micros
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |sum| {
+                Some(sum.saturating_add(micros))
+            });
+    }
+
+    fn snapshot(&self) -> DurationHistogramSnapshot {
+        DurationHistogramSnapshot {
+            buckets: std::array::from_fn(|index| self.buckets[index].load(Ordering::Relaxed)),
+            sum_micros: self.sum_micros.load(Ordering::Relaxed),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(usize)]
@@ -217,6 +309,8 @@ impl Rejection {
 pub(crate) struct RouterMetrics {
     requests: [AtomicU64; HttpRoute::ALL.len()],
     responses: [[AtomicU64; StatusClass::ALL.len()]; HttpRoute::ALL.len()],
+    response_header_durations: [DurationHistogram; HttpRoute::ALL.len()],
+    cancelled_before_headers: [AtomicU64; HttpRoute::ALL.len()],
     faults: [[AtomicU64; HttpFault::ALL.len()]; HttpRoute::ALL.len()],
     rejections: [AtomicU64; Rejection::ALL.len()],
     relay_failures: AtomicU64,
@@ -227,6 +321,8 @@ impl RouterMetrics {
         Arc::new(Self {
             requests: std::array::from_fn(|_| AtomicU64::new(0)),
             responses: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
+            response_header_durations: std::array::from_fn(|_| DurationHistogram::new()),
+            cancelled_before_headers: std::array::from_fn(|_| AtomicU64::new(0)),
             faults: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             rejections: std::array::from_fn(|_| AtomicU64::new(0)),
             relay_failures: AtomicU64::new(0),
@@ -245,6 +341,14 @@ impl RouterMetrics {
         }
     }
 
+    pub(crate) fn record_response_header_duration(&self, route: HttpRoute, duration: Duration) {
+        self.response_header_durations[route.index()].observe(duration);
+    }
+
+    pub(crate) fn record_cancelled_before_headers(&self, route: HttpRoute) {
+        self.cancelled_before_headers[route.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_rejection(&self, rejection: Rejection) {
         self.rejections[rejection.index()].fetch_add(1, Ordering::Relaxed);
     }
@@ -259,6 +363,14 @@ impl RouterMetrics {
 
     pub(crate) fn responses(&self, route: HttpRoute, status: StatusClass) -> u64 {
         self.responses[route.index()][status.index()].load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn response_header_duration(&self, route: HttpRoute) -> DurationHistogramSnapshot {
+        self.response_header_durations[route.index()].snapshot()
+    }
+
+    pub(crate) fn cancelled_before_headers(&self, route: HttpRoute) -> u64 {
+        self.cancelled_before_headers[route.index()].load(Ordering::Relaxed)
     }
 
     pub(crate) fn faults(&self, route: HttpRoute, fault: HttpFault) -> u64 {
@@ -277,6 +389,8 @@ impl RouterMetrics {
 #[cfg(test)]
 #[allow(clippy::panic)]
 mod tests {
+    use std::time::Duration;
+
     use axum::body::Body;
     use axum::http::{Response, StatusCode};
 
@@ -310,6 +424,8 @@ mod tests {
             .extensions_mut()
             .insert(HttpFault::RouterOverloaded);
         metrics.record_response(HttpRoute::Speech, &response);
+        metrics.record_response_header_duration(HttpRoute::Speech, Duration::from_micros(750));
+        metrics.record_cancelled_before_headers(HttpRoute::Chat);
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -322,6 +438,11 @@ mod tests {
             metrics.faults(HttpRoute::Speech, HttpFault::RouterOverloaded),
             1
         );
+        let duration = metrics.response_header_duration(HttpRoute::Speech);
+        assert_eq!(duration.count(), 1);
+        assert_eq!(duration.sum_micros, 750);
+        assert_eq!(duration.buckets[6], 1);
+        assert_eq!(metrics.cancelled_before_headers(HttpRoute::Chat), 1);
         assert_eq!(metrics.rejections(Rejection::SpeechAdmission), 1);
         assert_eq!(metrics.relay_failures(), 1);
     }

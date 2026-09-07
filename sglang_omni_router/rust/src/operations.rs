@@ -11,7 +11,7 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
-use crate::metrics::{HttpRoute, Rejection, RouterMetrics, StatusClass};
+use crate::metrics::{DURATION_BUCKETS, HttpRoute, Rejection, RouterMetrics, StatusClass};
 use crate::worker_pool::{
     OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
 };
@@ -277,6 +277,55 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
                 status.label()
             );
         }
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_http_response_header_duration_seconds Time from request boundary entry until response headers are available.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_http_response_header_duration_seconds histogram\n");
+    for route in HttpRoute::ALL {
+        let histogram = metrics.response_header_duration(route);
+        let mut cumulative = 0_u64;
+        for (index, bucket) in DURATION_BUCKETS.iter().enumerate() {
+            cumulative = cumulative.saturating_add(histogram.buckets[index]);
+            let _ = writeln!(
+                output,
+                "sglang_omni_router_http_response_header_duration_seconds_bucket{{route=\"{}\",le=\"{}\"}} {cumulative}",
+                route.label(),
+                bucket.label
+            );
+        }
+        cumulative = cumulative.saturating_add(histogram.buckets[DURATION_BUCKETS.len()]);
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_http_response_header_duration_seconds_bucket{{route=\"{}\",le=\"+Inf\"}} {cumulative}",
+            route.label()
+        );
+        let sum_seconds = histogram.sum_micros as f64 / 1_000_000.0;
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_http_response_header_duration_seconds_sum{{route=\"{}\"}} {sum_seconds}",
+            route.label()
+        );
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_http_response_header_duration_seconds_count{{route=\"{}\"}} {}",
+            route.label(),
+            histogram.count()
+        );
+    }
+
+    output.push_str(
+        "# HELP sglang_omni_router_http_cancelled_before_headers_total Requests cancelled before response headers became available.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_http_cancelled_before_headers_total counter\n");
+    for route in HttpRoute::ALL {
+        let _ = writeln!(
+            output,
+            "sglang_omni_router_http_cancelled_before_headers_total{{route=\"{}\"}} {}",
+            route.label(),
+            metrics.cancelled_before_headers(route)
+        );
     }
 
     output.push_str("# HELP sglang_omni_router_http_faults_total Router-generated HTTP faults.\n");
@@ -784,19 +833,44 @@ mod tests {
         }
         assert_eq!(positions.len(), 340);
         assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+        for route in HttpRoute::ALL {
+            for sample in [
+                format!(
+                    "sglang_omni_router_http_response_header_duration_seconds_bucket{{route=\"{}\",le=\"+Inf\"}} 0\n",
+                    route.label()
+                ),
+                format!(
+                    "sglang_omni_router_http_response_header_duration_seconds_count{{route=\"{}\"}} 0\n",
+                    route.label()
+                ),
+                format!(
+                    "sglang_omni_router_http_cancelled_before_headers_total{{route=\"{}\"}} 0\n",
+                    route.label()
+                ),
+            ] {
+                assert!(
+                    rendered.contains(&sample),
+                    "missing metric sample: {sample}"
+                );
+            }
+        }
 
         let without_zero_request_samples = rendered
             .lines()
             .filter(|line| {
-                !(line.ends_with(" 0")
-                    && [
-                        "sglang_omni_router_http_requests_total{",
-                        "sglang_omni_router_http_response_headers_total{",
-                        "sglang_omni_router_http_faults_total{",
-                        "sglang_omni_router_rejections_total{",
-                    ]
-                    .iter()
-                    .any(|prefix| line.starts_with(prefix)))
+                let new_boundary_metric = line
+                    .contains("sglang_omni_router_http_response_header_duration_seconds")
+                    || line.contains("sglang_omni_router_http_cancelled_before_headers_total");
+                !new_boundary_metric
+                    && !(line.ends_with(" 0")
+                        && [
+                            "sglang_omni_router_http_requests_total{",
+                            "sglang_omni_router_http_response_headers_total{",
+                            "sglang_omni_router_http_faults_total{",
+                            "sglang_omni_router_rejections_total{",
+                        ]
+                        .iter()
+                        .any(|prefix| line.starts_with(prefix)))
             })
             .collect::<Vec<_>>()
             .join("\n")
