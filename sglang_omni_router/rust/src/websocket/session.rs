@@ -14,6 +14,7 @@ use tokio_tungstenite::tungstenite::protocol::{
 };
 
 use crate::config::WebsocketConfig;
+use crate::metrics::{RouterMetrics, WebsocketPhase, WebsocketProtocol, WebsocketTermination};
 use crate::worker_pool::{AdmissionLease, RequestLease};
 
 use super::upstream::UpstreamSocket;
@@ -185,6 +186,22 @@ enum RelayTerminal {
     },
 }
 
+impl RelayTerminal {
+    const fn metric_termination(&self) -> WebsocketTermination {
+        match self {
+            Self::ClientClose(_) => WebsocketTermination::ClientClose,
+            Self::WorkerClose(_) => WebsocketTermination::WorkerClose,
+            Self::ClientGone => WebsocketTermination::ClientDisconnect,
+            Self::WorkerGone => WebsocketTermination::WorkerDisconnect,
+            Self::ClientViolation { .. } => WebsocketTermination::ClientProtocolError,
+            Self::WorkerViolation { .. } => WebsocketTermination::WorkerProtocolError,
+            Self::Draining => WebsocketTermination::Draining,
+            Self::Forced => WebsocketTermination::ForcedShutdown,
+            Self::SetupDeadline { .. } => WebsocketTermination::WorkerSetupTimeout,
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum RelayProtocol {
     Speech,
@@ -198,6 +215,56 @@ impl RelayProtocol {
 
     const fn accepts_worker_binary(self) -> bool {
         matches!(self, Self::Speech)
+    }
+
+    const fn metric_protocol(self) -> WebsocketProtocol {
+        match self {
+            Self::Speech => WebsocketProtocol::Speech,
+            Self::Realtime => WebsocketProtocol::Realtime,
+        }
+    }
+}
+
+pub(super) struct SessionObservation {
+    metrics: Arc<RouterMetrics>,
+    protocol: WebsocketProtocol,
+    phase: WebsocketPhase,
+    completed: bool,
+}
+
+impl SessionObservation {
+    pub(super) fn new(metrics: Arc<RouterMetrics>, protocol: RelayProtocol) -> Self {
+        Self {
+            metrics,
+            protocol: protocol.metric_protocol(),
+            phase: WebsocketPhase::Setup,
+            completed: false,
+        }
+    }
+
+    fn enter_relay(&mut self) {
+        self.phase = WebsocketPhase::Relay;
+    }
+
+    pub(super) fn finish(&mut self, termination: WebsocketTermination) {
+        if self.completed {
+            return;
+        }
+        self.completed = true;
+        self.metrics
+            .record_websocket_termination(self.protocol, self.phase, termination);
+    }
+}
+
+impl Drop for SessionObservation {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.metrics.record_websocket_termination(
+                self.protocol,
+                self.phase,
+                WebsocketTermination::Cancelled,
+            );
+        }
     }
 }
 
@@ -272,7 +339,9 @@ impl SessionSupervisor {
         downstream: WebSocket,
         policy: &WebsocketConfig,
         protocol: RelayProtocol,
+        observation: &mut SessionObservation,
     ) {
+        observation.enter_relay();
         let Self {
             registration,
             lease,
@@ -308,9 +377,11 @@ impl SessionSupervisor {
         };
 
         let Ok(mut downstream) = downstream_sink.reunite(downstream_stream) else {
+            observation.finish(WebsocketTermination::Internal);
             return;
         };
         let Ok(upstream) = upstream_sink.reunite(upstream_stream) else {
+            observation.finish(WebsocketTermination::Internal);
             return;
         };
 
@@ -319,7 +390,7 @@ impl SessionSupervisor {
             lease,
             upstream,
         }
-        .finish_terminal(&mut downstream, terminal, policy, &mut drain)
+        .finish_terminal(&mut downstream, terminal, policy, &mut drain, observation)
         .await;
     }
 
@@ -330,6 +401,7 @@ impl SessionSupervisor {
         policy: &WebsocketConfig,
         protocol: RelayProtocol,
         timeout_reason: &'static str,
+        observation: &mut SessionObservation,
     ) -> Option<(Self, WebSocket, WorkerEvent)> {
         let Self {
             registration,
@@ -399,9 +471,11 @@ impl SessionSupervisor {
         };
 
         let Ok(downstream) = downstream_sink.reunite(downstream_stream) else {
+            observation.finish(WebsocketTermination::Internal);
             return None;
         };
         let Ok(upstream) = upstream_sink.reunite(upstream_stream) else {
+            observation.finish(WebsocketTermination::Internal);
             return None;
         };
         let supervisor = Self {
@@ -414,7 +488,7 @@ impl SessionSupervisor {
             SetupOutcome::Terminal(terminal) => {
                 let mut downstream = downstream;
                 supervisor
-                    .finish_terminal(&mut downstream, terminal, policy, &mut drain)
+                    .finish_terminal(&mut downstream, terminal, policy, &mut drain, observation)
                     .await;
                 None
             }
@@ -427,7 +501,9 @@ impl SessionSupervisor {
         terminal: RelayTerminal,
         policy: &WebsocketConfig,
         drain: &mut watch::Receiver<DrainState>,
+        observation: &mut SessionObservation,
     ) {
+        observation.finish(terminal.metric_termination());
         let upstream = &mut self.upstream;
 
         match terminal {
@@ -781,9 +857,12 @@ fn upstream_close_to_downstream(frame: UpstreamClose) -> Option<DownstreamClose>
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::panic)]
 mod tests {
+    use std::sync::Arc;
     use std::time::Duration;
 
-    use super::{DrainState, SessionTracker};
+    use crate::metrics::{RouterMetrics, WebsocketPhase, WebsocketProtocol, WebsocketTermination};
+
+    use super::{DrainState, RelayProtocol, SessionObservation, SessionTracker};
 
     #[tokio::test]
     async fn tracker_registration_is_exact_once_and_drain_visible() {
@@ -814,5 +893,46 @@ mod tests {
         assert_eq!(*second.drain.borrow(), DrainState::Forced);
         drop((first, second));
         tracker.wait_empty().await;
+    }
+
+    #[test]
+    fn session_termination_is_recorded_once_at_its_current_phase() {
+        let metrics = RouterMetrics::new();
+        {
+            let mut observation =
+                SessionObservation::new(Arc::clone(&metrics), RelayProtocol::Speech);
+            observation.finish(WebsocketTermination::WorkerClose);
+            observation.finish(WebsocketTermination::Internal);
+        }
+        assert_eq!(
+            metrics.websocket_terminations(
+                WebsocketProtocol::Speech,
+                WebsocketPhase::Setup,
+                WebsocketTermination::WorkerClose,
+            ),
+            1
+        );
+        assert_eq!(
+            metrics.websocket_terminations(
+                WebsocketProtocol::Speech,
+                WebsocketPhase::Setup,
+                WebsocketTermination::Internal,
+            ),
+            0
+        );
+
+        {
+            let mut observation =
+                SessionObservation::new(Arc::clone(&metrics), RelayProtocol::Realtime);
+            observation.enter_relay();
+        }
+        assert_eq!(
+            metrics.websocket_terminations(
+                WebsocketProtocol::Realtime,
+                WebsocketPhase::Relay,
+                WebsocketTermination::Cancelled,
+            ),
+            1
+        );
     }
 }

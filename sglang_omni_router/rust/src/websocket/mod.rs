@@ -19,7 +19,7 @@ use tokio_tungstenite::tungstenite::error::CapacityError;
 use crate::classification::ClassificationExecutor;
 use crate::config::{Config, WebsocketConfig};
 use crate::error::HttpFault;
-use crate::metrics::ClassificationKind;
+use crate::metrics::{ClassificationKind, RouterMetrics, WebsocketTermination};
 use crate::request_id::CanonicalRequestId;
 use crate::speech_facts::{
     ScalarFactSeed, SpeechFields, named_voice as classify_named_voice,
@@ -35,7 +35,10 @@ mod session;
 mod upstream;
 
 pub(crate) use session::SessionTracker;
-use session::{DrainState, PendingSession, RelayProtocol, SessionSupervisor, close_message};
+use session::{
+    DrainState, PendingSession, RelayProtocol, SessionObservation, SessionSupervisor, WorkerEvent,
+    close_message,
+};
 
 pub(crate) const SPEECH_PATH: &str = "/v1/audio/speech/stream";
 pub(crate) const REALTIME_PATH: &str = "/v1/realtime";
@@ -68,6 +71,7 @@ pub(crate) struct WebsocketGateway {
     realtime: Option<TrustDomain>,
     classifier: Arc<ClassificationExecutor>,
     tracker: SessionTracker,
+    metrics: Arc<RouterMetrics>,
 }
 
 impl WebsocketGateway {
@@ -76,6 +80,7 @@ impl WebsocketGateway {
         pool: Arc<WorkerPool>,
         classifier: Arc<ClassificationExecutor>,
         tracker: SessionTracker,
+        metrics: Arc<RouterMetrics>,
     ) -> Option<Arc<Self>> {
         let policy = config.websocket.clone()?;
         Some(Arc::new(Self {
@@ -91,6 +96,7 @@ impl WebsocketGateway {
             classifier,
             policy,
             tracker,
+            metrics,
         }))
     }
 
@@ -161,6 +167,8 @@ async fn run_speech(
     upstream_query: Option<String>,
     upstream_headers: upstream::HandshakeHeaders,
 ) {
+    let mut observation =
+        SessionObservation::new(Arc::clone(&gateway.metrics), RelayProtocol::Speech);
     let mut drain = pending.drain_receiver();
     let config_deadline = Instant::now() + gateway.policy.speech_config_timeout();
     let config_text = match setup_until(
@@ -171,11 +179,17 @@ async fn run_speech(
     .await
     {
         Ok(Ok(text)) => text,
-        Ok(Err(close)) => {
-            send_setup_close(&mut downstream, &gateway.policy, &mut drain, close).await;
+        Ok(Err(failure)) => {
+            observation.finish(failure.termination);
+            send_setup_close(&mut downstream, &gateway.policy, &mut drain, failure.close).await;
             return;
         }
         Err(termination) => {
+            finish_setup_termination(
+                &mut observation,
+                termination,
+                WebsocketTermination::ConfigurationTimeout,
+            );
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
@@ -205,6 +219,7 @@ async fn run_speech(
     let (config_text, requirement) = match classified {
         Ok(Ok((text, requirement))) => (text, requirement),
         Ok(Err(HttpFault::MalformedRequest)) => {
+            observation.finish(WebsocketTermination::ClassificationError);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -214,7 +229,12 @@ async fn run_speech(
             .await;
             return;
         }
-        Ok(Err(_fault)) => {
+        Ok(Err(fault)) => {
+            observation.finish(if fault == HttpFault::UpstreamTimeout {
+                WebsocketTermination::ClassificationTimeout
+            } else {
+                WebsocketTermination::ClassificationError
+            });
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -225,6 +245,7 @@ async fn run_speech(
             return;
         }
         Err(state) => {
+            observation.finish(drain_termination(state));
             close_for_setup_termination(
                 &mut downstream,
                 &gateway.policy,
@@ -239,6 +260,7 @@ async fn run_speech(
     let upstream_config = match downstream_text_to_upstream(config_text) {
         Ok(text) => text,
         Err(()) => {
+            observation.finish(WebsocketTermination::Internal);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -253,6 +275,7 @@ async fn run_speech(
     let lease = match gateway.pool.dispatch_session(admission, &requirement) {
         Ok(lease) => lease,
         Err(error) => {
+            observation.finish(WebsocketTermination::DispatchError);
             send_setup_close(
                 &mut downstream,
                 &gateway.policy,
@@ -279,6 +302,7 @@ async fn run_speech(
     let upstream = match connected {
         Ok(Ok(upstream)) => upstream,
         Ok(Err(_)) => {
+            observation.finish(WebsocketTermination::ConnectError);
             lease.request_immediate_probe();
             send_setup_close(
                 &mut downstream,
@@ -290,6 +314,11 @@ async fn run_speech(
             return;
         }
         Err(termination) => {
+            finish_setup_termination(
+                &mut observation,
+                termination,
+                WebsocketTermination::ConnectTimeout,
+            );
             if termination == SetupTermination::Deadline {
                 lease.request_immediate_probe();
             }
@@ -318,6 +347,7 @@ async fn run_speech(
     match sent {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
+            observation.finish(WebsocketTermination::WorkerSetupError);
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -331,6 +361,11 @@ async fn run_speech(
             return;
         }
         Err(termination) => {
+            finish_setup_termination(
+                &mut observation,
+                termination,
+                WebsocketTermination::WorkerSetupTimeout,
+            );
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -351,6 +386,7 @@ async fn run_speech(
             &gateway.policy,
             RelayProtocol::Speech,
             "upstream setup failure",
+            &mut observation,
         )
         .await
     else {
@@ -360,7 +396,8 @@ async fn run_speech(
     downstream = next_downstream;
     let text = match first {
         Some(Ok(UpstreamMessage::Text(text))) if is_speech_setup_event(text.as_bytes()) => text,
-        _ => {
+        event => {
+            observation.finish(worker_setup_termination(&event));
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -377,6 +414,7 @@ async fn run_speech(
     let text = match upstream_text_to_downstream(text) {
         Ok(text) => text,
         Err(()) => {
+            observation.finish(WebsocketTermination::WorkerProtocolError);
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -399,12 +437,18 @@ async fn run_speech(
     {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
+            observation.finish(WebsocketTermination::ClientDisconnect);
             supervisor
                 .close_upstream_after_client_loss(&mut downstream, &gateway.policy, &mut drain)
                 .await;
             return;
         }
         Err(termination) => {
+            finish_setup_termination(
+                &mut observation,
+                termination,
+                WebsocketTermination::WorkerSetupTimeout,
+            );
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -419,7 +463,12 @@ async fn run_speech(
         }
     }
     supervisor
-        .relay(downstream, &gateway.policy, RelayProtocol::Speech)
+        .relay(
+            downstream,
+            &gateway.policy,
+            RelayProtocol::Speech,
+            &mut observation,
+        )
         .await;
 }
 
@@ -499,6 +548,8 @@ async fn run_realtime(
     gateway: Arc<WebsocketGateway>,
     mut supervisor: SessionSupervisor,
 ) {
+    let mut observation =
+        SessionObservation::new(Arc::clone(&gateway.metrics), RelayProtocol::Realtime);
     let mut drain = supervisor.drain_receiver();
     let worker_deadline = Instant::now() + gateway.policy.worker_setup_timeout();
     let Some((next_supervisor, next_downstream, first)) = supervisor
@@ -508,6 +559,7 @@ async fn run_realtime(
             &gateway.policy,
             RelayProtocol::Realtime,
             "invalid session.created",
+            &mut observation,
         )
         .await
     else {
@@ -521,7 +573,8 @@ async fn run_realtime(
         {
             text
         }
-        _ => {
+        event => {
+            observation.finish(worker_setup_termination(&event));
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -538,6 +591,7 @@ async fn run_realtime(
     let text = match upstream_text_to_downstream(text) {
         Ok(text) => text,
         Err(()) => {
+            observation.finish(WebsocketTermination::WorkerProtocolError);
             supervisor.request_immediate_probe();
             supervisor
                 .close_setup(
@@ -560,12 +614,18 @@ async fn run_realtime(
     {
         Ok(Ok(())) => {}
         Ok(Err(_)) => {
+            observation.finish(WebsocketTermination::ClientDisconnect);
             supervisor
                 .close_upstream_after_client_loss(&mut downstream, &gateway.policy, &mut drain)
                 .await;
             return;
         }
         Err(termination) => {
+            finish_setup_termination(
+                &mut observation,
+                termination,
+                WebsocketTermination::WorkerSetupTimeout,
+            );
             close_supervised_setup_termination(
                 supervisor,
                 &mut downstream,
@@ -580,7 +640,12 @@ async fn run_realtime(
         }
     }
     supervisor
-        .relay(downstream, &gateway.policy, RelayProtocol::Realtime)
+        .relay(
+            downstream,
+            &gateway.policy,
+            RelayProtocol::Realtime,
+            &mut observation,
+        )
         .await;
 }
 
@@ -588,6 +653,33 @@ async fn run_realtime(
 enum SetupTermination {
     Deadline,
     Drain(DrainState),
+}
+
+fn drain_termination(state: DrainState) -> WebsocketTermination {
+    match state {
+        DrainState::Draining => WebsocketTermination::Draining,
+        DrainState::Forced => WebsocketTermination::ForcedShutdown,
+        DrainState::Serving => WebsocketTermination::Internal,
+    }
+}
+
+fn finish_setup_termination(
+    observation: &mut SessionObservation,
+    termination: SetupTermination,
+    deadline: WebsocketTermination,
+) {
+    observation.finish(match termination {
+        SetupTermination::Deadline => deadline,
+        SetupTermination::Drain(state) => drain_termination(state),
+    });
+}
+
+fn worker_setup_termination(event: &WorkerEvent) -> WebsocketTermination {
+    match event {
+        Some(Ok(UpstreamMessage::Close(_))) => WebsocketTermination::WorkerClose,
+        Some(Err(_)) | None => WebsocketTermination::WorkerDisconnect,
+        Some(Ok(_)) => WebsocketTermination::WorkerProtocolError,
+    }
 }
 
 async fn setup_until<T>(
@@ -709,20 +801,42 @@ async fn send_setup_close(
     }
 }
 
+struct SpeechConfigFailure {
+    close: Message,
+    termination: WebsocketTermination,
+}
+
 async fn receive_speech_config(
     downstream: &mut WebSocket,
-) -> Result<axum::extract::ws::Utf8Bytes, Message> {
+) -> Result<axum::extract::ws::Utf8Bytes, SpeechConfigFailure> {
     loop {
         match downstream.next().await {
             Some(Ok(Message::Text(text))) => return Ok(text),
             Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
-            Some(Ok(Message::Binary(_) | Message::Close(_))) => {
-                return Err(close_message(1008, "invalid session.config"));
+            Some(Ok(Message::Binary(_))) => {
+                return Err(SpeechConfigFailure {
+                    close: close_message(1008, "invalid session.config"),
+                    termination: WebsocketTermination::ConfigurationError,
+                });
+            }
+            Some(Ok(Message::Close(_))) => {
+                return Err(SpeechConfigFailure {
+                    close: close_message(1008, "invalid session.config"),
+                    termination: WebsocketTermination::ClientClose,
+                });
             }
             Some(Err(error)) if websocket_message_too_large(&error) => {
-                return Err(close_message(1009, "session.config too large"));
+                return Err(SpeechConfigFailure {
+                    close: close_message(1009, "session.config too large"),
+                    termination: WebsocketTermination::ClientProtocolError,
+                });
             }
-            Some(Err(_)) | None => return Err(close_message(1008, "invalid session.config")),
+            Some(Err(_)) | None => {
+                return Err(SpeechConfigFailure {
+                    close: close_message(1008, "invalid session.config"),
+                    termination: WebsocketTermination::ClientDisconnect,
+                });
+            }
         }
     }
 }

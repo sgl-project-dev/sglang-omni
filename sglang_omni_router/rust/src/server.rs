@@ -102,6 +102,7 @@ pub(crate) async fn serve(config: Config) -> Result<(), RouterError> {
         Arc::clone(&pool),
         Arc::clone(&classifier),
         sessions.clone(),
+        Arc::clone(&metrics),
     );
     let operations = Arc::new(Operations::build(&config, Arc::clone(&metrics))?);
     let request_boundary = RequestBoundary::new(RequestIds::new(), metrics);

@@ -454,6 +454,32 @@ async fn wait_ready(address: SocketAddr) {
     }
 }
 
+async fn wait_metrics(address: SocketAddr, samples: &[&str]) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .expect("build metrics client");
+    loop {
+        let text = client
+            .get(format!("http://{address}/metrics"))
+            .send()
+            .await
+            .expect("request metrics")
+            .text()
+            .await
+            .expect("read metrics");
+        if samples.iter().all(|sample| text.contains(sample)) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "WebSocket termination metrics did not converge: {samples:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn speech_exact_replay_and_realtime_precommit_and_server_first_ordering() {
     let worker_listener = TcpListener::bind("127.0.0.1:0")
@@ -1056,6 +1082,17 @@ async fn setup_deadline_releases_stalled_speech_and_realtime_capacity() {
         .expect("close realtime after timeout");
     drop(after_timeout_realtime);
     assert_eq!(state.realtime_attempts.load(Ordering::Relaxed), 5);
+
+    wait_metrics(
+        router_address,
+        &[
+            "sglang_omni_router_websocket_terminations_total{protocol=\"speech\",phase=\"setup\",reason=\"worker_setup_timeout\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"setup\",reason=\"worker_setup_timeout\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"speech\",phase=\"setup\",reason=\"client_close\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"realtime\",phase=\"setup\",reason=\"client_close\"} 1\n",
+        ],
+    )
+    .await;
 
     worker_task.abort();
     let _joined = worker_task.await;

@@ -337,6 +337,126 @@ impl ClassificationOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum WebsocketProtocol {
+    Speech,
+    Realtime,
+}
+
+impl WebsocketProtocol {
+    pub(crate) const ALL: [Self; 2] = [Self::Speech, Self::Realtime];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Speech => "speech",
+            Self::Realtime => "realtime",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum WebsocketPhase {
+    Setup,
+    Relay,
+}
+
+impl WebsocketPhase {
+    pub(crate) const ALL: [Self; 2] = [Self::Setup, Self::Relay];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Setup => "setup",
+            Self::Relay => "relay",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum WebsocketTermination {
+    ClientClose,
+    ClientDisconnect,
+    ClientProtocolError,
+    WorkerClose,
+    WorkerDisconnect,
+    WorkerProtocolError,
+    ConfigurationError,
+    ConfigurationTimeout,
+    ClassificationError,
+    ClassificationTimeout,
+    DispatchError,
+    ConnectError,
+    ConnectTimeout,
+    WorkerSetupError,
+    WorkerSetupTimeout,
+    Draining,
+    ForcedShutdown,
+    Cancelled,
+    Internal,
+}
+
+impl WebsocketTermination {
+    pub(crate) const ALL: [Self; 19] = [
+        Self::ClientClose,
+        Self::ClientDisconnect,
+        Self::ClientProtocolError,
+        Self::WorkerClose,
+        Self::WorkerDisconnect,
+        Self::WorkerProtocolError,
+        Self::ConfigurationError,
+        Self::ConfigurationTimeout,
+        Self::ClassificationError,
+        Self::ClassificationTimeout,
+        Self::DispatchError,
+        Self::ConnectError,
+        Self::ConnectTimeout,
+        Self::WorkerSetupError,
+        Self::WorkerSetupTimeout,
+        Self::Draining,
+        Self::ForcedShutdown,
+        Self::Cancelled,
+        Self::Internal,
+    ];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::ClientClose => "client_close",
+            Self::ClientDisconnect => "client_disconnect",
+            Self::ClientProtocolError => "client_protocol_error",
+            Self::WorkerClose => "worker_close",
+            Self::WorkerDisconnect => "worker_disconnect",
+            Self::WorkerProtocolError => "worker_protocol_error",
+            Self::ConfigurationError => "configuration_error",
+            Self::ConfigurationTimeout => "configuration_timeout",
+            Self::ClassificationError => "classification_error",
+            Self::ClassificationTimeout => "classification_timeout",
+            Self::DispatchError => "dispatch_error",
+            Self::ConnectError => "connect_error",
+            Self::ConnectTimeout => "connect_timeout",
+            Self::WorkerSetupError => "worker_setup_error",
+            Self::WorkerSetupTimeout => "worker_setup_timeout",
+            Self::Draining => "draining",
+            Self::ForcedShutdown => "forced_shutdown",
+            Self::Cancelled => "cancelled",
+            Self::Internal => "internal",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 impl Rejection {
     pub(crate) const ALL: [Self; 10] = [
         Self::GlobalAdmission,
@@ -402,6 +522,8 @@ pub(crate) struct RouterMetrics {
         [[DurationHistogram; ClassificationPhase::ALL.len()]; ClassificationKind::ALL.len()],
     classification_outcomes:
         [[AtomicU64; ClassificationOutcome::ALL.len()]; ClassificationKind::ALL.len()],
+    websocket_terminations: [[[AtomicU64; WebsocketTermination::ALL.len()];
+        WebsocketPhase::ALL.len()]; WebsocketProtocol::ALL.len()],
     faults: [[AtomicU64; HttpFault::ALL.len()]; HttpRoute::ALL.len()],
     rejections: [AtomicU64; Rejection::ALL.len()],
     relay_failures: AtomicU64,
@@ -419,6 +541,9 @@ impl RouterMetrics {
             }),
             classification_outcomes: std::array::from_fn(|_| {
                 std::array::from_fn(|_| AtomicU64::new(0))
+            }),
+            websocket_terminations: std::array::from_fn(|_| {
+                std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0)))
             }),
             faults: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             rejections: std::array::from_fn(|_| AtomicU64::new(0)),
@@ -467,6 +592,16 @@ impl RouterMetrics {
         self.rejections[rejection.index()].fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_websocket_termination(
+        &self,
+        protocol: WebsocketProtocol,
+        phase: WebsocketPhase,
+        termination: WebsocketTermination,
+    ) {
+        self.websocket_terminations[protocol.index()][phase.index()][termination.index()]
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_relay_failure(&self) {
         self.relay_failures.fetch_add(1, Ordering::Relaxed);
     }
@@ -511,6 +646,16 @@ impl RouterMetrics {
         self.rejections[rejection.index()].load(Ordering::Relaxed)
     }
 
+    pub(crate) fn websocket_terminations(
+        &self,
+        protocol: WebsocketProtocol,
+        phase: WebsocketPhase,
+        termination: WebsocketTermination,
+    ) -> u64 {
+        self.websocket_terminations[protocol.index()][phase.index()][termination.index()]
+            .load(Ordering::Relaxed)
+    }
+
     pub(crate) fn relay_failures(&self) -> u64 {
         self.relay_failures.load(Ordering::Relaxed)
     }
@@ -526,7 +671,7 @@ mod tests {
 
     use super::{
         ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpRoute, Rejection,
-        RouterMetrics, StatusClass,
+        RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
     };
     use crate::error::HttpFault;
 
@@ -568,6 +713,11 @@ mod tests {
             ClassificationKind::Speech,
             ClassificationOutcome::Success,
         );
+        metrics.record_websocket_termination(
+            WebsocketProtocol::Speech,
+            WebsocketPhase::Relay,
+            WebsocketTermination::WorkerClose,
+        );
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -595,6 +745,14 @@ mod tests {
                 .classification_outcome(ClassificationKind::Speech, ClassificationOutcome::Success),
             1
         );
+        assert_eq!(
+            metrics.websocket_terminations(
+                WebsocketProtocol::Speech,
+                WebsocketPhase::Relay,
+                WebsocketTermination::WorkerClose,
+            ),
+            1
+        );
         assert_eq!(metrics.rejections(Rejection::SpeechAdmission), 1);
         assert_eq!(metrics.relay_failures(), 1);
     }
@@ -618,6 +776,15 @@ mod tests {
         }
         for (index, outcome) in ClassificationOutcome::ALL.into_iter().enumerate() {
             assert_eq!(outcome.index(), index);
+        }
+        for (index, protocol) in WebsocketProtocol::ALL.into_iter().enumerate() {
+            assert_eq!(protocol.index(), index);
+        }
+        for (index, phase) in WebsocketPhase::ALL.into_iter().enumerate() {
+            assert_eq!(phase.index(), index);
+        }
+        for (index, termination) in WebsocketTermination::ALL.into_iter().enumerate() {
+            assert_eq!(termination.index(), index);
         }
         for (index, fault) in HttpFault::ALL.into_iter().enumerate() {
             assert_eq!(fault.index(), index);

@@ -13,7 +13,7 @@ use crate::error::{HttpFault, RouterError};
 use crate::lifecycle::State as LifecycleState;
 use crate::metrics::{
     ClassificationKind, ClassificationOutcome, ClassificationPhase, DURATION_BUCKETS, HttpRoute,
-    Rejection, RouterMetrics, StatusClass,
+    Rejection, RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
 };
 use crate::worker_pool::{
     OperationsSnapshot, ProbeOutcome, ProbeSnapshot, SESSION_CAPACITY_CLASSES, WorkerHealth,
@@ -389,6 +389,25 @@ fn render_request_metrics(output: &mut String, metrics: &RouterMetrics) {
         }
     }
 
+    output.push_str(
+        "# HELP sglang_omni_router_websocket_terminations_total Upgraded WebSocket sessions by terminal phase and reason.\n",
+    );
+    output.push_str("# TYPE sglang_omni_router_websocket_terminations_total counter\n");
+    for protocol in WebsocketProtocol::ALL {
+        for phase in WebsocketPhase::ALL {
+            for termination in WebsocketTermination::ALL {
+                let _ = writeln!(
+                    output,
+                    "sglang_omni_router_websocket_terminations_total{{protocol=\"{}\",phase=\"{}\",reason=\"{}\"}} {}",
+                    protocol.label(),
+                    phase.label(),
+                    termination.label(),
+                    metrics.websocket_terminations(protocol, phase, termination)
+                );
+            }
+        }
+    }
+
     output.push_str("# HELP sglang_omni_router_http_faults_total Router-generated HTTP faults.\n");
     output.push_str("# TYPE sglang_omni_router_http_faults_total counter\n");
     for route in HttpRoute::ALL {
@@ -711,7 +730,7 @@ mod tests {
     use crate::lifecycle::State as LifecycleState;
     use crate::metrics::{
         ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpRoute, Rejection,
-        RouterMetrics, StatusClass,
+        RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
     };
     use crate::worker_pool::{
         AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
@@ -950,6 +969,22 @@ mod tests {
                 );
             }
         }
+        for protocol in WebsocketProtocol::ALL {
+            for phase in WebsocketPhase::ALL {
+                for termination in WebsocketTermination::ALL {
+                    let sample = format!(
+                        "sglang_omni_router_websocket_terminations_total{{protocol=\"{}\",phase=\"{}\",reason=\"{}\"}} 0\n",
+                        protocol.label(),
+                        phase.label(),
+                        termination.label()
+                    );
+                    assert!(
+                        rendered.contains(&sample),
+                        "missing metric sample: {sample}"
+                    );
+                }
+            }
+        }
 
         let without_zero_request_samples = rendered
             .lines()
@@ -958,7 +993,8 @@ mod tests {
                     .contains("sglang_omni_router_http_response_header_duration_seconds")
                     || line.contains("sglang_omni_router_http_cancelled_before_headers_total")
                     || line.contains("sglang_omni_router_classification_duration_seconds")
-                    || line.contains("sglang_omni_router_classifications_total");
+                    || line.contains("sglang_omni_router_classifications_total")
+                    || line.contains("sglang_omni_router_websocket_terminations_total");
                 !new_boundary_metric
                     && !(line.ends_with(" 0")
                         && [
@@ -1083,6 +1119,11 @@ mod tests {
             ClassificationKind::Speech,
             ClassificationOutcome::Success,
         );
+        metrics.record_websocket_termination(
+            WebsocketProtocol::Speech,
+            WebsocketPhase::Relay,
+            WebsocketTermination::WorkerClose,
+        );
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -1098,6 +1139,7 @@ mod tests {
             "sglang_omni_router_http_response_headers_total{route=\"speech\",status=\"4xx\"} 1\n",
             "sglang_omni_router_classification_duration_seconds_count{kind=\"speech\",phase=\"execution\"} 1\n",
             "sglang_omni_router_classifications_total{kind=\"speech\",outcome=\"success\"} 1\n",
+            "sglang_omni_router_websocket_terminations_total{protocol=\"speech\",phase=\"relay\",reason=\"worker_close\"} 1\n",
             "sglang_omni_router_http_faults_total{route=\"speech\",code=\"router_overloaded\"} 1\n",
             "sglang_omni_router_rejections_total{resource=\"admission_speech_http\"} 1\n",
             "sglang_omni_router_http_relay_failures_total 1\n",
