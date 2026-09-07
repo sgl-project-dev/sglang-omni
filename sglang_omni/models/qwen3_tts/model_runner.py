@@ -6,7 +6,6 @@ from __future__ import annotations
 from typing import Any
 
 import torch
-from sglang.srt.sampling.penaltylib import BatchedRepetitionPenalizer
 
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
@@ -52,19 +51,6 @@ class Qwen3TTSModelRunner(ModelRunner):
         super().__init__(tp_worker, output_processor)
         self._has_pending_code_step = False
         self._row_ids_cache: torch.Tensor | None = None
-
-    def _execution_context(
-        self,
-        schedule_batch: Any,
-        *,
-        isolate_sampling: bool = False,
-    ):
-        if schedule_batch.forward_mode.is_extend():
-            self._restore_repetition_penalty_history(schedule_batch)
-        return super()._execution_context(
-            schedule_batch,
-            isolate_sampling=isolate_sampling,
-        )
 
     def before_prefill(
         self,
@@ -149,64 +135,6 @@ class Qwen3TTSModelRunner(ModelRunner):
     # ------------------------------------------------------------------
     # Qwen3-TTS logit shaping
     # ------------------------------------------------------------------
-
-    def _apply_repetition_penalty(self, logits_output: Any, requests: list) -> None:
-        """Leave repetition-penalty ownership to SGLang's sampling state.
-
-        ScheduleBatch.prepare_for_decode accumulates committed output tokens
-        in SGLang's device-resident repetition penalizer. ModelRunner.sample
-        applies that state once using the public SamplingParams value.
-        """
-        del logits_output, requests
-
-    @staticmethod
-    def _restore_repetition_penalty_history(schedule_batch: Any) -> None:
-        """Seed a fresh SGLang penalizer before a request is re-prefilled.
-
-        Retraction preserves Qwen3-TTS semantic output_ids so their input
-        embeddings can be replayed, but prepare_for_extend creates a fresh
-        SGLang sampling state. Restore those retained IDs before the re-prefill
-        sample; subsequent decode steps resume SGLang's normal one-token
-        accumulation.
-        """
-        orchestrator = schedule_batch.sampling_info.penalizer_orchestrator
-        if orchestrator is None:
-            return
-
-        penalizer = orchestrator.penalizers.get(BatchedRepetitionPenalizer)
-        if penalizer is None or not penalizer.is_prepared():
-            return
-
-        vocab_size = int(orchestrator.vocab_size)
-        rows: list[int] = []
-        token_ids: list[int] = []
-        penalties: list[float] = []
-        for row, req in enumerate(schedule_batch.reqs):
-            penalty = float(req.sampling_params.repetition_penalty)
-            if penalty == 1.0:
-                continue
-            retained_ids = {
-                token_id
-                for token_id in (int(value) for value in req.output_ids)
-                if 0 <= token_id < vocab_size
-            }
-            rows.extend([row] * len(retained_ids))
-            token_ids.extend(retained_ids)
-            penalties.extend([penalty] * len(retained_ids))
-
-        if not rows:
-            return
-
-        scaling_penalties = penalizer.get_scaling_penalties()
-        device = scaling_penalties.device
-        row_indices = torch.tensor(rows, dtype=torch.long, device=device)
-        token_indices = torch.tensor(token_ids, dtype=torch.long, device=device)
-        penalty_values = torch.tensor(
-            penalties,
-            dtype=scaling_penalties.dtype,
-            device=device,
-        )
-        scaling_penalties[row_indices, token_indices] = penalty_values
 
     def _apply_codec_suppress_tokens(self, logits_output: Any, requests: list) -> None:
         logits = logits_output.next_token_logits

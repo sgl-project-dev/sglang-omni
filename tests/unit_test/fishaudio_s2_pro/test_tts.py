@@ -573,6 +573,8 @@ def test_fish_tts_request_builder_maps_finish_contract_onto_req() -> None:
     data = request_builder(payload)
 
     assert data.req.rid == "req-contract"
+    assert data.req.sampling_params.repetition_penalty == 1.0
+    assert data.repetition_penalty == 1.05
     assert data.req.sampling_params.stop_token_ids == {99}
     assert data.req.eos_token_ids == {99}
     assert data.req.sampling_params.max_new_tokens == 4
