@@ -691,3 +691,23 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
 仍拒);CustomVoice 默认 `full`。单测 608 过(含新增的门控测试)。验证在跑:固定 client seed +
 请求 seed=1234 下,prefill 图关闭 / breakable / full 三臂各跑贪心(top_k=1)与采样两组,按 prompt
 比较 PCM(sha 是否相同、首秒相关系数、最大差);随后 r20 三 seed full 对 breakable。
+
+### #1997 自审(2026-09-06 21:40 PT,十个角度并行子代理 + 逐条核实)
+
+修在 4f47debf(净删 81 行)与 4ccf87ec(删非 arena 图路径,净删 277 行):
+- **真 bug(多角度同时命中)**:(1) follow-up 批次里若同时有增量 cohort 与 legacy 回落流,legacy 解码
+  会拿到还被在飞 cohort 占着的 pinned slot 而被误杀;且 legacy-only 批次永远不 drain 在飞 cohort。
+  修:跑 legacy 组前先 drain(keep=0)。(2) 带参考音频的首块 codes 由 builder 里的 `torch.cat`
+  产生,而 ready event 在 cat 之前记录——同进程 Base/voice-clone 请求可能读到未写完的内存。修:
+  cat 之后另记一个事件。(3) 槽释放时上一任的清零/scatter 可能还排在别的流上。修:arena 释放时
+  记事件,acquire 先等。(4) 同步 cohort 路径与提前发射路径重复且已分叉(finish 里有不可达的
+  except;同步路径下坏行会整 cohort 回落)。修:合成一条 launch/finish。(5) runner `stats()` 在
+  另一 worker 改 dict 时遍历。修:加锁。(6) CPU-only 构建下 `pin_memory()` 抛错。修:CPU 走普通张量。
+- **精简**:`record_stream` 逐 chunk 调用(每 cohort ~24 次、持 `_state_lock`)改为 plan 持有 chunk
+  引用到 commit;去掉重复的 grouper、runner 选择表达式、两处 teardown、arena 的 `_index`/
+  `positions()`、无调用的 `state_bytes_per_stream`、`precompile` 里重复的 frame_positions 赋值、
+  不可达的 None 检查;注释改为现状陈述并补前缀。
+- **记录但未做(后续 PR)**:同步 `decode_delta` 仍有一套 per-request 状态的增量实现(~100 行);
+  `codec_frame_position` 是可推导的镜像;staging 环深度手工推导自 keep=1;worker 上下文用
+  threading.local + getattr;ready event 走 metadata 键而非消息字段;factory 与 scheduler 默认值
+  不一致;WARM 图 1..8 全桶捕获中 {1,3,5,6,7}×B4/B8 基本不命中;capture 后逐图 gc/empty_cache。
