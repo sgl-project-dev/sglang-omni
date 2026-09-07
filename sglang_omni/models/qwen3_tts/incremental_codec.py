@@ -564,9 +564,6 @@ class Qwen3TTSIncrementalDecoder:
             )
         return state
 
-    def state_bytes_per_stream(self, dtype: torch.dtype) -> int:
-        return self.state_spec().bytes_per_stream(dtype)
-
     def decode(
         self,
         codes: torch.Tensor,
@@ -699,9 +696,6 @@ class Qwen3TTSIncrementalDecoder:
         )
         state = self.init_state(
             shape[0], device=parameter.device, dtype=parameter.dtype
-        )
-        state.frame_positions = torch.zeros(
-            shape[0], dtype=torch.long, device=parameter.device
         )
         with torch.inference_mode():
             self._compiled_kernel(codes, state)

@@ -1621,6 +1621,11 @@ def make_qwen3_tts_scheduler_adapters(*, model: Any, wrapper: Any):
                     )
                 ref_code_len = int(ref_code.shape[0])
                 codes = torch.cat((ref_code, codes), dim=0)
+                # note (luojiaxuan): the step's ready event was recorded before
+                # this cat, so the prefixed chunk needs its own.
+                if codes.is_cuda:
+                    data.codes_ready_event = torch.cuda.Event()
+                    data.codes_ready_event.record()
             metadata["ref_code_len"] = ref_code_len
             if INITIAL_CODEC_CHUNK_FRAMES_PARAM in params:
                 metadata[INITIAL_CODEC_CHUNK_FRAMES_PARAM] = params[

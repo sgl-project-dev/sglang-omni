@@ -132,7 +132,6 @@ class _PendingIncrementalGroup:
     group: list[Any]
     handle: Any
     claimed_slots: list[int]
-    stream: Any
 
 
 class _Qwen3TTSInvalidCodeRows(ValueError):
@@ -158,6 +157,10 @@ class _IncrementalDecodePlan:
     reference_trim_frames: int
     generated_frames: int
     emitted_generated_frames: int
+    # note (luojiaxuan): the decode reads these chunks on the worker stream;
+    # holding them until the plan is committed keeps the allocator from
+    # reusing their memory before that read has run.
+    chunks: tuple[torch.Tensor, ...] = ()
 
 
 @dataclass(eq=False)
@@ -183,6 +186,7 @@ class _Qwen3TTSDecodePlan:
     generated_frames: int
     window_start: int
     emitted_generated_frames: int
+    chunks: tuple[torch.Tensor, ...] = ()
 
 
 def _bad_row_message(indices: list[int] | tuple[int, ...]) -> str:
@@ -736,10 +740,9 @@ class Qwen3TTSStreamingVocoderScheduler(
         self._followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
         self._default_initial_chunk_frames = int(initial_chunk_frames)
         self._stream_left_context_frames = int(stream_left_context_frames)
-        # Note (Qihao Liu): the incremental path was synchronous while its state
-        # was per-request and B=1 only. Arena-backed state lets the async
-        # workers batch it, so only deterministic inference still forces the
-        # synchronous path, where each request decodes alone anyway (#1475).
+        # Note (Qihao Liu): deterministic inference keeps the incremental path
+        # synchronous, where each request decodes alone (#1475); otherwise the
+        # async workers batch cohorts on arena-backed state.
         self._async_decode = (
             False
             if (self._enable_stateful_codec_decoder and self._deterministic_inference)
@@ -1455,6 +1458,7 @@ class Qwen3TTSStreamingVocoderScheduler(
             reference_trim_frames=max(0, state.ref_frames - consumed_frames),
             generated_frames=generated_frames,
             emitted_generated_frames=state.emitted_generated_frames,
+            chunks=tuple(state.code_chunks),
         )
 
     def _extract_incremental_delta(
@@ -1565,22 +1569,14 @@ class Qwen3TTSStreamingVocoderScheduler(
             generated_frames=generated_frames,
             window_start=window_start,
             emitted_generated_frames=state.emitted_generated_frames,
+            chunks=tuple(state.code_chunks),
         )
 
     def _wait_codes_ready(self, state: _Qwen3TTSStreamState) -> None:
-        """Order this thread's stream after the talker's newest chunk.
-
-        The chunks were allocated on the talker's stream, so the caching
-        allocator would hand their storage back to the talker as soon as this
-        stream's last Python reference drops, even with a read still queued
-        here; record_stream defers that reuse until this stream's work is done.
-        """
+        """Order this thread's stream after the talker's newest chunk."""
         if state.codes_ready is None:
             return
-        stream = torch.cuda.current_stream(self._device)
-        stream.wait_event(state.codes_ready)
-        for chunk in state.code_chunks:
-            chunk.record_stream(stream)
+        torch.cuda.current_stream(self._device).wait_event(state.codes_ready)
 
     @staticmethod
     def _decode_stream_priority() -> int:
@@ -1686,6 +1682,14 @@ class Qwen3TTSStreamingVocoderScheduler(
                 plans, decoder_input, bad_rows, stream, incremental
             )
 
+    def _runner_for_stream(self, stream: Any, initial: Any, worker_attr: str) -> Any:
+        """The graph runner that was built for this decode stream, if any."""
+        if stream is self._decode_stream:
+            return initial
+        if stream in self._followup_decode_streams:
+            return getattr(self._worker_ctx, worker_attr, None)
+        return None
+
     def _launch_async(
         self,
         plans: list[Any],
@@ -1718,14 +1722,10 @@ class Qwen3TTSStreamingVocoderScheduler(
                     decoder_input, slot if pinned else None
                 )
                 if incremental is not None:
-                    incremental_graphs = (
-                        self._initial_incremental_decode_graphs
-                        if stream is self._decode_stream
-                        else (
-                            getattr(self._worker_ctx, "incremental_graphs", None)
-                            if stream in self._followup_decode_streams
-                            else None
-                        )
+                    incremental_graphs = self._runner_for_stream(
+                        stream,
+                        self._initial_incremental_decode_graphs,
+                        "incremental_graphs",
                     )
                     waveform = (
                         incremental_graphs.decode_slots(gpu_input, incremental.slots)
@@ -1741,14 +1741,8 @@ class Qwen3TTSStreamingVocoderScheduler(
                         incremental.arena.scatter(incremental.slots, cohort_state)
                     extract = self._extract_incremental_delta
                 else:
-                    graphs = (
-                        self._initial_decode_graphs
-                        if stream is self._decode_stream
-                        else (
-                            getattr(self._worker_ctx, "graphs", None)
-                            if stream in self._followup_decode_streams
-                            else None
-                        )
+                    graphs = self._runner_for_stream(
+                        stream, self._initial_decode_graphs, "graphs"
                     )
                     waveform = graphs.decode(gpu_input) if graphs is not None else None
                     if waveform is None:
@@ -2246,7 +2240,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         # chunk, so cohorts key on that width. Reference-prefixed requests are
         # ragged and fall into singleton cohorts on their own; CustomVoice has
         # no reference prefix, so every bootstrap shares one width and batches.
-        for cohort in self._group_incremental_plans(planned_incremental):
+        for cohort in self._group_decode_plans(planned_incremental):
             for group in self._split_incremental_group_for_graph(
                 cohort, runner=self._initial_incremental_decode_graphs
             ):
@@ -2296,25 +2290,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             return group, deltas
         return None
 
-    @staticmethod
-    def _group_incremental_plans(
-        planned: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
-    ) -> list[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]]]:
-        """Cohort by fresh frame count alone.
-
-        Note (Qihao Liu): arena-backed state is always the full retained width
-        with per-row positions, so a cold stream and a warm stream have the
-        same execution shape and differ only in their attention mask. Fresh
-        frames are the only thing that changes the shape, which is why playback
-        position does not enter the key.
-        """
-        groups: dict[
-            int, list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]]
-        ] = {}
-        for entry in planned:
-            groups.setdefault(entry[2].fresh_frames, []).append(entry)
-        return list(groups.values())
-
     def _split_incremental_group_for_graph(
         self,
         group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
@@ -2342,23 +2317,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         tuple[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]], list]
         | None
     ):
-        """Decode a cohort and return the surviving entries with their deltas.
-
-        Rows that held out-of-range codec ids fail their streams; unlike the
-        left-context path the survivors are not re-run, because their arena
-        state has already advanced. Any other failure falls the whole cohort
-        back to the left-context decoder instead of killing the streams. Every
-        slot claimed by planning is released here exactly once.
-        """
-        arena = self._codec_arena
-        decoder = self._incremental_decoder
-        assert arena is not None and decoder is not None
-        claimed_slots = [entry[2].slot for entry in group]
-        try:
-            return self._decode_incremental_cohorts(group, stream=stream)
-        finally:
-            self._finish_codec_slots(claimed_slots)
-            self._maybe_log_codec_stats()
+        """Decode a cohort and return the surviving entries with their deltas."""
+        pending = self._launch_incremental_group(group, stream=stream)
+        if pending is None:
+            return None
+        return self._finish_incremental_group(pending)
 
     def _launch_incremental_group(
         self,
@@ -2368,32 +2331,43 @@ class Qwen3TTSStreamingVocoderScheduler(
     ) -> _PendingIncrementalGroup | None:
         """Launch one cohort and return it pending, or None after a fallback.
 
-        The launch half of ``_decode_incremental_cohorts``: a follow-up worker
-        launches the next cohort before resolving the previous one so the
-        decode stream never drains between cohorts.
+        Rows the synchronous path rejects before decoding fail their streams
+        and the survivors launch again. Any other failure falls the whole
+        cohort back to the left-context decoder instead of killing the
+        streams. Slots of launched rows stay claimed until the cohort is
+        finished; slots of rejected rows are released here.
         """
         arena = self._codec_arena
         decoder = self._incremental_decoder
         assert arena is not None and decoder is not None
-        claimed_slots = [entry[2].slot for entry in group]
-        try:
-            batch = _IncrementalDecodeBatch(
-                decoder=decoder, arena=arena, slots=list(claimed_slots)
+        while group:
+            slots = [entry[2].slot for entry in group]
+            try:
+                handle = self._launch_decode_plans(
+                    [entry[2] for entry in group],
+                    stream=stream,
+                    incremental=_IncrementalDecodeBatch(
+                        decoder=decoder, arena=arena, slots=slots
+                    ),
+                )
+            except _Qwen3TTSInvalidCodeRows as exc:
+                bad = set(exc.indices)
+                for index, (request_id, state, _) in enumerate(group):
+                    if index in bad:
+                        self._fail_async_stream(request_id, state, exc)
+                self._finish_codec_slots([slots[index] for index in sorted(bad)])
+                group = [entry for index, entry in enumerate(group) if index not in bad]
+                continue
+            except Exception as exc:
+                for request_id, state, _ in group:
+                    self._fallback_incremental_stream(request_id, state, exc)
+                self._finish_codec_slots(slots)
+                self._maybe_log_codec_stats()
+                return None
+            return _PendingIncrementalGroup(
+                group=group, handle=handle, claimed_slots=slots
             )
-            handle = self._launch_decode_plans(
-                [entry[2] for entry in group],
-                stream=stream,
-                incremental=batch,
-            )
-        except Exception as exc:
-            for request_id, state, _ in group:
-                self._fallback_incremental_stream(request_id, state, exc)
-            self._finish_codec_slots(claimed_slots)
-            self._maybe_log_codec_stats()
-            return None
-        return _PendingIncrementalGroup(
-            group=group, handle=handle, claimed_slots=claimed_slots, stream=stream
-        )
+        return None
 
     def _finish_incremental_group(
         self,
@@ -2402,20 +2376,15 @@ class Qwen3TTSStreamingVocoderScheduler(
         tuple[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]], list]
         | None
     ):
-        """Resolve a launched cohort with the row-failure semantics of the sync path."""
+        """Resolve a launched cohort: rows with invalid codes fail, the rest commit.
+
+        Nothing is re-run here, because every row's arena state has already
+        advanced. Every slot the cohort claimed is released exactly once.
+        """
         group = pending.group
         try:
             try:
                 deltas, bad_indices = pending.handle.resolve_partial()
-            except _Qwen3TTSInvalidCodeRows as exc:
-                bad = set(exc.indices)
-                for index, (request_id, state, _) in enumerate(group):
-                    if index in bad:
-                        self._fail_async_stream(request_id, state, exc)
-                survivors = [e for i, e in enumerate(group) if i not in bad]
-                return self._decode_incremental_cohorts(
-                    survivors, stream=pending.stream
-                )
             except Exception as exc:
                 for request_id, state, _ in group:
                     self._fallback_incremental_stream(request_id, state, exc)
@@ -2440,65 +2409,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         finally:
             self._finish_codec_slots(pending.claimed_slots)
             self._maybe_log_codec_stats()
-
-    def _decode_incremental_cohorts(
-        self,
-        group: list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]],
-        *,
-        stream: torch.cuda.Stream | None,
-    ) -> (
-        tuple[list[tuple[str, _Qwen3TTSStreamState, _IncrementalDecodePlan]], list]
-        | None
-    ):
-        arena = self._codec_arena
-        decoder = self._incremental_decoder
-        assert arena is not None and decoder is not None
-        while group:
-            slots = [entry[2].slot for entry in group]
-            try:
-                # Note (Qihao Liu): gathering is inside the guard too: a failure
-                # here must degrade the cohort, not kill the worker thread.
-                batch = _IncrementalDecodeBatch(
-                    decoder=decoder, arena=arena, slots=slots
-                )
-                handle = self._launch_decode_plans(
-                    [entry[2] for entry in group],
-                    stream=stream,
-                    incremental=batch,
-                )
-                deltas, bad_indices = handle.resolve_partial()
-            except _Qwen3TTSInvalidCodeRows as exc:
-                # Note (Qihao Liu): raised by the synchronous path before
-                # anything was decoded, so the survivors' slots are untouched
-                # and can be retried.
-                bad = set(exc.indices)
-                for index, (request_id, state, _) in enumerate(group):
-                    if index in bad:
-                        self._fail_async_stream(request_id, state, exc)
-                group = [e for i, e in enumerate(group) if i not in bad]
-                continue
-            except Exception as exc:
-                for request_id, state, _ in group:
-                    self._fallback_incremental_stream(request_id, state, exc)
-                return None
-            if not bad_indices:
-                return group, deltas
-            bad = set(bad_indices)
-            failure = _Qwen3TTSInvalidCodeRows(
-                list(bad_indices), _bad_row_message(bad_indices)
-            )
-            for index, (request_id, state, _) in enumerate(group):
-                if index in bad:
-                    self._fail_async_stream(request_id, state, failure)
-            survivors = [
-                (entry, delta)
-                for index, (entry, delta) in enumerate(zip(group, deltas))
-                if index not in bad
-            ]
-            if not survivors:
-                return None
-            return [entry for entry, _ in survivors], [delta for _, delta in survivors]
-        return None
 
     def _fallback_incremental_stream(
         self,
@@ -2683,7 +2593,7 @@ class Qwen3TTSStreamingVocoderScheduler(
                     planned.append((request_id, state, plan))
 
         stream = getattr(self._worker_ctx, "stream", self._followup_decode_stream)
-        for cohort in self._group_incremental_plans(planned_incremental):
+        for cohort in self._group_decode_plans(planned_incremental):
             for group in self._split_incremental_group_for_graph(
                 cohort, runner=getattr(self._worker_ctx, "incremental_graphs", None)
             ):
@@ -2695,6 +2605,12 @@ class Qwen3TTSStreamingVocoderScheduler(
                 if pending is not None:
                     self._pending_incremental().append(pending)
 
+        if planned:
+            # note (luojiaxuan): a left-context decode takes the thread's
+            # pinned slot synchronously, so both slots must be free; finishing
+            # the in-flight cohorts first also commits them before this batch's
+            # eager decodes could delay them further.
+            self._drain_pending_incremental(keep=0)
         for group in self._group_decode_plans(planned):
             decoded = self._decode_group(
                 group,

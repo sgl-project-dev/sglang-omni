@@ -842,7 +842,7 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
     bystander = arena.acquire()
     codes = torch.randint(0, 16, (2, 2, 6), device=device)
 
-    # eager reference on private copies of the same zeroed rows
+    # note (luojiaxuan): eager reference on private copies of the same zeroed rows
     reference = Qwen3TTSIncrementalCodecState()
     reference.frame_positions = torch.zeros(2, dtype=torch.long, device=device)
     expected = torch.cat(
@@ -872,7 +872,8 @@ def test_arena_bound_graph_replays_match_eager_and_advance_the_arena() -> None:
     assert untouched.frame_positions.tolist() == [0]
     assert torch.count_nonzero(untouched.transformer_keys[0]).item() == 0
 
-    # a one-row cohort replays the two-row bucket; the padded row lands on scratch
+    # note (luojiaxuan): a one-row cohort replays the two-row bucket; the padded row
+    # lands on scratch
     single = runner.decode_slots(codes[:1, :, :2], slots[:1])
     assert single is not None and single.shape[0] == 1
     torch.cuda.synchronize()

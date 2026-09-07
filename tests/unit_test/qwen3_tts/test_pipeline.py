@@ -1992,8 +1992,8 @@ def test_qwen3_tts_stateful_codec_uses_reference_once_then_fresh_frames(
     state.total_frames = 5
     second = scheduler.decode_delta("request", state, is_final=False)
 
-    # Note (Qihao Liu): incremental decodes now run through the async workers,
-    # so enabling the stateful Codec no longer forces synchronous decoding.
+    # Note (Qihao Liu): enabling the stateful Codec keeps the async workers;
+    # only deterministic inference forces synchronous decoding.
     assert scheduler._async_decode is True
     assert scheduler._initial_decode_graphs._enabled is False
     assert first is not None
@@ -2672,7 +2672,6 @@ def test_qwen3_tts_decode_plan_waits_for_the_talker_chunk_event(
     state.codes_ready = ready
 
     waited: list[object] = []
-    recorded: list[object] = []
 
     class WorkerStream:
         def wait_event(self, event):
@@ -2680,22 +2679,17 @@ def test_qwen3_tts_decode_plan_waits_for_the_talker_chunk_event(
 
     worker_stream = WorkerStream()
     monkeypatch.setattr(torch.cuda, "current_stream", lambda device: worker_stream)
-    monkeypatch.setattr(
-        torch.Tensor, "record_stream", lambda chunk, stream: recorded.append(stream)
-    )
-
     plan = scheduler._build_decode_plan(state, is_final=True)
     assert plan is not None
     assert waited == [ready]
-    # note (luojiaxuan): every retained chunk is pinned to this stream so the
-    # talker cannot reuse its storage under a queued read.
-    assert recorded == [worker_stream]
+    # note (luojiaxuan): the plan keeps every retained chunk alive until it is
+    # committed, so the talker cannot reuse their storage under a queued read.
+    assert plan.chunks == tuple(state.code_chunks)
 
     state.codes_ready = None
     waited.clear()
-    recorded.clear()
     assert scheduler._build_decode_plan(state, is_final=True) is not None
-    assert waited == [] and recorded == []
+    assert waited == []
 
 
 def test_qwen3_tts_ingest_keeps_the_newest_chunk_event() -> None:
@@ -6546,8 +6540,10 @@ def test_qwen3_tts_incremental_cohorts_group_by_fresh_frames() -> None:
         ("b", None, _plan(4, 1)),
         ("c", None, _plan(8, 2)),
     ]
-    groups = qwen3_streaming_vocoder.Qwen3TTSStreamingVocoderScheduler._group_incremental_plans(
-        planned
+    groups = (
+        qwen3_streaming_vocoder.Qwen3TTSStreamingVocoderScheduler._group_decode_plans(
+            planned
+        )
     )
 
     assert sorted(len(group) for group in groups) == [1, 2]

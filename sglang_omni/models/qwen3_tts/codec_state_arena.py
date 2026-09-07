@@ -51,14 +51,18 @@ class Qwen3TTSCodecStateArena:
             self._num_slots + 1, device=self._device, dtype=dtype
         )
         self._lock = threading.Lock()
-        # note (luojiaxuan): cohort indices and positions reach the device
-        # through per-thread pinned staging with non_blocking copies. Building
-        # them with ``torch.as_tensor(list, device=cuda)`` issues a pageable
-        # H2D copy, which blocks the host until every kernel already queued on
-        # the stream (the decode just launched) has finished: an implicit
-        # resolve() on every gather and scatter. A worker reuses its staging
-        # only after resolve() has synchronized its previous cohort.
+        # note (luojiaxuan): cohort indices reach the device through per-thread
+        # pinned staging with non_blocking copies. Building them with
+        # ``torch.as_tensor(list, device=cuda)`` issues a pageable H2D copy,
+        # which blocks the host until every kernel already queued on the
+        # stream (the decode just launched) has finished: an implicit
+        # resolve() on every gather and scatter.
         self._staging = threading.local()
+        # note (luojiaxuan): a slot's last owner may still have its zeroing or
+        # scatter queued on another stream when the slot is released, so the
+        # release records where that stream is and the next owner waits on it
+        # before touching the rows.
+        self._release_events: dict[int, torch.cuda.Event] = {}
         self._free: list[int] = list(reversed(range(self._num_slots)))
         self._retired: set[int] = set()
         self._exhausted_count = 0
@@ -92,10 +96,17 @@ class Qwen3TTSCodecStateArena:
                 self._exhausted_count += 1
                 return None
             slot = self._free.pop()
+            released = self._release_events.pop(slot, None)
+        if released is not None:
+            torch.cuda.current_stream(self._device).wait_event(released)
         self._zero_slot(slot)
         return slot
 
     def release(self, slot: int) -> None:
+        released = None
+        if self._device.type == "cuda":
+            released = torch.cuda.Event()
+            released.record(torch.cuda.current_stream(self._device))
         with self._lock:
             if slot in self._retired:
                 return
@@ -103,6 +114,8 @@ class Qwen3TTSCodecStateArena:
                 raise RuntimeError(
                     f"Qwen3-TTS codec state slot {slot} was released twice"
                 )
+            if released is not None:
+                self._release_events[slot] = released
             self._free.append(slot)
 
     def retire(self, slot: int) -> None:
@@ -132,6 +145,8 @@ class Qwen3TTSCodecStateArena:
     _STAGING_RING = 4
 
     def _staged(self, name: str, values: Sequence[int]) -> torch.Tensor:
+        if self._device.type != "cuda":
+            return torch.as_tensor(list(values), dtype=torch.long)
         count = len(values)
         if count == 0:
             raise ValueError("Qwen3-TTS codec state arena needs at least one slot")
@@ -160,20 +175,13 @@ class Qwen3TTSCodecStateArena:
         device[:count].copy_(host[:count], non_blocking=True)
         return device[:count]
 
-    def _index(self, slots: Sequence[int]) -> torch.Tensor:
-        return self._staged("index", slots)
-
     def stage_index(self, slots: Sequence[int]) -> torch.Tensor:
         """Stage a cohort's slot ids on the device without a host sync."""
         return self._staged("index", slots)
 
-    def positions(self, values: Sequence[int]) -> torch.Tensor:
-        """Stage a cohort's frame positions on the device without a host sync."""
-        return self._staged("positions", values)
-
     def gather(self, slots: Sequence[int]) -> Qwen3TTSIncrementalCodecState:
         """Select a cohort's rows into one contiguous state."""
-        return self.gather_by_index(self._index(slots))
+        return self.gather_by_index(self.stage_index(slots))
 
     def gather_by_index(self, index: torch.Tensor) -> Qwen3TTSIncrementalCodecState:
         """Select the rows named by a device index tensor.
@@ -200,7 +208,7 @@ class Qwen3TTSCodecStateArena:
         self, slots: Sequence[int], state: Qwen3TTSIncrementalCodecState
     ) -> None:
         """Write an advanced cohort state back into its slots."""
-        self.scatter_by_index(self._index(slots), state)
+        self.scatter_by_index(self.stage_index(slots), state)
 
     def scatter_by_index(
         self, index: torch.Tensor, state: Qwen3TTSIncrementalCodecState
