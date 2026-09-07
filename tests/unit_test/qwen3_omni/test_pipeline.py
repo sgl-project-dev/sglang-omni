@@ -353,7 +353,12 @@ def test_merge_extracted_video_audio_rejects_mixed_audio_presence(missing) -> No
 
 
 def test_merge_extracted_video_audio_preserves_alignment() -> None:
+    from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
+        Qwen3OmniMoeProcessor,
+    )
+
     from sglang_omni.models.qwen3_omni.components.preprocessor import (
+        Qwen3OmniPreprocessor,
         _merge_extracted_video_audio,
     )
 
@@ -363,8 +368,46 @@ def test_merge_extracted_video_audio_preserves_alignment() -> None:
 
     assert enabled is True
     assert len(merged) == 3
+    pre = object.__new__(Qwen3OmniPreprocessor)
+    messages = pre._build_multimodal_messages(
+        [{"role": "user", "content": "Describe the video and audio."}],
+        num_images=0,
+        num_audios=1,
+        num_videos=2,
+    )
+    processor = object.__new__(Qwen3OmniMoeProcessor)
+    processor.image_processor = SimpleNamespace(merge_size=1)
+    processor.video_processor = SimpleNamespace(merge_size=1)
+    processor.audio_token = "<audio>"
+    processor.image_token = "<image>"
+    processor.video_token = "<video>"
+    processor.vision_bos_token = "<vision_start>"
+    processor.vision_eos_token = "<vision_end>"
+    processor.audio_bos_token = "<audio_start>"
+    processor.audio_eos_token = "<audio_end>"
+    placeholders = {
+        "video": "<vision_start><video><vision_end>",
+        "audio": "<audio_start><audio><audio_end>",
+    }
+    prompt = "".join(
+        placeholders.get(part["type"], part.get("text", ""))
+        for part in messages[0]["content"]
+    )
+    expanded = processor.replace_multimodal_special_tokens(
+        [prompt],
+        audio_lengths=iter(len(audio) for audio in merged),
+        image_grid_thw=iter(()),
+        video_grid_thw=iter([np.array([1, 1, 1])] * 2),
+        video_second_per_grid=iter([1.0, 1.0]),
+        use_audio_in_video=True,
+        position_id_per_seconds=13.0,
+        seconds_per_chunk=2.0,
+    )[0]
+
+    audio_spans = expanded.split(processor.audio_eos_token)[:3]
+    assert [span.count(processor.audio_token) for span in audio_spans] == [3, 4, 2]
     assert all(
-        actual is expected for actual, expected in zip(merged, explicit + embedded)
+        actual is expected for actual, expected in zip(merged, embedded + explicit)
     )
 
 
@@ -374,7 +417,7 @@ def test_merge_extracted_video_audio_preserves_alignment() -> None:
         ([], ["embedded"], True, ["embedded"], True),
         ([], [None], True, None, False),
         (["explicit"], [None], True, ["explicit"], False),
-        (["explicit"], ["embedded"], True, ["explicit", "embedded"], True),
+        (["explicit"], ["embedded"], True, ["embedded", "explicit"], True),
         ([], None, False, None, False),
         ([], None, None, None, None),
     ],

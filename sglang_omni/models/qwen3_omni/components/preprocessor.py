@@ -94,7 +94,8 @@ def _merge_extracted_video_audio(
     explicit = (
         explicit_audios if isinstance(explicit_audios, list) else [explicit_audios]
     )
-    return [*explicit, *extracted_audios], True
+    # Match the video-before-audio placeholder order in _build_multimodal_messages.
+    return [*extracted_audios, *explicit], True
 
 
 # Special-token attributes the HF Qwen3OmniMoeProcessor reads off the tokenizer.
