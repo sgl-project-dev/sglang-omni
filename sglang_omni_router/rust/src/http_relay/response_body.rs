@@ -6,7 +6,7 @@ use bytes::Bytes;
 use http_body::{Frame, SizeHint};
 use thiserror::Error;
 
-use crate::metrics::RouterMetrics;
+use crate::metrics::{HttpBodyTermination, RouterMetrics};
 use crate::worker_pool::RequestLease;
 
 #[derive(Debug, Error)]
@@ -35,12 +35,13 @@ impl DirectResponseBody {
         }
     }
 
-    fn terminalize(&mut self, upstream_failure: bool) {
+    fn terminalize(&mut self, termination: HttpBodyTermination) {
         if self.terminal {
             return;
         }
         self.terminal = true;
-        if upstream_failure {
+        self.metrics.record_http_body_termination(termination);
+        if termination == HttpBodyTermination::UpstreamError {
             self.metrics.record_relay_failure();
             if let Some(lease) = self.lease.as_ref() {
                 lease.request_immediate_probe();
@@ -50,15 +51,24 @@ impl DirectResponseBody {
         drop(self.lease.take());
     }
 
-    fn fail(&mut self, upstream_failure: bool) -> Poll<Option<Result<Frame<Bytes>, RelayError>>> {
-        self.terminalize(upstream_failure);
+    fn fail(&mut self) -> Poll<Option<Result<Frame<Bytes>, RelayError>>> {
+        self.terminalize(HttpBodyTermination::UpstreamError);
         Poll::Ready(Some(Err(RelayError)))
     }
 }
 
 impl Drop for DirectResponseBody {
     fn drop(&mut self) {
-        self.terminalize(false);
+        let termination = if self
+            .inner
+            .as_ref()
+            .is_some_and(http_body::Body::is_end_stream)
+        {
+            HttpBodyTermination::Complete
+        } else {
+            HttpBodyTermination::Dropped
+        };
+        self.terminalize(termination);
     }
 }
 
@@ -74,16 +84,26 @@ impl http_body::Body for DirectResponseBody {
             return Poll::Ready(None);
         }
         let Some(inner) = self.inner.as_mut() else {
-            return self.fail(true);
+            return self.fail();
         };
-        match Pin::new(inner).poll_frame(cx) {
+        let frame = Pin::new(inner).poll_frame(cx);
+        match frame {
             Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
-                Ok(data) => Poll::Ready(Some(Ok(Frame::data(data)))),
-                Err(_trailers) => self.fail(true),
+                Ok(data) => {
+                    if self
+                        .inner
+                        .as_ref()
+                        .is_some_and(http_body::Body::is_end_stream)
+                    {
+                        self.terminalize(HttpBodyTermination::Complete);
+                    }
+                    Poll::Ready(Some(Ok(Frame::data(data))))
+                }
+                Err(_trailers) => self.fail(),
             },
-            Poll::Ready(Some(Err(_source))) => self.fail(true),
+            Poll::Ready(Some(Err(_source))) => self.fail(),
             Poll::Ready(None) => {
-                self.terminalize(false);
+                self.terminalize(HttpBodyTermination::Complete);
                 Poll::Ready(None)
             }
             Poll::Pending => Poll::Pending,

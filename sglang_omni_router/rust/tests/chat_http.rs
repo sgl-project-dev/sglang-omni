@@ -613,6 +613,16 @@ fn post_when_capacity_releases(address: SocketAddr) -> Vec<u8> {
     }
 }
 
+fn metrics(address: SocketAddr) -> String {
+    let response = raw_request(
+        address,
+        b"GET /metrics HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+    )
+    .expect("read router metrics");
+    assert_eq!(status(&response), 200);
+    String::from_utf8(response).expect("metrics are UTF-8")
+}
+
 fn status(response: &[u8]) -> u16 {
     let line_end = response
         .windows(2)
@@ -831,6 +841,9 @@ fn relay_holds_admission_and_is_not_cut_off_after_commitment() {
     let slow_response = slow.join().expect("join slow client");
     assert_eq!(status(&slow_response), 200);
     assert!(slow_response.windows(6).any(|part| part == b"[DONE]"));
+    assert!(metrics(router.address).contains(
+        "sglang_omni_router_http_response_body_terminations_total{outcome=\"complete\"} 1\n"
+    ));
 
     drop(router);
     drop(worker);
@@ -1167,6 +1180,13 @@ fn early_upload_eof_and_downstream_disconnect_release_admission() {
         release_started.elapsed() < Duration::from_secs(1),
         "admission was released only when the upstream stream ended"
     );
+    let observed = metrics(router.address);
+    assert!(
+        observed.contains(
+            "sglang_omni_router_http_response_body_terminations_total{outcome=\"dropped\"} 1\n"
+        ),
+        "unexpected body termination metrics:\n{observed}"
+    );
 }
 
 #[test]
@@ -1260,6 +1280,9 @@ fn upstream_failure_after_sse_commitment_releases_capacity() {
 
     let recovered = post_when_capacity_releases(router.address);
     assert_ne!(status(&recovered), 429);
+    assert!(metrics(router.address).contains(
+        "sglang_omni_router_http_response_body_terminations_total{outcome=\"upstream_error\"} 1\n"
+    ));
 }
 
 #[test]

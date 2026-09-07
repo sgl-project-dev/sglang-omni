@@ -457,6 +457,30 @@ impl WebsocketTermination {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(usize)]
+pub(crate) enum HttpBodyTermination {
+    Complete,
+    UpstreamError,
+    Dropped,
+}
+
+impl HttpBodyTermination {
+    pub(crate) const ALL: [Self; 3] = [Self::Complete, Self::UpstreamError, Self::Dropped];
+
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::UpstreamError => "upstream_error",
+            Self::Dropped => "dropped",
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize
+    }
+}
+
 impl Rejection {
     pub(crate) const ALL: [Self; 10] = [
         Self::GlobalAdmission,
@@ -524,6 +548,7 @@ pub(crate) struct RouterMetrics {
         [[AtomicU64; ClassificationOutcome::ALL.len()]; ClassificationKind::ALL.len()],
     websocket_terminations: [[[AtomicU64; WebsocketTermination::ALL.len()];
         WebsocketPhase::ALL.len()]; WebsocketProtocol::ALL.len()],
+    http_body_terminations: [AtomicU64; HttpBodyTermination::ALL.len()],
     faults: [[AtomicU64; HttpFault::ALL.len()]; HttpRoute::ALL.len()],
     rejections: [AtomicU64; Rejection::ALL.len()],
     relay_failures: AtomicU64,
@@ -545,6 +570,7 @@ impl RouterMetrics {
             websocket_terminations: std::array::from_fn(|_| {
                 std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0)))
             }),
+            http_body_terminations: std::array::from_fn(|_| AtomicU64::new(0)),
             faults: std::array::from_fn(|_| std::array::from_fn(|_| AtomicU64::new(0))),
             rejections: std::array::from_fn(|_| AtomicU64::new(0)),
             relay_failures: AtomicU64::new(0),
@@ -602,6 +628,10 @@ impl RouterMetrics {
             .fetch_add(1, Ordering::Relaxed);
     }
 
+    pub(crate) fn record_http_body_termination(&self, termination: HttpBodyTermination) {
+        self.http_body_terminations[termination.index()].fetch_add(1, Ordering::Relaxed);
+    }
+
     pub(crate) fn record_relay_failure(&self) {
         self.relay_failures.fetch_add(1, Ordering::Relaxed);
     }
@@ -656,6 +686,10 @@ impl RouterMetrics {
             .load(Ordering::Relaxed)
     }
 
+    pub(crate) fn http_body_terminations(&self, termination: HttpBodyTermination) -> u64 {
+        self.http_body_terminations[termination.index()].load(Ordering::Relaxed)
+    }
+
     pub(crate) fn relay_failures(&self) -> u64 {
         self.relay_failures.load(Ordering::Relaxed)
     }
@@ -670,8 +704,9 @@ mod tests {
     use axum::http::{Response, StatusCode};
 
     use super::{
-        ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpRoute, Rejection,
-        RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
+        ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpBodyTermination,
+        HttpRoute, Rejection, RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol,
+        WebsocketTermination,
     };
     use crate::error::HttpFault;
 
@@ -718,6 +753,7 @@ mod tests {
             WebsocketPhase::Relay,
             WebsocketTermination::WorkerClose,
         );
+        metrics.record_http_body_termination(HttpBodyTermination::Complete);
         metrics.record_rejection(Rejection::SpeechAdmission);
         metrics.record_relay_failure();
 
@@ -753,6 +789,10 @@ mod tests {
             ),
             1
         );
+        assert_eq!(
+            metrics.http_body_terminations(HttpBodyTermination::Complete),
+            1
+        );
         assert_eq!(metrics.rejections(Rejection::SpeechAdmission), 1);
         assert_eq!(metrics.relay_failures(), 1);
     }
@@ -784,6 +824,9 @@ mod tests {
             assert_eq!(phase.index(), index);
         }
         for (index, termination) in WebsocketTermination::ALL.into_iter().enumerate() {
+            assert_eq!(termination.index(), index);
+        }
+        for (index, termination) in HttpBodyTermination::ALL.into_iter().enumerate() {
             assert_eq!(termination.index(), index);
         }
         for (index, fault) in HttpFault::ALL.into_iter().enumerate() {
