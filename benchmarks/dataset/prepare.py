@@ -106,7 +106,7 @@ def download_dataset(
         snapshot_download(
             repo_id=dataset_id,
             repo_type="dataset",
-            local_dir=local_dir or "socialomni",
+            local_dir=local_dir or "benchmarks/cache/socialomni",
             allow_patterns=[
                 "README.md",
                 "data/level_1/**",

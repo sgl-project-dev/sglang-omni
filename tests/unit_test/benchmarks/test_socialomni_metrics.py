@@ -7,11 +7,20 @@ from benchmarks.metrics.socialomni import (
     bootstrap_mean_interval,
     compute_socialomni_level1_metrics,
     compute_socialomni_level2_metrics,
+    validate_judge_scores,
 )
 
 
 def _scores(a: int, b: int, c: int) -> dict[str, int]:
     return {"gpt-4o": a, "gemini-2.5-pro": b, "qwen3-omni": c}
+
+
+@pytest.mark.parametrize("score", [True, 25.0, "25", [], None, 80])
+def test_judge_scores_reject_invalid_types_and_buckets(score) -> None:
+    scores = _scores(25, 50, 75)
+    scores["gpt-4o"] = score
+    with pytest.raises(JudgeCompletenessError):
+        validate_judge_scores(scores, "invalid")
 
 
 def test_level1_uses_fixed_denominator_and_visibility_strata() -> None:

@@ -352,11 +352,9 @@ gold-positive states meeting that condition; and `QEns_joint` is
 every non-empty eligible response. A judge failure makes the run incomplete.
 
 Each run writes one JSON file containing its configuration, environment,
-per-sample records, failures, performance summary, and paper metrics. Level 2
-runs all 209 maintained items and derives the source-order first-200 paper view
-from those same records. A model error or unparseable answer remains in the
-fixed denominator. An invalid or missing judge score makes the run incomplete;
-the benchmark never substitutes a two-judge mean. Latency percentiles and
+per-sample records, failures, performance summary, and paper metrics. The
+first-200 paper view uses source order and the same saved records. A model error
+or unparseable answer remains in the fixed denominator. Latency percentiles and
 throughput are engineering diagnostics, not SocialOmni paper metrics.
 Level 2 prepares all video prefixes before timing, then runs the turn-entry
 decisions and forced gold-positive responses as separate phases. Each nonempty
@@ -368,7 +366,8 @@ and excludes media preparation, warmup, and judge scoring; these timings are
 not directly comparable with older runs that included media preparation.
 Prefix preparation failures stay in the sample records and fixed denominator.
 
-The default prefix cache is `benchmarks/cache/socialomni-prefixes/`, and result
+Dataset preparation defaults to `benchmarks/cache/socialomni/`; `--local-dir`
+overrides it. The default prefix cache is `benchmarks/cache/socialomni-prefixes/`, and result
 JSON files go to `benchmarks/results/socialomni/`; both are ignored by Git.
 The result records whether the local metadata matches the pinned revision. This
 is a metadata identity check; local media files are validated as samples are

@@ -16,16 +16,6 @@ class JudgeCompletenessError(ValueError):
     """Raised when a generated response lacks all three fixed judge scores."""
 
 
-def _field(record: object, name: str, default: Any = ...) -> Any:
-    if isinstance(record, Mapping) and name in record:
-        return record[name]
-    if hasattr(record, name):
-        return getattr(record, name)
-    if default is ...:
-        raise ValueError(f"record is missing required field {name!r}")
-    return default
-
-
 def _ratio(numerator: float, denominator: float) -> float:
     return numerator / denominator if denominator else 0.0
 
@@ -91,16 +81,18 @@ def _choice(value: object) -> int | None:
     return ord(text) - ord("A") if text in {"A", "B", "C", "D"} else None
 
 
-def compute_socialomni_level1_metrics(records: Iterable[object]) -> dict[str, Any]:
+def compute_socialomni_level1_metrics(
+    records: Iterable[Mapping[str, Any]]
+) -> dict[str, Any]:
     """Compute fixed-denominator Level 1 metrics and visibility strata."""
     rows = list(records)
-    gold = [_choice(_field(row, "gold_answer")) for row in rows]
+    gold = [_choice(row["gold_answer"]) for row in rows]
     if any(value is None for value in gold):
         raise ValueError("invalid Level 1 gold answer")
     predicted = [
         (
-            _choice(_field(row, "predicted_answer", ""))
-            if _field(row, "is_success", True)
+            _choice(row.get("predicted_answer", ""))
+            if row.get("is_success", True)
             else None
         )
         for row in rows
@@ -108,7 +100,7 @@ def compute_socialomni_level1_metrics(records: Iterable[object]) -> dict[str, An
     result = _classification(gold, predicted, (0, 1, 2, 3))  # type: ignore[arg-type]
     strata: dict[str, Any] = {}
     for name in ("speaker_visible", "visibility_mismatch"):
-        indices = [i for i, row in enumerate(rows) if _field(row, "visibility") == name]
+        indices = [i for i, row in enumerate(rows) if row["visibility"] == name]
         current = _classification(
             [gold[i] for i in indices],  # type: ignore[list-item]
             [predicted[i] for i in indices],
@@ -131,7 +123,8 @@ def _when(value: object) -> int | None:
     return 1 if text == "YES" else 0 if text == "NO" else None
 
 
-def _judge_scores(value: object, sample_id: str) -> dict[str, int]:
+def validate_judge_scores(value: object, sample_id: str) -> dict[str, int]:
+    """Require one integer score in the allowed buckets from each fixed judge."""
     if not isinstance(value, Mapping) or set(value) != set(SOCIALOMNI_JUDGE_NAMES):
         raise JudgeCompletenessError(
             f"sample {sample_id!r} requires all judges {SOCIALOMNI_JUDGE_NAMES}"
@@ -139,7 +132,7 @@ def _judge_scores(value: object, sample_id: str) -> dict[str, int]:
     scores: dict[str, int] = {}
     for judge in SOCIALOMNI_JUDGE_NAMES:
         score = value[judge]
-        if isinstance(score, bool) or score not in SOCIALOMNI_SCORE_BUCKETS:
+        if type(score) is not int or score not in SOCIALOMNI_SCORE_BUCKETS:
             raise JudgeCompletenessError(
                 f"sample {sample_id!r} has invalid {judge!r} score {score!r}"
             )
@@ -174,7 +167,7 @@ def bootstrap_mean_interval(
 
 
 def compute_socialomni_level2_metrics(
-    records: Iterable[object],
+    records: Iterable[Mapping[str, Any]],
     *,
     bootstrap_seed: int = 20260902,
     bootstrap_samples: int = 10_000,
@@ -191,17 +184,17 @@ def compute_socialomni_level2_metrics(
         if gold[index] != 1:
             continue
         positive_total += 1
-        response = _field(row, "gold_response", "")
+        response = row.get("gold_response", "")
         has_response = bool(
-            _field(row, "gold_response_success", False)
+            row.get("gold_response_success", False)
             and isinstance(response, str)
             and response.strip()
         )
         score = 0.0
         if has_response:
-            scores = _judge_scores(
-                _field(row, "gold_judge_scores", {}),
-                str(_field(row, "sample_id", index)),
+            scores = validate_judge_scores(
+                row.get("gold_judge_scores", {}),
+                str(row.get("sample_id", index)),
             )
             score = sum(scores.values()) / len(scores)
         gold_scores.append(score)
@@ -241,15 +234,15 @@ def compute_socialomni_level2_metrics(
 
 
 def _level2_when_metrics(
-    rows: Sequence[object],
+    rows: Sequence[Mapping[str, Any]],
 ) -> tuple[dict[str, Any], list[int | None], list[int | None]]:
-    gold = [_when(_field(row, "gold_when")) for row in rows]
+    gold = [_when(row["gold_when"]) for row in rows]
     if any(value is None for value in gold):
         raise ValueError("invalid Level 2 gold decision")
     predicted = [
         (
-            _when(_field(row, "predicted_when", ""))
-            if _field(row, "when_success", True)
+            _when(row.get("predicted_when", ""))
+            if row.get("when_success", True)
             else None
         )
         for row in rows
@@ -279,7 +272,9 @@ def _level2_when_metrics(
     return when_metrics, gold, predicted
 
 
-def compute_socialomni_when_metrics(records: Iterable[object]) -> dict[str, Any]:
+def compute_socialomni_when_metrics(
+    records: Iterable[Mapping[str, Any]]
+) -> dict[str, Any]:
     """Compute Level 2 classification metrics without requiring judge output."""
     metrics, _, _ = _level2_when_metrics(list(records))
     return metrics

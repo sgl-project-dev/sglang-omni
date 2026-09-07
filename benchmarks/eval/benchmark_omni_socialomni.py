@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from benchmarks.benchmarker.data import RequestResult
 from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig, resolve_warmup
 from benchmarks.benchmarker.utils import save_json_results, wait_for_service
 from benchmarks.dataset.socialomni import (
@@ -24,10 +25,11 @@ from benchmarks.dataset.socialomni import (
 from benchmarks.metrics.performance import compute_speed_metrics
 from benchmarks.metrics.socialomni import (
     SOCIALOMNI_JUDGE_NAMES,
-    SOCIALOMNI_SCORE_BUCKETS,
+    JudgeCompletenessError,
     compute_socialomni_level1_metrics,
     compute_socialomni_level2_metrics,
     compute_socialomni_when_metrics,
+    validate_judge_scores,
 )
 from benchmarks.runtime_metrics import collect_benchmark_provenance
 from benchmarks.tasks.socialomni import (
@@ -35,9 +37,9 @@ from benchmarks.tasks.socialomni import (
     LEVEL1_MAX_TOKENS,
     LEVEL2_RESPONSE_MAX_TOKENS,
     LEVEL2_WHEN_MAX_TOKENS,
+    build_level1_result_records,
     load_judge_config,
     make_level1_send_fn,
-    parse_choice,
     run_judges,
     run_level2_model,
     validate_judge_credentials,
@@ -61,37 +63,32 @@ class SocialOmniEvalConfig:
     disable_tqdm: bool = False
 
 
-def _request_failure(result: object, phase: str) -> dict[str, str] | None:
-    if getattr(result, "is_success", False):
+def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None:
+    if result.is_success:
         return None
     return {
         "phase": phase,
-        "request_id": str(getattr(result, "request_id", "")),
-        "error": str(getattr(result, "error", "")),
+        "request_id": result.request_id,
+        "error": result.error,
     }
 
 
 def _judges_complete(records: list[dict[str, Any]], configured: bool) -> bool:
-    required = set(SOCIALOMNI_JUDGE_NAMES)
-
-    def has_all_scores(record: dict[str, Any]) -> bool:
-        scores = record["gold_judge_scores"]
-        return (
-            isinstance(scores, dict)
-            and set(scores) == required
-            and all(
-                type(score) is int and score in SOCIALOMNI_SCORE_BUCKETS
-                for score in scores.values()
-            )
-        )
-
-    return configured and all(
-        has_all_scores(record)
-        for record in records
-        if record["gold_when"] == "YES"
-        and record["gold_response_success"]
-        and str(record["gold_response"]).strip()
-    )
+    if not configured:
+        return False
+    try:
+        for record in records:
+            if (
+                record["gold_when"] == "YES"
+                and record["gold_response_success"]
+                and str(record["gold_response"]).strip()
+            ):
+                validate_judge_scores(
+                    record["gold_judge_scores"], str(record.get("sample_id", ""))
+                )
+    except JudgeCompletenessError:
+        return False
+    return True
 
 
 async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
@@ -171,28 +168,12 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
         request_results = await runner.run(
             samples, make_level1_send_fn(config.model, config.base_url)
         )
-        records = []
-        for sample, result in zip(samples, request_results, strict=True):
-            prediction = (
-                parse_choice(result.text, ("A", "B", "C", "D"))
-                if result.is_success
-                else ""
-            )
-            records.append(
-                {
-                    "sample_id": sample.sample_id,
-                    "gold_answer": sample.gold_answer,
-                    "predicted_answer": prediction,
-                    "visibility": sample.visibility,
-                    "is_success": result.is_success,
-                    "raw_response": result.text,
-                    "request": asdict(result),
-                }
-            )
+        records = build_level1_result_records(samples, request_results)
+        for record, result in zip(records, request_results, strict=True):
             failure = _request_failure(result, "level1")
             if failure:
                 output["failures"].append(failure)
-            elif not prediction:
+            elif not record["predicted_answer"]:
                 output["failures"].append(
                     {
                         "phase": "level1_parse",
@@ -317,13 +298,10 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             output["paper_core_200"] = core_summary
         output["per_sample"]["level2"] = records
 
-    level1_complete = True
     level2_complete = "level2" not in levels or (
         output["summary"]["level2"]["metrics"]["judge_status"]["complete"]
     )
-    output["summary"]["status"] = (
-        "complete" if level1_complete and level2_complete else "incomplete"
-    )
+    output["summary"]["status"] = "complete" if level2_complete else "incomplete"
     return output
 
 

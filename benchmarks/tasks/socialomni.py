@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request and media helpers for SocialOmni."""
+"""Request construction and evaluation phases for SocialOmni."""
 
 from __future__ import annotations
 
@@ -104,10 +104,7 @@ def _headers(api_key_env: str | None) -> dict[str, str]:
 def validate_judge_credentials(judges: Sequence[JudgeSpec]) -> None:
     """Fail before model inference when a configured judge credential is absent."""
     for judge in judges:
-        if judge.api_key_env and not os.environ.get(judge.api_key_env):
-            raise RuntimeError(
-                f"API key environment variable is not set: {judge.api_key_env}"
-            )
+        _headers(judge.api_key_env)
 
 
 def _response_text(body: dict[str, Any]) -> str:
@@ -192,11 +189,16 @@ async def request_chat_completion(
                                     latency_s=time.perf_counter() - request_started,
                                     error=f"invalid token usage: {exc}",
                                 )
+                            elapsed = time.perf_counter() - request_started
                             return RequestResult(
                                 request_id=request_id,
                                 text=_response_text(body),
                                 is_success=True,
-                                latency_s=time.perf_counter() - request_started,
+                                latency_s=elapsed,
+                                engine_time_s=elapsed,
+                                tok_per_s=(
+                                    completion_tokens / elapsed if elapsed else 0.0
+                                ),
                                 prompt_tokens=prompt_tokens,
                                 completion_tokens=completion_tokens,
                             )
@@ -229,6 +231,27 @@ def parse_choice(text: str, choices: Sequence[str]) -> str:
         return explicit[0] if len(set(explicit)) == 1 else ""
     plain = re.fullmatch(rf"([{alphabet}])[.)]?", content)
     return plain.group(1) if plain else ""
+
+
+def build_level1_result_records(
+    samples: Sequence[SocialOmniLevel1Sample], results: Sequence[RequestResult]
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "sample_id": sample.sample_id,
+            "gold_answer": sample.gold_answer,
+            "predicted_answer": (
+                parse_choice(result.text, ("A", "B", "C", "D"))
+                if result.is_success
+                else ""
+            ),
+            "visibility": sample.visibility,
+            "is_success": result.is_success,
+            "raw_response": result.text,
+            "request": asdict(result),
+        }
+        for sample, result in zip(samples, results, strict=True)
+    ]
 
 
 def parse_when(text: str) -> str:
@@ -452,7 +475,8 @@ async def run_judges(
             session: aiohttp.ClientSession, record: dict[str, Any]
         ) -> RequestResult:
             sample = by_id[str(record["sample_id"])]
-            total_latency = 0.0
+            started = time.perf_counter()
+            total_engine_time = 0.0
             total_prompt_tokens = 0
             total_completion_tokens = 0
             score = None
@@ -466,7 +490,7 @@ async def run_judges(
                     request_id=f"{sample.sample_id}:judge:{judge.name}",
                     api_key_env=judge.api_key_env,
                 )
-                total_latency += result.latency_s
+                total_engine_time += result.engine_time_s
                 total_prompt_tokens += result.prompt_tokens
                 total_completion_tokens += result.completion_tokens
                 if not result.is_success:
@@ -476,7 +500,13 @@ async def run_judges(
                     break
                 if attempt + 1 < JUDGE_PARSE_ATTEMPTS:
                     await asyncio.sleep(2**attempt)
-            result.latency_s = total_latency
+            result.latency_s = time.perf_counter() - started
+            result.engine_time_s = total_engine_time
+            result.tok_per_s = (
+                total_completion_tokens / total_engine_time
+                if total_engine_time
+                else 0.0
+            )
             result.prompt_tokens = total_prompt_tokens
             result.completion_tokens = total_completion_tokens
             if score not in SOCIALOMNI_SCORE_BUCKETS:

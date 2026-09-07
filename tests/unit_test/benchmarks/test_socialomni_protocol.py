@@ -460,6 +460,32 @@ async def test_http_error_body_is_preserved() -> None:
     assert "specific failure body" in result.error
 
 
+@pytest.mark.asyncio
+async def test_completion_populates_shared_speed_metrics() -> None:
+    from benchmarks.metrics.performance import compute_speed_metrics
+
+    result = await request_chat_completion(
+        _Session(
+            _Response(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": "A"}}],
+                        "usage": {"completion_tokens": 10},
+                    }
+                ),
+            )
+        ),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="speed",
+    )
+    assert result.is_success
+    assert result.engine_time_s == result.latency_s > 0
+    assert result.tok_per_s == pytest.approx(10 / result.engine_time_s)
+    assert "output_tok_per_req_s" in compute_speed_metrics([result], wall_clock_s=1)
+
+
 @pytest.mark.parametrize("status", [429, 501, 507])
 @pytest.mark.asyncio
 async def test_retryable_http_error_is_retried(monkeypatch, status: int) -> None:
@@ -618,19 +644,25 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     }
     judges = [JudgeSpec("gpt-4o", "gpt-4o", "http://localhost:8000", None, 1)]
     responses = iter(("not a score", "75"))
+    clock = [0.0]
+    monkeypatch.setattr(
+        "benchmarks.tasks.socialomni.time.perf_counter", lambda: clock[0]
+    )
 
     async def fake_request(*_args, request_id: str, **_kwargs):
+        clock[0] += 0.1
         return RequestResult(
             request_id=request_id,
             text=next(responses),
             is_success=True,
             latency_s=0.1,
+            engine_time_s=0.1,
             prompt_tokens=2,
             completion_tokens=1,
         )
 
     async def no_sleep(_seconds: float) -> None:
-        return None
+        clock[0] += _seconds
 
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
@@ -639,7 +671,9 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     results, failures = await run_judges([sample], [record], judges, timeout_s=30)
     assert not failures
     assert record["gold_judge_scores"] == {"gpt-4o": 75}
-    assert results[0].latency_s == pytest.approx(0.2)
+    assert results[0].latency_s == pytest.approx(1.2)
+    assert results[0].engine_time_s == pytest.approx(0.2)
+    assert results[0].tok_per_s == pytest.approx(10)
     assert results[0].prompt_tokens == 4
     assert results[0].completion_tokens == 2
 
