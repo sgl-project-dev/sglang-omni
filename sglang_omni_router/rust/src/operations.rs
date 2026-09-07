@@ -731,9 +731,9 @@ mod tests {
     use crate::error::HttpFault;
     use crate::lifecycle::State as LifecycleState;
     use crate::metrics::{
-        ClassificationKind, ClassificationOutcome, ClassificationPhase, HttpBodyTermination,
-        HttpRoute, Rejection, RouterMetrics, StatusClass, WebsocketPhase, WebsocketProtocol,
-        WebsocketTermination,
+        ClassificationKind, ClassificationOutcome, ClassificationPhase, DURATION_BUCKET_COUNT,
+        DurationHistogramSnapshot, HttpBodyTermination, HttpRoute, Rejection, RouterMetrics,
+        StatusClass, WebsocketPhase, WebsocketProtocol, WebsocketTermination,
     };
     use crate::worker_pool::{
         AdmissionClass, AdmissionSnapshot, CapacityClass, OperationsSnapshot, ProbeOutcome,
@@ -741,8 +741,8 @@ mod tests {
     };
 
     use super::{
-        Diagnostics, ResourceSnapshot, ResourceUsage, render_metrics, render_model_sources,
-        render_models,
+        Diagnostics, ResourceSnapshot, ResourceUsage, render_histogram, render_metrics,
+        render_model_sources, render_models,
     };
 
     fn admission(class: AdmissionClass, limit: usize, in_flight: usize) -> AdmissionSnapshot {
@@ -1162,6 +1162,68 @@ mod tests {
         ] {
             assert!(rendered.contains(sample), "missing metric sample: {sample}");
         }
+    }
+
+    #[test]
+    fn histograms_render_exact_cumulative_buckets_and_labels() {
+        let mut buckets = [0_u64; DURATION_BUCKET_COUNT];
+        buckets[0] = 2;
+        buckets[2] = 3;
+        buckets[DURATION_BUCKET_COUNT - 1] = 5;
+        let histogram = DurationHistogramSnapshot {
+            buckets,
+            sum_micros: 1_250_000_000,
+        };
+
+        let mut one_label = String::new();
+        render_histogram(&mut one_label, "one", &[("route", "speech")], &histogram);
+        let lines: Vec<_> = one_label.lines().collect();
+        assert_eq!(lines.len(), DURATION_BUCKET_COUNT + 2);
+        assert_eq!(lines[0], "one_bucket{route=\"speech\",le=\"0.00001\"} 2");
+        assert_eq!(lines[1], "one_bucket{route=\"speech\",le=\"0.000025\"} 2");
+        assert_eq!(lines[2], "one_bucket{route=\"speech\",le=\"0.00005\"} 5");
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT - 2],
+            "one_bucket{route=\"speech\",le=\"240\"} 5"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT - 1],
+            "one_bucket{route=\"speech\",le=\"+Inf\"} 10"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT],
+            "one_sum{route=\"speech\"} 1250"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT + 1],
+            "one_count{route=\"speech\"} 10"
+        );
+
+        let mut two_labels = String::new();
+        render_histogram(
+            &mut two_labels,
+            "two",
+            &[("kind", "speech"), ("phase", "execution")],
+            &histogram,
+        );
+        let lines: Vec<_> = two_labels.lines().collect();
+        assert_eq!(lines.len(), DURATION_BUCKET_COUNT + 2);
+        assert_eq!(
+            lines[0],
+            "two_bucket{kind=\"speech\",phase=\"execution\",le=\"0.00001\"} 2"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT - 1],
+            "two_bucket{kind=\"speech\",phase=\"execution\",le=\"+Inf\"} 10"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT],
+            "two_sum{kind=\"speech\",phase=\"execution\"} 1250"
+        );
+        assert_eq!(
+            lines[DURATION_BUCKET_COUNT + 1],
+            "two_count{kind=\"speech\",phase=\"execution\"} 10"
+        );
     }
 
     #[test]
