@@ -554,14 +554,12 @@ async def test_malformed_success_response_does_not_escape() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["prompt_tokens", "completion_tokens"])
 @pytest.mark.parametrize(
-    "usage",
-    [
-        {"prompt_tokens": "unknown"},
-        {"completion_tokens": {"value": 1}},
-    ],
+    "invalid_count", [True, False, -1, 1.5, "2", None, {"value": 1}]
 )
-async def test_invalid_usage_becomes_a_request_failure(usage) -> None:
+async def test_invalid_usage_becomes_a_request_failure(field, invalid_count) -> None:
+    usage = {field: invalid_count}
     body = json.dumps({"choices": [{"message": {"content": "YES"}}], "usage": usage})
     result = await request_chat_completion(
         _Session(_Response(200, body)),
@@ -572,6 +570,29 @@ async def test_invalid_usage_becomes_a_request_failure(usage) -> None:
     assert not result.is_success
     assert result.request_id == "one"
     assert "invalid token usage" in result.error
+
+
+@pytest.mark.parametrize("api_key_env", ["", " ", " KEY", "KEY ", 1])
+def test_judge_config_rejects_invalid_key_names(tmp_path, api_key_env) -> None:
+    path = tmp_path / "judges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "judges": [
+                    {
+                        "name": name,
+                        "model": name,
+                        "base_url": "http://localhost:8000",
+                        "api_key_env": api_key_env,
+                    }
+                    for name in ("gpt-4o", "gemini-2.5-pro", "qwen3-omni")
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="api_key_env"):
+        load_judge_config(path)
 
 
 @pytest.mark.asyncio

@@ -73,8 +73,15 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
         if not isinstance(concurrency, int) or concurrency < 1:
             raise ValueError(f"judges[{index}].max_concurrency must be >= 1")
         api_key_env = row.get("api_key_env")
-        if api_key_env is not None and not isinstance(api_key_env, str):
-            raise ValueError(f"judges[{index}].api_key_env must be a string or null")
+        if api_key_env is not None and (
+            not isinstance(api_key_env, str)
+            or not api_key_env
+            or api_key_env != api_key_env.strip()
+        ):
+            raise ValueError(
+                f"judges[{index}].api_key_env must be a non-empty string "
+                "without surrounding whitespace, or null"
+            )
         judges.append(
             JudgeSpec(
                 name=row["name"].strip(),
@@ -179,10 +186,13 @@ async def request_chat_completion(
                             if not isinstance(usage, dict):
                                 usage = {}
                             try:
-                                prompt_tokens = int(usage.get("prompt_tokens") or 0)
-                                completion_tokens = int(
-                                    usage.get("completion_tokens") or 0
-                                )
+                                prompt_tokens = usage.get("prompt_tokens", 0)
+                                completion_tokens = usage.get("completion_tokens", 0)
+                                for count in (prompt_tokens, completion_tokens):
+                                    if type(count) is not int or count < 0:
+                                        raise ValueError(
+                                            "token counts must be non-negative integers"
+                                        )
                             except (TypeError, ValueError, OverflowError) as exc:
                                 return RequestResult(
                                     request_id=request_id,
