@@ -2565,6 +2565,36 @@ def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (
+            "use_audio_in_video requires every video in a multi-video request "
+            "to contain a decodable audio track",
+            400,
+        ),
+        ("Embedded audio stream decoded no samples: /tmp/empty.mp4", 400),
+        ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
+        (
+            "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
+            500,
+        ),
+    ],
+)
+def test_chat_endpoint_classifies_embedded_audio_errors(error, expected_status) -> None:
+    client = TestClient(create_app(_fault_client("qwen3-omni", error=error)))
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-omni",
+            "messages": [{"role": "user", "content": "Describe the video."}],
+            "use_audio_in_video": True,
+        },
+    )
+    assert response.status_code == expected_status
+    assert error in response.text
+
+
 def test_transcription_endpoint_returns_text_json() -> None:
     transcription_client = SuccessfulTranscriptionClient()
     client = TestClient(

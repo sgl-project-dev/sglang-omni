@@ -12,6 +12,8 @@ _BAD_REQUEST_MARKERS = (
     "Request requires more tokens than the thinker KV cache can hold",
     "accepts audio up to",
     "could not decode the uploaded audio",
+    "use_audio_in_video requires every video in a multi-video request",
+    "Embedded audio stream decoded no samples:",
     "max_new_tokens must be",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",

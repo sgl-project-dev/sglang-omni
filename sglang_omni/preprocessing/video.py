@@ -312,7 +312,9 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
                 chunks.append(resampled.to_ndarray().reshape(-1))
 
         if not chunks:
-            raise VideoDecodeError(f"Audio stream in {video_path} decoded no samples")
+            raise VideoDecodeError(
+                f"Embedded audio stream decoded no samples: {video_path}"
+            )
         return np.concatenate(chunks).astype(np.float32, copy=False)
     except VideoDecodeError:
         raise
