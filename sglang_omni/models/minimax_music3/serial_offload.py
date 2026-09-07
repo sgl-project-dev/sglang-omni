@@ -6,13 +6,11 @@ and lets only one of them hold GPU weights at a time: AR generates a whole
 request, hands off to DIT/DAV, and stays off the GPU until DIT/DAV is finished
 with that request.
 
-The handoff is keyed by request id rather than by a single boolean. AR wakes
-when nothing is outstanding, so a duplicated, out-of-order, or late terminal
-event cannot wake AR while DIT/DAV is still decoding, and an event that names
-a request nobody handed off cannot wake AR early.
+The handoff has one request owner. A duplicated, out-of-order, or late terminal
+event cannot wake AR while DIT/DAV is decoding another request.
 
-A handoff that never ends stops admission for good, because ``ar_can_admit``
-gates the AR scheduler's queue. That is reported rather than force-corrected:
+A handoff that never ends stops admission for good. That is reported rather
+than force-corrected:
 waking AR while DIT/DAV still holds the GPU is how this configuration runs out
 of memory, so a stuck server is preferable to a crashed one, and the log names
 the requests still outstanding.
@@ -23,6 +21,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import torch
@@ -134,6 +133,8 @@ class StageResidency:
         """Drop the GPU replica; a cheap no-op once already asleep."""
         if not self._resident:
             return
+        if self._device.type == "cuda":
+            torch.cuda.synchronize(self._device)
         owned = _owned_tensors(self._modules)
         if not self._host:
             self._host = {
@@ -165,14 +166,15 @@ class StageResidency:
 
 
 class SerialOffloadCoordinator:
-    """Process-wide GPU residency coordinator (see module docstring)."""
+    """Process-wide ownership and optional CUDA residency coordinator."""
 
     def __init__(self) -> None:
-        self._lock = threading.Lock()
+        self._condition = threading.Condition()
         self._enabled = False
-        self._ar_active = True
         self._ar: StageResidency | None = None
-        self._outstanding: set[str] = set()
+        self._owner: str | None = None
+        self._phase = "disabled"
+        self._failure: BaseException | None = None
         self._paused_at: float | None = None
         self._stall_reported = False
 
@@ -180,75 +182,180 @@ class SerialOffloadCoordinator:
     def enabled(self) -> bool:
         return self._enabled
 
-    def register_ar(self, model: Any, device: torch.device) -> None:
-        with self._lock:
-            self._ar = StageResidency({"ar": model}, device, label="ar")
+    def enable(self) -> None:
+        """Enable request ownership for a backend without CUDA residency."""
+        with self._condition:
+            if self._enabled:
+                return
             self._enabled = True
-            self._ar_active = True
+            self._phase = "idle"
+
+    def register_ar(self, model: Any, device: torch.device) -> None:
+        residency = StageResidency({"ar": model}, device, label="ar")
+        with self._condition:
+            if self._enabled:
+                raise RuntimeError("MiniMax Music 3 serial offload is already enabled")
+            self._failure = None
+            self._owner = None
+            self._ar = residency
+            self._enabled = True
+            self._phase = "idle"
         logger.info(
             f"MiniMax Music 3 serial offload enabled device={device}; AR "
             "starts GPU-resident, DIT/DAV starts offloaded"
         )
 
-    def ar_can_admit(self) -> bool:
-        """Whether AR may admit a new request onto the GPU right now."""
+    def try_acquire_ar(self, request_id: str) -> bool:
+        """Atomically claim the complete AR-to-acoustic request lifecycle."""
         if not self._enabled:
             return True
-        with self._lock:
-            if self._ar_active:
+        with self._condition:
+            self._raise_if_failed_locked()
+            if self._owner == request_id and self._phase == "ar":
+                return True
+            if self._owner is None and self._phase == "idle":
+                self._owner = request_id
+                self._phase = "ar"
                 return True
             self._report_stall_locked()
             return False
+
+    def acquire_ar(
+        self,
+        request_id: str,
+        *,
+        should_abort: Callable[[], bool] | None = None,
+    ) -> None:
+        """Wait for and claim AR ownership without holding the lock during work."""
+        if not self._enabled:
+            return
+        with self._condition:
+            while not self.try_acquire_ar(request_id):
+                if should_abort is not None and should_abort():
+                    raise InterruptedError(
+                        "MiniMax Music 3 serial offload admission aborted"
+                    )
+                self._condition.wait(timeout=0.1)
 
     def begin_dit_handoff(self, request_id: str) -> None:
         """Hand the GPU to DIT/DAV for *request_id* and take AR off it."""
         if not self._enabled:
             return
-        with self._lock:
-            self._require_ar_locked()
-            self._outstanding.add(request_id)
-            if not self._ar_active:
+        with self._condition:
+            self._raise_if_failed_locked()
+            if self._owner != request_id:
+                raise RuntimeError(
+                    "MiniMax Music 3 serial offload handoff does not own request "
+                    f"{request_id!r} (owner={self._owner!r})"
+                )
+            if self._phase == "acoustic":
                 return
-            self._ar.sleep()
-            self._ar_active = False
+            if self._phase != "ar":
+                raise RuntimeError(
+                    f"MiniMax Music 3 cannot hand off from phase {self._phase!r}"
+                )
+            self._phase = "ar_unloading"
+
+        try:
+            if self._ar is not None:
+                self._ar.sleep()
+        except BaseException as exc:
+            self._fail_closed(exc)
+            raise
+
+        with self._condition:
+            self._phase = "acoustic"
             self._paused_at = time.monotonic()
             self._stall_reported = False
+            self._condition.notify_all()
         logger.info(
             f"MiniMax Music 3 serial offload: AR -> CPU (DIT/DAV's turn, "
             f"request={request_id})"
         )
 
-    def end_dit_handoff(self, request_id: str) -> None:
-        """Retire *request_id*; give the GPU back once nothing is outstanding.
+    def require_acoustic(self, request_id: str) -> None:
+        """Reject compute that is not owned by the active acoustic request."""
+        if not self._enabled:
+            return
+        with self._condition:
+            self._raise_if_failed_locked()
+            if self._owner != request_id or self._phase != "acoustic":
+                raise RuntimeError(
+                    "MiniMax Music 3 acoustic request does not own residency: "
+                    f"request={request_id!r} owner={self._owner!r} "
+                    f"phase={self._phase!r}"
+                )
 
-        Safe to call for a request that never handed off, and safe to call
-        more than once: both leave the outstanding set unchanged.
+    def end_dit_handoff(
+        self,
+        request_id: str,
+        *,
+        release_acoustic: Callable[[], None] | None = None,
+    ) -> None:
+        """Retire *request_id* and return residency to AR.
+
+        Unknown and duplicate terminal events are no-ops. Acoustic release and
+        AR wake run without the ownership mutex held.
         """
         if not self._enabled:
             return
-        with self._lock:
-            self._require_ar_locked()
-            self._outstanding.discard(request_id)
-            if self._ar_active or self._outstanding:
+        with self._condition:
+            self._raise_if_failed_locked()
+            if self._owner != request_id or self._phase != "acoustic":
                 return
-            self._ar.wake()
-            self._ar_active = True
+            self._phase = "acoustic_unloading"
+
+        try:
+            if release_acoustic is not None:
+                release_acoustic()
+            if self._ar is not None:
+                self._ar.wake()
+        except BaseException as exc:
+            self._fail_closed(exc)
+            raise
+
+        with self._condition:
+            self._owner = None
+            self._phase = "idle"
             self._paused_at = None
             self._stall_reported = False
+            self._condition.notify_all()
         logger.info(
             f"MiniMax Music 3 serial offload: AR -> GPU (AR's turn, "
             f"request={request_id})"
         )
 
-    def _require_ar_locked(self) -> None:
-        if self._ar is None:
+    def cancel_ar(self, request_id: str) -> None:
+        """Release an AR owner after its compute has stopped, before handoff."""
+        if not self._enabled:
+            return
+        with self._condition:
+            if self._owner != request_id or self._phase != "ar":
+                return
+            self._owner = None
+            self._phase = "idle"
+            self._condition.notify_all()
+
+    def _fail_closed(self, exc: BaseException) -> None:
+        with self._condition:
+            self._failure = exc
+            self._phase = "failed"
+            self._condition.notify_all()
+
+    def fail_closed(self, exc: BaseException) -> None:
+        """Prevent later admission after an unsafe backend cleanup failure."""
+        if self._enabled:
+            self._fail_closed(exc)
+
+    def _raise_if_failed_locked(self) -> None:
+        if self._failure is not None:
             raise RuntimeError(
-                "MiniMax Music 3 serial offload is enabled but the AR "
-                "backbone was never registered"
-            )
+                "MiniMax Music 3 serial offload is unavailable after a residency "
+                "transition failed"
+            ) from self._failure
 
     def _report_stall_locked(self) -> None:
-        """Name the outstanding requests once AR has been parked too long."""
+        """Name the owner once AR has been parked too long."""
         if self._paused_at is None or self._stall_reported:
             return
         elapsed = time.monotonic() - self._paused_at
@@ -258,7 +365,7 @@ class SerialOffloadCoordinator:
         logger.error(
             f"MiniMax Music 3 serial offload: AR has been off the GPU for "
             f"{elapsed:.0f}s and is still waiting on "
-            f"{sorted(self._outstanding)}; AR admits nothing until DIT/DAV "
+            f"{self._owner!r}; AR admits nothing until DIT/DAV "
             "retires them, so this server needs a restart if the requests "
             "are gone"
         )
@@ -271,9 +378,16 @@ def get_coordinator() -> SerialOffloadCoordinator:
     return _COORDINATOR
 
 
+def reset_coordinator() -> None:
+    """Reset process-local state after a failed build or during test teardown."""
+    global _COORDINATOR
+    _COORDINATOR = SerialOffloadCoordinator()
+
+
 __all__ = [
     "STALL_REPORT_SECONDS",
-    "StageResidency",
     "SerialOffloadCoordinator",
+    "StageResidency",
     "get_coordinator",
+    "reset_coordinator",
 ]

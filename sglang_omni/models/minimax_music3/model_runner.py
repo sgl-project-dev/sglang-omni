@@ -206,6 +206,7 @@ class MiniMaxMusic3ModelRunner(ModelRunner):
         data = self._request_data.pop(request_id, None)
         if data is not None:
             data.ar_state = None
+        self._serial_offload.cancel_ar(request_id)
 
     def _advance(self, result: Any, requests: list, *, emit: bool) -> None:
         """Sample one frame per row and queue whatever windows it completes."""

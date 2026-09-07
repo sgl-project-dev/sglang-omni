@@ -73,6 +73,16 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         )
         if requested <= 0:
             raise ValueError("MiniMax Music 3 max_running_requests must be positive")
+        if self._enable_serial_offload:
+            if requested != 1:
+                logger.info(
+                    "MiniMax Music 3 serial offload limits logical AR "
+                    "concurrency from %d to 1",
+                    requested,
+                )
+            requested = 1
+            overrides["disable_cuda_graph"] = True
+            overrides["enable_torch_compile"] = False
         self.max_running_requests = requested
         rows = 2 * requested
         overrides["max_running_requests"] = rows
@@ -127,6 +137,23 @@ class MiniMaxMusic3EngineBuilder(TtsEngineBuilder):
         enable_rvq_depth_cuda_graph(
             model, _rvq_graph_buckets(self.max_running_requests)
         )
+
+    def setup_runtime_resources(self, model: Any, server_args: Any) -> None:
+        del server_args
+        if not self._enable_serial_offload:
+            return
+        import torch
+
+        from .serial_offload import get_coordinator
+
+        get_coordinator().register_ar(model, torch.device(self.device))
+
+    def cleanup_build_failure(self) -> None:
+        if not self._enable_serial_offload:
+            return
+        from .serial_offload import reset_coordinator
+
+        reset_coordinator()
 
     def make_scheduler(self, **kwargs: Any) -> Any:
         from .scheduler import MiniMaxMusic3Scheduler

@@ -271,7 +271,10 @@ def apply_stage_offload_cli_overrides(
     if not components:
         return pipeline_config
 
-    role_to_stage = type(pipeline_config).stage_offload_role_to_stage()
+    role_to_stage_fn = getattr(
+        type(pipeline_config), "stage_offload_role_to_stage", None
+    )
+    role_to_stage = role_to_stage_fn() if role_to_stage_fn is not None else {}
     if not role_to_stage:
         raise typer.BadParameter(
             "--stage-offload-components is not supported by this pipeline"
