@@ -677,3 +677,8 @@ r20 三 seed(单帧 bootstrap 对默认抑制,同树,100% 完成):
 underrun 在噪声内(这一轮默认臂偏高:同一棵树九个 seed 的默认臂 underrun 为 0.58-2.33%,
 均值 ~1.2%——单 seed 噪声带比早先估的 ±0.4 更宽,约 ±1 个百分点)。**决定:保留默认抑制**;
 Nari 对标时同时报 TTFB 与可闻 TTFA。
+- **PR 已开(2026-09-06 15:40 PT)**:sgl-project/sglang-omni#1997,从 `qwen3-tts-pr1855-rebase`
+  (HEAD 54e2d4f1,含 pinned black 格式化)开到 main,正文含上表与验证方式;已打 `run-ci`、请
+  Hayden727 / yxs / zhaochenyang20 / BruceLoveDecimal / leihehehe 评审,并在 #1846、#1855 留了
+  交叉引用。合并顺序:#1907(prefill 图去 QK-norm/RoPE 断点,CI 全绿)→ #1997 → full prefill 图
+  跟进 PR(待数值验证)。
