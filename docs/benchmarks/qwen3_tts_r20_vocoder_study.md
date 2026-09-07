@@ -682,3 +682,12 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
   Hayden727 / yxs / zhaochenyang20 / BruceLoveDecimal / leihehehe 评审,并在 #1846、#1855 留了
   交叉引用。合并顺序:#1907(prefill 图去 QK-norm/RoPE 断点,CI 全绿)→ #1997 → full prefill 图
   跟进 PR(待数值验证)。
+
+### 第十三轮:full prefill 图(PR 3,2026-09-06 21:00 PT)
+
+分支 `qwen3-tts-full-prefill-graph`(基于 origin/main,9da81408):`ModelCapabilities` 新增显式字段
+`supports_full_prefill_cuda_graph`(13 个模型全部显式声明,只有 Qwen3-TTS 为 True);引擎工厂对
+`full` 后端做与 breakable 相同的能力门控并打开 input-embeds 传输;批策略放行 full(tc_piecewise
+仍拒);CustomVoice 默认 `full`。单测 608 过(含新增的门控测试)。验证在跑:固定 client seed +
+请求 seed=1234 下,prefill 图关闭 / breakable / full 三臂各跑贪心(top_k=1)与采样两组,按 prompt
+比较 PCM(sha 是否相同、首秒相关系数、最大差);随后 r20 三 seed full 对 breakable。
