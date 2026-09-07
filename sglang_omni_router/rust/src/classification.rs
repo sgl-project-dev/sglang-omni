@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::sync::Arc;
 
 use tokio::sync::Semaphore;
@@ -46,7 +47,7 @@ impl ClassificationExecutor {
     {
         let mut call = CallObservation::new(&self.metrics, kind);
         let mut slot_wait =
-            PhaseObservation::new(&self.metrics, kind, ClassificationPhase::SlotWait);
+            PhaseObservation::new(self.metrics.as_ref(), kind, ClassificationPhase::SlotWait);
         if let Err(fault) = ensure_before(deadline) {
             call.finish(ClassificationOutcome::Timeout);
             return Err(fault);
@@ -68,7 +69,7 @@ impl ClassificationExecutor {
             }
         };
         slot_wait.finish();
-        let executor_wait = OwnedPhaseObservation::new(
+        let executor_wait = PhaseObservation::new(
             Arc::clone(&self.metrics),
             kind,
             ClassificationPhase::ExecutorWait,
@@ -77,8 +78,11 @@ impl ClassificationExecutor {
             let _slot = slot;
             let mut executor_wait = executor_wait;
             executor_wait.finish();
-            let _execution =
-                PhaseObservation::new(&executor_wait.metrics, kind, ClassificationPhase::Execution);
+            let _execution = PhaseObservation::new(
+                executor_wait.metrics.as_ref(),
+                kind,
+                ClassificationPhase::Execution,
+            );
             ensure_before(deadline)?;
             operation()
         });
@@ -131,20 +135,16 @@ impl ClassificationExecutor {
     }
 }
 
-struct PhaseObservation<'a> {
-    metrics: &'a RouterMetrics,
+struct PhaseObservation<M: Borrow<RouterMetrics>> {
+    metrics: M,
     kind: ClassificationKind,
     phase: ClassificationPhase,
     started: Instant,
     completed: bool,
 }
 
-impl<'a> PhaseObservation<'a> {
-    fn new(
-        metrics: &'a RouterMetrics,
-        kind: ClassificationKind,
-        phase: ClassificationPhase,
-    ) -> Self {
+impl<M: Borrow<RouterMetrics>> PhaseObservation<M> {
+    fn new(metrics: M, kind: ClassificationKind, phase: ClassificationPhase) -> Self {
         Self {
             metrics,
             kind,
@@ -163,53 +163,17 @@ impl<'a> PhaseObservation<'a> {
             return;
         }
         self.completed = true;
-        self.metrics
-            .record_classification_duration(self.kind, self.phase, self.started.elapsed());
+        self.metrics.borrow().record_classification_duration(
+            self.kind,
+            self.phase,
+            self.started.elapsed(),
+        );
     }
 }
 
-impl Drop for PhaseObservation<'_> {
+impl<M: Borrow<RouterMetrics>> Drop for PhaseObservation<M> {
     fn drop(&mut self) {
         self.observe();
-    }
-}
-
-struct OwnedPhaseObservation {
-    metrics: Arc<RouterMetrics>,
-    kind: ClassificationKind,
-    phase: ClassificationPhase,
-    started: Instant,
-    completed: bool,
-}
-
-impl OwnedPhaseObservation {
-    fn new(
-        metrics: Arc<RouterMetrics>,
-        kind: ClassificationKind,
-        phase: ClassificationPhase,
-    ) -> Self {
-        Self {
-            metrics,
-            kind,
-            phase,
-            started: Instant::now(),
-            completed: false,
-        }
-    }
-
-    fn finish(&mut self) {
-        if self.completed {
-            return;
-        }
-        self.completed = true;
-        self.metrics
-            .record_classification_duration(self.kind, self.phase, self.started.elapsed());
-    }
-}
-
-impl Drop for OwnedPhaseObservation {
-    fn drop(&mut self) {
-        self.finish();
     }
 }
 
