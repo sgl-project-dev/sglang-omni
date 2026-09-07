@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -49,6 +50,7 @@ from sglang_omni.models.qwen3_omni.request_builders import (
     resolve_preprocessing_next_stages_speech,
 )
 from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.scheduling.messages import IncomingMessage
 from sglang_omni.scheduling.sglang_backend.server_args_builder import (
     apply_encoder_mem_reserve,
     build_sglang_server_args,
@@ -1745,3 +1747,180 @@ def test_qwen_audio_cache_key_requires_complete_content(decoded_audio_preprocess
     assert run() != forward
     loaded["video"] = [object()]
     assert run(video=True) is None
+
+
+def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monkeypatch):
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
+    class Preprocessor:
+        async def __call__(self, payload):
+            if payload == "slow":
+                entered.set()
+                assert release.wait(timeout=3)
+                finished.set()
+            if payload == "error":
+                raise ValueError("invalid preprocessing input")
+            return {"input": payload}
+
+    monkeypatch.setattr(
+        qwen_stages, "Qwen3OmniPreprocessor", lambda **_: Preprocessor()
+    )
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+
+    def submit(request_id):
+        scheduler.inbox.put(
+            IncomingMessage(request_id=request_id, type="new_request", data=request_id)
+        )
+
+    try:
+        submit("slow")
+        assert entered.wait(timeout=3)
+        submit("fast")
+        result = scheduler.outbox.get(timeout=3)
+        assert (result.request_id, result.type, result.data) == (
+            "fast",
+            "result",
+            {"input": "fast"},
+        )
+        scheduler.abort("slow")
+        release.set()
+        assert finished.wait(timeout=3)
+        submit("error")
+        error = scheduler.outbox.get(timeout=3)
+        assert error.request_id == "error" and error.type == "error"
+        assert isinstance(error.data, ValueError)
+        submit("after")
+        result = scheduler.outbox.get(timeout=3)
+        assert (result.request_id, result.data) == ("after", {"input": "after"})
+    finally:
+        release.set()
+        scheduler.stop()
+        worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_preprocessing_stops_media_loaders_before_closing_connection(
+    decoded_audio_preprocessor, monkeypatch, cancel
+):
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+
+    pre, _, _ = decoded_audio_preprocessor
+    stopped = closed = False
+
+    async def run():
+        entered = asyncio.Event()
+
+        async def load_image(*args, **kwargs):
+            nonlocal stopped
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped = True
+
+        async def load_audio(*args, **kwargs):
+            await entered.wait()
+            if cancel:
+                await asyncio.Event().wait()
+            raise ValueError("invalid audio")
+
+        async def close(connection):
+            nonlocal closed
+            assert stopped
+            closed = True
+
+        monkeypatch.setattr(mod, "ensure_image_list_async", load_image)
+        monkeypatch.setattr(mod, "ensure_audio_list_async", load_audio)
+        monkeypatch.setattr(mod.ResourceHTTPConnection, "close", close)
+        task = asyncio.create_task(pre(make_qwen_payload(inputs={"messages": []})))
+        if cancel:
+            await entered.wait()
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else ValueError):
+            await task
+        assert closed
+
+    asyncio.run(run())
+
+
+def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from io import BytesIO
+
+    from PIL import Image
+
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing import resource_connector as resources
+
+    image_bytes = BytesIO()
+    Image.new("RGB", (2, 2), color=(12, 34, 56)).save(image_bytes, format="PNG")
+
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self):
+            body = image_bytes.getvalue()
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    class Processor:
+        def apply_chat_template(self, *args, **kwargs):
+            return "image prompt"
+
+        def __call__(self, *, images, **kwargs):
+            assert images[0].getpixel((0, 0)) == (12, 34, 56)
+            return {"input_ids": torch.tensor([[1, 2]])}
+
+    pre = object.__new__(mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.processor = Processor()
+    for name in ("fps", "max_frames", "min_pixels", "max_pixels", "total_pixels"):
+        setattr(pre, "default_video_" + name, None)
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: pre)
+    # Isolate the old global client so this catches cross-request loop reuse.
+    monkeypatch.setattr(
+        resources,
+        "_global_connector",
+        resources.MultiModalResourceConnector(
+            connection=resources.ResourceHTTPConnection()
+        ),
+    )
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    http_worker = threading.Thread(target=server.serve_forever, daemon=True)
+    http_worker.start()
+    scheduler = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    worker = threading.Thread(target=scheduler.start, daemon=True)
+    worker.start()
+    try:
+        for index in range(3):
+            request_id = f"remote-{index}"
+            payload = make_qwen_payload(
+                request_id=request_id,
+                inputs={
+                    "messages": [{"role": "user", "content": "describe"}],
+                    "images": [f"http://127.0.0.1:{server.server_port}/image.png"],
+                },
+            )
+            scheduler.inbox.put(
+                IncomingMessage(request_id=request_id, type="new_request", data=payload)
+            )
+            result = scheduler.outbox.get(timeout=10)
+            assert result.type == "result", repr(result.data)
+            assert result.request_id == request_id
+            state = Qwen3OmniPipelineState.from_dict(result.data.data)
+            assert state.prompt["input_ids"].tolist() == [1, 2]
+    finally:
+        scheduler.stop()
+        worker.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        http_worker.join(timeout=3)
+    assert not worker.is_alive()

@@ -103,7 +103,6 @@ tests/
     │   ├── test_talker_prefill_embed_cache.py
     │   ├── test_talker_emit_snapshot.py
     │   ├── test_talker_feedback_write.py
-    │   ├── test_talker_min_tokens.py
     │   ├── test_talker_row_ownership.py
     │   ├── test_talker_token_readback.py
     │   ├── test_text_template.py
@@ -206,7 +205,6 @@ tests/
     │   ├── test_stop_run_id.py
     │   └── test_views.py
     ├── serve/
-    │   ├── test_boot_warmup.py
     │   ├── test_cli_audio_chunking.py
     │   ├── test_generation_batch_policy.py
     │   ├── test_generation_server_args.py
@@ -467,6 +465,9 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  `test_omni_seedtts_warmup.py` checks separate concurrent warmup, output
+  isolation, failure reporting, disabled warmup, and CLI configuration using
+  the real benchmark runner with a fake speech generator.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
@@ -595,8 +596,9 @@ that happened to contain an older version of the test.
     hits, and cached output ownership across reused encoder buffers
     (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
     ownership case is marked `accelerator`; the cache-key cases use CPU.
-  - `test_talker_min_tokens.py`: CPU request validation, minimum-token
-    forwarding, unchanged defaults, and per-row stop/EOS masking.
+  - threaded preprocessing request isolation, error propagation, and running
+    request cancellation, plus repeated remote-image loading against a local
+    HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
   - memory flag contracts
   - colocation config and SGLang AR budget contracts
   - full-model fixture overrides target the preprocessing and thinker context
@@ -746,9 +748,6 @@ that happened to contain an older version of the test.
   - managed launcher command construction and cleanup.
 
 - `unit_test/serve/`: In-process serving API unit tests:
-  - `test_boot_warmup.py`: concurrent distinct warmup requests, temporary
-    input cleanup, nonfatal failures, timeout cleanup, and caller
-    cancellation. These CPU tests use a fake generator.
   - generation-stage SGLang server-args role mapping and CLI override capability boundaries
   - OpenAI-compatible request/response behavior
   - shared speech-to-text form, request, response-format, and serialization mechanics

@@ -32,6 +32,10 @@ from sglang_omni.preprocessing import (
     ensure_video_list_async,
     normalize_messages,
 )
+from sglang_omni.preprocessing.resource_connector import (
+    MultiModalResourceConnector,
+    ResourceHTTPConnection,
+)
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
 
@@ -509,8 +513,12 @@ class Qwen3OmniPreprocessor:
             # If we need audio from video, extract it during video loading to avoid duplicate downloads
             extract_audio_from_video_flag = bool(use_audio_in_video and raw_videos)
 
-            images, videos_result, audios_result = await asyncio.gather(
-                ensure_image_list_async(raw_images),
+            # Worker requests run on separate event loops. Keep pooled HTTP
+            # connections within this request and close them before its loop ends.
+            connection = ResourceHTTPConnection()
+            connector = MultiModalResourceConnector(connection=connection)
+            loaders = [
+                ensure_image_list_async(raw_images, media_connector=connector),
                 ensure_video_list_async(
                     raw_videos,
                     fps=resolved_video_fps,
@@ -520,9 +528,21 @@ class Qwen3OmniPreprocessor:
                     total_pixels=resolved_video_total_pixels,
                     extract_audio=extract_audio_from_video_flag,
                     audio_target_sr=audio_target_sr,
+                    resource_connector=connector,
                 ),
-                ensure_audio_list_async(raw_audios, target_sr=audio_target_sr),
-            )
+                ensure_audio_list_async(
+                    raw_audios, target_sr=audio_target_sr, resource_connector=connector
+                ),
+            ]
+            tasks = [asyncio.create_task(loader) for loader in loaders]
+            try:
+                images, videos_result, audios_result = await asyncio.gather(*tasks)
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await connection.close()
             videos, sampled_video_fps, extracted_audio_from_video = videos_result
 
             # Merge extracted audio from videos with explicit audio (if any)

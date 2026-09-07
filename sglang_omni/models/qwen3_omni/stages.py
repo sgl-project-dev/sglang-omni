@@ -809,7 +809,7 @@ def create_preprocessing_executor(
     video_max_pixels: int | None = None,
     video_total_pixels: int | None = None,
 ):
-    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
 
     preprocessor = Qwen3OmniPreprocessor(
         model_path=model_path,
@@ -826,7 +826,7 @@ def create_preprocessing_executor(
 
     # Note (wenyao): Serial dispatch makes CPU tokenization and feature
     # extraction block later requests; their per-request state allows concurrency.
-    return SimpleScheduler(_preprocess, max_concurrency=max_concurrency)
+    return ThreadedSimpleScheduler(_preprocess, max_concurrency=max_concurrency)
 
 
 def create_aggregate_executor():
