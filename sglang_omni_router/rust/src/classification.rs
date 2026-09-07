@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use tokio::sync::Semaphore;
 use tokio::time::Instant;
@@ -69,17 +68,17 @@ impl ClassificationExecutor {
             }
         };
         slot_wait.finish();
-        let executor_wait = Arc::new(SharedPhaseObservation::new(
+        let executor_wait = OwnedPhaseObservation::new(
             Arc::clone(&self.metrics),
             kind,
             ClassificationPhase::ExecutorWait,
-        ));
-        let queued_wait = Arc::clone(&executor_wait);
-        let metrics = Arc::clone(&self.metrics);
+        );
         let mut task = tokio::task::spawn_blocking(move || {
             let _slot = slot;
-            queued_wait.observe();
-            let _execution = PhaseObservation::new(&metrics, kind, ClassificationPhase::Execution);
+            let mut executor_wait = executor_wait;
+            executor_wait.finish();
+            let _execution =
+                PhaseObservation::new(&executor_wait.metrics, kind, ClassificationPhase::Execution);
             ensure_before(deadline)?;
             operation()
         });
@@ -178,15 +177,15 @@ impl Drop for PhaseObservation<'_> {
     }
 }
 
-struct SharedPhaseObservation {
+struct OwnedPhaseObservation {
     metrics: Arc<RouterMetrics>,
     kind: ClassificationKind,
     phase: ClassificationPhase,
     started: Instant,
-    completed: AtomicBool,
+    completed: bool,
 }
 
-impl SharedPhaseObservation {
+impl OwnedPhaseObservation {
     fn new(
         metrics: Arc<RouterMetrics>,
         kind: ClassificationKind,
@@ -197,26 +196,23 @@ impl SharedPhaseObservation {
             kind,
             phase,
             started: Instant::now(),
-            completed: AtomicBool::new(false),
+            completed: false,
         }
     }
 
-    fn observe(&self) {
-        if self
-            .completed
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
+    fn finish(&mut self) {
+        if self.completed {
             return;
         }
+        self.completed = true;
         self.metrics
             .record_classification_duration(self.kind, self.phase, self.started.elapsed());
     }
 }
 
-impl Drop for SharedPhaseObservation {
+impl Drop for OwnedPhaseObservation {
     fn drop(&mut self) {
-        self.observe();
+        self.finish();
     }
 }
 
@@ -273,6 +269,31 @@ mod tests {
     use crate::metrics::{
         ClassificationKind, ClassificationOutcome, ClassificationPhase, RouterMetrics,
     };
+
+    async fn occupy_blocking_executor(
+        executor: Arc<ClassificationExecutor>,
+    ) -> (
+        tokio::task::JoinHandle<Result<(), HttpFault>>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+        let running = tokio::spawn(async move {
+            executor
+                .classify(
+                    ClassificationKind::Chat,
+                    tokio::time::Instant::now() + Duration::from_secs(1),
+                    move || {
+                        entered_tx.send(()).expect("classification started");
+                        release_rx.recv().expect("release classification");
+                        Ok(())
+                    },
+                )
+                .await
+        });
+        entered_rx.await.expect("blocking executor occupied");
+        (running, release_tx)
+    }
 
     #[tokio::test]
     async fn records_success_and_error_with_all_execution_phases() {
@@ -445,5 +466,147 @@ mod tests {
             1
         );
         release_tx.send(()).expect("release classification");
+    }
+
+    #[test]
+    fn queued_timeout_and_cancellation_retain_exact_phase_ownership() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .max_blocking_threads(1)
+            .build()
+            .expect("build bounded blocking runtime");
+        runtime.block_on(async {
+            let metrics = RouterMetrics::new();
+            let executor = ClassificationExecutor::for_test_with_metrics(2, Arc::clone(&metrics));
+            let (running, release_tx) = occupy_blocking_executor(Arc::clone(&executor)).await;
+
+            assert_eq!(
+                executor
+                    .classify(
+                        ClassificationKind::Translation,
+                        tokio::time::Instant::now() + Duration::from_millis(20),
+                        || Ok(()),
+                    )
+                    .await,
+                Err(HttpFault::UpstreamTimeout)
+            );
+            assert_eq!(
+                metrics.classification_outcome(
+                    ClassificationKind::Translation,
+                    ClassificationOutcome::Timeout
+                ),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .classification_duration(
+                        ClassificationKind::Translation,
+                        ClassificationPhase::ExecutorWait,
+                    )
+                    .count(),
+                0
+            );
+            assert_eq!(
+                metrics
+                    .classification_duration(
+                        ClassificationKind::Translation,
+                        ClassificationPhase::Execution,
+                    )
+                    .count(),
+                0
+            );
+
+            release_tx.send(()).expect("release running classification");
+            assert_eq!(running.await.expect("join running classification"), Ok(()));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while executor.available_slots() != 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("timed-out queued task released its slot");
+            assert_eq!(
+                metrics
+                    .classification_duration(
+                        ClassificationKind::Translation,
+                        ClassificationPhase::ExecutorWait,
+                    )
+                    .count(),
+                1
+            );
+
+            let (running, release_tx) = occupy_blocking_executor(Arc::clone(&executor)).await;
+
+            let cancelled = tokio::spawn({
+                let executor = Arc::clone(&executor);
+                async move {
+                    executor
+                        .classify(
+                            ClassificationKind::Speech,
+                            tokio::time::Instant::now() + Duration::from_secs(1),
+                            || Ok(()),
+                        )
+                        .await
+                }
+            });
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while executor.available_slots() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("classification queued behind blocking executor");
+            cancelled.abort();
+            assert!(
+                cancelled
+                    .await
+                    .expect_err("cancel queued classification")
+                    .is_cancelled()
+            );
+            assert_eq!(
+                metrics.classification_outcome(
+                    ClassificationKind::Speech,
+                    ClassificationOutcome::Cancelled
+                ),
+                1
+            );
+
+            release_tx
+                .send(())
+                .expect("release second running classification");
+            assert_eq!(running.await.expect("join running classification"), Ok(()));
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while executor.available_slots() != 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("cancelled caller's queued work completed");
+            assert_eq!(
+                metrics
+                    .classification_duration(
+                        ClassificationKind::Speech,
+                        ClassificationPhase::ExecutorWait,
+                    )
+                    .count(),
+                1
+            );
+            assert_eq!(
+                metrics
+                    .classification_duration(
+                        ClassificationKind::Speech,
+                        ClassificationPhase::Execution,
+                    )
+                    .count(),
+                1
+            );
+            assert_eq!(
+                metrics.classification_outcome(
+                    ClassificationKind::Speech,
+                    ClassificationOutcome::Success
+                ),
+                0
+            );
+        });
     }
 }
