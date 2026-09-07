@@ -32,6 +32,13 @@ in FP32. Defaults that are on without further flags: backbone decode
 CUDA graph, RVQ depth CUDA graph, compiled DIT blocks, compiled DAV decoder,
 and batched seeded sampling.
 
+For a lower-memory single-device mode, add
+`--stage-offload-components ar,dit`. This serializes the complete song request
+lifecycle. CUDA keeps canonical CPU weights and only the active stage's GPU
+replica; MLX reloads the active stage from its resolved local artifact. The
+tradeoff is stage-switch latency, and CUDA graphs/compiled acoustic blocks are
+disabled while offload is enabled.
+
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
   -H 'Content-Type: application/json' \
