@@ -677,6 +677,10 @@ def test_attach_flow_estimator_trt_wraps_module_with_fallback(monkeypatch) -> No
         return FlowEstimatorTRTModule(_FakeTRT(), fallback=fallback)
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    # note (PoTaTo-Mika) : _attach_flow_estimator_trt also gates on current_platform.is_cuda(),
+    # which stays False on CPU-only hosts (CI hides CUDA), not just on
+    # torch.cuda.is_available().
+    monkeypatch.setattr(stages.current_platform, "is_cuda", lambda: True)
     import sglang_omni.models.fun_cosyvoice3.flow_estimator_trt as trt_mod
 
     monkeypatch.setattr(trt_mod, "resolve_flow_estimator_onnx", fake_resolve)
