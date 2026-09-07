@@ -224,13 +224,10 @@ async def request_chat_completion(
 def parse_choice(text: str, choices: Sequence[str]) -> str:
     content = (text or "").strip().upper()
     alphabet = "".join(re.escape(choice) for choice in choices)
-    explicit = re.findall(
-        rf"(?:ANSWER|CHOICE)\s*(?:IS|:)?\s*([{alphabet}])\b", content
-    ) + re.findall(rf"\\?BOXED\s*\{{\s*([{alphabet}])\s*\}}", content)
-    if explicit:
-        return explicit[0] if len(set(explicit)) == 1 else ""
-    plain = re.fullmatch(rf"([{alphabet}])[.)]?", content)
-    return plain.group(1) if plain else ""
+    match = re.fullmatch(
+        rf"(?:(?:ANSWER|CHOICE)\s*(?:IS|:)?\s*)?([{alphabet}])[.)]?", content
+    ) or re.fullmatch(rf"\\?BOXED\s*\{{\s*([{alphabet}])\s*\}}", content)
+    return match.group(1) if match else ""
 
 
 def build_level1_result_records(

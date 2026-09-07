@@ -181,7 +181,17 @@ def test_judge_payload_allows_reasoning_before_score() -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("Answer: A", "A"), ("\\boxed{B}", "B"), ("C", "C"), ("A or B", "")],
+    [
+        ("Answer: A", "A"),
+        ("\\boxed{B}", "B"),
+        ("C", "C"),
+        ("A or B", ""),
+        ("Answer: A or B", ""),
+        ("Answer: A/B", ""),
+        ("Answer: A and B", ""),
+        ("Answer: A. Answer: B", ""),
+        ("\\boxed{A} or B", ""),
+    ],
 )
 def test_choice_parser_is_strict(raw: str, expected: str) -> None:
     assert parse_choice(raw, ("A", "B", "C", "D")) == expected
@@ -189,7 +199,13 @@ def test_choice_parser_is_strict(raw: str, expected: str) -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [("Answer: A", "YES"), ("Answer: B", "NO"), ("YES", "YES"), ("maybe", "")],
+    [
+        ("Answer: A", "YES"),
+        ("Answer: B", "NO"),
+        ("YES", "YES"),
+        ("maybe", ""),
+        ("Answer: A or B", ""),
+    ],
 )
 def test_when_parser(raw: str, expected: str) -> None:
     assert parse_when(raw) == expected

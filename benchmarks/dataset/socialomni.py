@@ -414,7 +414,7 @@ async def create_video_prefix(
             sort_keys=True,
         ).encode()
     ).hexdigest()
-    cache = Path(cache_dir)
+    cache = Path(cache_dir).expanduser().resolve()
     cache.mkdir(parents=True, exist_ok=True)
     output = cache / f"{key}.mp4"
     if output.is_file() and output.stat().st_size:

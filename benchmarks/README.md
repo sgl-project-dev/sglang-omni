@@ -299,6 +299,8 @@ Neither model prompt receives the reference transcript or continuation.
 The Qwen3-Omni server must support `use_audio_in_video` and decode the video's
 audio track. Run the server in
 text-only mode with a context limit sufficient for the selected videos.
+Run the benchmark on the server host or use a shared filesystem with identical
+media paths. `--base-url` is the server root, such as `http://localhost:8000`.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
 endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.

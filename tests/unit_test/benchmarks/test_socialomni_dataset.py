@@ -217,7 +217,7 @@ def test_prefix_command_reencodes_video_and_audio(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_prefix_media_ends_at_query_time(tmp_path: Path) -> None:
+async def test_prefix_media_ends_at_query_time(tmp_path: Path, monkeypatch) -> None:
     ffmpeg = resolve_ffmpeg_executable()
     if not ffmpeg:
         pytest.skip("ffmpeg is unavailable")
@@ -244,7 +244,13 @@ async def test_prefix_media_ends_at_query_time(tmp_path: Path) -> None:
         str(source),
     )
     assert await process.wait() == 0
-    prefix = await create_video_prefix(source, 0.75, tmp_path / "cache")
+    monkeypatch.chdir(tmp_path)
+    prefix = await create_video_prefix(source, 0.75, "cache")
+    assert prefix.is_absolute()
+    assert await create_video_prefix(source, 0.75, "cache") == prefix
+    server_dir = tmp_path / "server"
+    server_dir.mkdir()
+    monkeypatch.chdir(server_dir)
     with av.open(str(prefix)) as container:
         assert container.duration is not None
         assert container.duration / av.time_base <= 0.85
