@@ -86,15 +86,18 @@ def test_breakable_requires_cuda_graphs_enabled() -> None:
         )
 
 
-def test_non_breakable_prefill_backend_is_rejected() -> None:
-    for backend in ("full", "tc_piecewise"):
-        with pytest.raises(ValueError, match="must be 'breakable'"):
-            _validate(
-                _server_args(
-                    prefill_backend=backend,
-                    prefill_bs=(128,),
-                )
+def test_full_prefill_backend_is_accepted() -> None:
+    _validate(_server_args(prefill_backend="full", prefill_bs=(128,)))
+
+
+def test_piecewise_prefill_backend_is_rejected() -> None:
+    with pytest.raises(ValueError, match="must be 'breakable', 'full'"):
+        _validate(
+            _server_args(
+                prefill_backend="tc_piecewise",
+                prefill_bs=(128,),
             )
+        )
 
 
 def test_breakable_accepts_a_derived_ladder(caplog) -> None:
@@ -652,7 +655,7 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
     def fake_build_sglang_server_args(checkpoint_dir, *, context_length, **overrides):
         del checkpoint_dir, context_length
         return _server_args(
-            prefill_backend="breakable",
+            prefill_backend=overrides.get("cuda_graph_backend_prefill", "breakable"),
             prefill_bs=overrides.get("cuda_graph_bs_prefill"),
             locked=_PREFILL_BS_LOCKED,
         )
@@ -688,6 +691,16 @@ def test_builder_rejects_breakable_without_model_opt_in(monkeypatch) -> None:
             "model",
             server_args_overrides={
                 "cuda_graph_backend_prefill": "breakable",
+                "cuda_graph_bs_prefill": [128, 256],
+            },
+        )
+
+    # note (luojiaxuan): the full backend is gated the same way.
+    with pytest.raises(RuntimeError, match="has not adopted the full prefill"):
+        NonAdoptingBuilder().build(
+            "model",
+            server_args_overrides={
+                "cuda_graph_backend_prefill": "full",
                 "cuda_graph_bs_prefill": [128, 256],
             },
         )

@@ -325,7 +325,12 @@ def test_qwen3_tts_breakable_prefill_enabled_by_default(tmp_path: Path) -> None:
         type(builder).supports_breakable_prefill_cuda_graph
         is CAPABILITIES.supports_breakable_prefill_cuda_graph
     )
-    assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.BREAKABLE
+    assert CAPABILITIES.supports_full_prefill_cuda_graph is True
+    assert (
+        type(builder).supports_full_prefill_cuda_graph
+        is CAPABILITIES.supports_full_prefill_cuda_graph
+    )
+    assert defaults["cuda_graph_backend_prefill"] is CudaGraphBackend.FULL
     assert defaults["cuda_graph_bs_prefill"] == list(QWEN3_TTS_PREFILL_CUDA_GRAPH_BS)
     # A 1-token prefill is the only shape the shared ladder sends back to eager,
     # so the 1 bucket is what this default adds; 2 and 3 replay inside bucket 4.

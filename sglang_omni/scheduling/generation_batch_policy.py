@@ -300,8 +300,9 @@ def _validate_prefill_graph_policy(
     cuda_graph_enabled: bool,
     errors: list[str],
 ) -> None:
-    """Validate the resolved prefill CUDA graph policy: breakable backend
-    only, with the bucket list checked against the chunked prefill ceiling."""
+    """Validate the resolved prefill CUDA graph policy: breakable or full
+    backend, with the bucket list checked against the chunked prefill ceiling.
+    Which of the two a model may run is the engine builder's call."""
     backend = get_prefill_cuda_graph_backend(server_args)
     if backend == CudaGraphBackend.DISABLED:
         return
@@ -312,10 +313,10 @@ def _validate_prefill_graph_policy(
             f"(backend={backend!r} with disable_cuda_graph)"
         )
         return
-    if backend != CudaGraphBackend.BREAKABLE:
+    if backend not in (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL):
         errors.append(
-            "prefill CUDA graph backend must be 'breakable' or 'disabled', "
-            f"got {backend!r}"
+            "prefill CUDA graph backend must be 'breakable', 'full' or "
+            f"'disabled', got {backend!r}"
         )
         return
 

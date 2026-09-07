@@ -60,6 +60,7 @@ class SGLangGenerationEngineBuilder(ABC):
     # Set True only by builders whose model has adopted the breakable prefill
     # CUDA graph contract; a deployment override cannot enable it otherwise.
     supports_breakable_prefill_cuda_graph: bool = False
+    supports_full_prefill_cuda_graph: bool = False
 
     def build(
         self,
@@ -192,6 +193,14 @@ class SGLangGenerationEngineBuilder(ABC):
                     "CUDA graph contract "
                     "(supports_breakable_prefill_cuda_graph=False); refusing "
                     "cuda_graph_backend_prefill='breakable'"
+                )
+            infra_kwargs.setdefault("enable_prefill_input_embeds", True)
+        if prefill_graph_backend == CudaGraphBackend.FULL:
+            if not self.supports_full_prefill_cuda_graph:
+                raise RuntimeError(
+                    f"{self.model_name} has not adopted the full prefill CUDA "
+                    "graph contract (supports_full_prefill_cuda_graph=False); "
+                    "refusing cuda_graph_backend_prefill='full'"
                 )
             infra_kwargs.setdefault("enable_prefill_input_embeds", True)
         want_cuda_graph, (
