@@ -1860,6 +1860,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <li><p><strong>Qwen-Omni optimizations:</strong> piecewise CUDA Graph for talker, high-performance code-predictor backend</p></li>
 </ul>
 <p><strong>Why it matters:</strong> The discoverability anchor for the V0 → V1 cutover. Names individual owners per work item so contributors can pick up threads independently; several follow-up issues and PRs in this history root back to this trackboard.</p>
+<p><a id="2026-05-04--pr-385-openai-realtime-websocket-endpoint-v1-feature"></a></p>
 </section>
 <section id="pr-385-openai-realtime-websocket-endpoint-v1-feature">
 <h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/385">2026-05-04 — PR #385: OpenAI Realtime WebSocket endpoint [V1, Feature]</a><a class="headerlink" href="#pr-385-openai-realtime-websocket-endpoint-v1-feature" title="Link to this heading">#</a></h3>
@@ -1922,6 +1923,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <li><p><strong>Outcome:</strong> closed without merging; consolidation absorbed into #447</p></li>
 </ul>
 <p><strong>Why it matters:</strong> Captures the rationale that drove the launcher consolidation. The diagnosis and bugfix informed #447 and downstream cleanups even though no commits from this branch shipped — kept here to attribute both the design decision and the double-launch bugfix correctly.</p>
+<p><a id="2026-05-12--pr-430-colocated-stage-execution-colocation"></a></p>
 </section>
 <section id="pr-430-colocated-stage-execution-colocation">
 <h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/430">2026-05-12 — PR #430: Colocated Stage Execution [Colocation]</a><a class="headerlink" href="#pr-430-colocated-stage-execution-colocation" title="Link to this heading">#</a></h3>
@@ -1935,6 +1937,7 @@ Python object references for LOCAL_OBJECT payloads and stream chunks</p></li>
 <li><p><strong>Qwen3-Omni placement policy:</strong> rejects unsupported topologies (standalone <code class="docutils literal notranslate"><span class="pre">code_predictor</span></code>, unsupported thinker / talker TP); admits same-GPU thinker / talker only via <code class="docutils literal notranslate"><span class="pre">Qwen3OmniSpeechColocatedPipelineConfig</span></code></p></li>
 </ul>
 <p><strong>Why it matters:</strong> The biggest single deployment-shape win in the V1 refactor. Lets a thinker + talker speech model run as one process on one GPU rather than two separate stages, dramatically reducing the resource footprint for inference clusters that don’t need horizontal stage parallelism.</p>
+<p><a id="2026-05-15--pr-447-unify-serving-on-multiprocess-runner-rfc"></a></p>
 </section>
 <section id="pr-447-unify-serving-on-multiprocess-runner-rfc">
 <h3><a class="reference external" href="https://github.com/sgl-project/sglang-omni/pull/447">2026-05-15 — PR #447: Unify serving on multiprocess runner [RFC]</a><a class="headerlink" href="#pr-447-unify-serving-on-multiprocess-runner-rfc" title="Link to this heading">#</a></h3>
