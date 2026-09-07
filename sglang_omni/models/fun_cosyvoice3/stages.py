@@ -22,6 +22,12 @@ from sglang_omni.models.fun_cosyvoice3.request_builders import (
     cleanup_prepared_cosyvoice3_request,
     preprocess_cosyvoice3_payload,
 )
+from sglang_omni.models.fun_cosyvoice3.streaming import (
+    PRE_LOOKAHEAD_LEN,
+    TOKEN_HOP_LEN,
+    TOKEN_MAX_HOP_LEN,
+    TOKEN_MEL_RATIO,
+)
 from sglang_omni.platforms import current_platform
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.pipeline_state import build_usage
@@ -50,6 +56,8 @@ _COSYVOICE_INSTALL_HINT = (
     "Clone the official repository and set PYTHONPATH, or install it "
     "in the serving environment before launching Fun-CosyVoice3."
 )
+
+_CHUNK_MASK_COMPILE_DISABLED = False
 
 
 @dataclass(frozen=True)
@@ -188,6 +196,55 @@ def _pack_flow_inputs(flow: Any, inputs: Sequence[FlowBatchInput]) -> _PackedFlo
     )
 
 
+def _flow_lookahead(flow: Any) -> int:
+    layer = getattr(flow, "pre_lookahead_layer", None)
+    layer_len = getattr(layer, "pre_lookahead_len", None)
+    if layer_len is not None:
+        return max(int(layer_len), 0)
+    return max(int(getattr(flow, "pre_lookahead_len", PRE_LOOKAHEAD_LEN)), 0)
+
+
+def _apply_pre_lookahead(
+    flow: Any,
+    token_embedding: torch.Tensor,
+    *,
+    finalize: bool,
+    lookahead: int,
+    combined_token_lengths: tuple[int, ...] | None = None,
+) -> torch.Tensor:
+    if finalize or lookahead <= 0:
+        return flow.pre_lookahead_layer(token_embedding)
+    layer = flow.pre_lookahead_layer
+    lengths = combined_token_lengths
+    if lengths is None or len(set(int(length) for length in lengths)) <= 1:
+        body = token_embedding[:, :-lookahead]
+        context = token_embedding[:, -lookahead:]
+        try:
+            return layer(body, context=context)
+        except TypeError:
+            # note (guozhihao-224): unit fakes use Identity, which has no context kwarg.
+            return layer(body)
+    # note (guozhihao-224): packing left-aligns and pads to max combined
+    # length. Slice [:, -lookahead:] would read pad on shorter rows.
+    body_lens = [max(int(length) - lookahead, 0) for length in lengths]
+    max_body = max(body_lens)
+    pieces: list[torch.Tensor] = []
+    for index, length in enumerate(lengths):
+        body_len = body_lens[index]
+        body = token_embedding[index : index + 1, :body_len]
+        context = token_embedding[
+            index : index + 1, int(length) - lookahead : int(length)
+        ]
+        try:
+            hidden = layer(body, context=context)
+        except TypeError:
+            hidden = layer(body)
+        if hidden.shape[1] < max_body:
+            hidden = F.pad(hidden, (0, 0, 0, max_body - int(hidden.shape[1])))
+        pieces.append(hidden)
+    return torch.cat(pieces, dim=0)
+
+
 def _solve_flow_euler(
     decoder: Any,
     x: torch.Tensor,
@@ -196,6 +253,8 @@ def _solve_flow_euler(
     mask: torch.Tensor,
     spks: torch.Tensor,
     cond: torch.Tensor,
+    *,
+    streaming: bool = False,
 ) -> torch.Tensor:
     batch_size, channels, frames = x.shape
     dtype = spks.dtype
@@ -216,7 +275,14 @@ def _solve_flow_euler(
         spks_in[:batch_size] = spks
         cond_in[:batch_size] = cond
         derivative = _forward_flow_estimator(
-            decoder, x_in, mask_in, mu_in, t_in, spks_in, cond_in
+            decoder,
+            x_in,
+            mask_in,
+            mu_in,
+            t_in,
+            spks_in,
+            cond_in,
+            streaming=streaming,
         )
         conditional, unconditional = derivative[:batch_size], derivative[batch_size:]
         x = x + dt * (
@@ -230,20 +296,43 @@ def _solve_flow_euler(
 
 
 @torch.inference_mode()
-def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
+def _generate_flow(
+    flow: Any,
+    packed: _PackedFlowBatch,
+    *,
+    streaming: bool = False,
+    finalize: bool = True,
+) -> torch.Tensor:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
-    h = flow.pre_lookahead_layer(
-        token_embedding * packed.token_mask.to(token_embedding.dtype)
+    token_embedding = token_embedding * packed.token_mask.to(token_embedding.dtype)
+    lookahead = 0 if finalize else _flow_lookahead(flow)
+    h = _apply_pre_lookahead(
+        flow,
+        token_embedding,
+        finalize=finalize,
+        lookahead=lookahead,
+        combined_token_lengths=packed.combined_token_lengths,
     )
     mu = h.repeat_interleave(flow.token_mel_ratio, dim=1).transpose(1, 2).contiguous()
     batch_size, channels, max_mel = mu.shape
     if channels != flow.output_size:
         raise ValueError("Flow pre-lookahead output width does not match output_size")
+    if lookahead > 0:
+        total_mel_lengths_tensor = torch.tensor(
+            [
+                max(length - lookahead, 0) * flow.token_mel_ratio
+                for length in packed.combined_token_lengths
+            ],
+            dtype=torch.int64,
+            device=mu.device,
+        )
+    else:
+        total_mel_lengths_tensor = packed.total_mel_lengths_tensor
     mask = (
         (
             torch.arange(max_mel, device=mu.device).unsqueeze(0)
-            < packed.total_mel_lengths_tensor.unsqueeze(1)
+            < total_mel_lengths_tensor.unsqueeze(1)
         )
         .unsqueeze(1)
         .to(mu.dtype)
@@ -268,7 +357,31 @@ def _generate_flow(flow: Any, packed: _PackedFlowBatch) -> torch.Tensor:
     t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
     if decoder.t_scheduler == "cosine":
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-    return _solve_flow_euler(decoder, z, t_span, mu, mask, embedding, cond)
+    return _solve_flow_euler(
+        decoder, z, t_span, mu, mask, embedding, cond, streaming=streaming
+    )
+
+
+def _split_generated_mels(
+    flow: Any,
+    packed: _PackedFlowBatch,
+    generated: torch.Tensor,
+    *,
+    token_lengths: tuple[int, ...],
+    target_token_lengths: tuple[int, ...],
+) -> list[torch.Tensor]:
+    outputs: list[torch.Tensor] = []
+    ratio = int(flow.token_mel_ratio)
+    for index, prompt_frames in enumerate(packed.prompt_mel_lengths):
+        total_frames = token_lengths[index] * ratio
+        mel = generated[index : index + 1, :, prompt_frames:total_frames]
+        expected_frames = target_token_lengths[index] * ratio
+        if mel.shape != (1, flow.output_size, expected_frames):
+            raise RuntimeError(
+                f"Flow output {index} has unexpected shape {tuple(mel.shape)}"
+            )
+        outputs.append(mel)
+    return outputs
 
 
 def _forward_flow_estimator(
@@ -279,12 +392,17 @@ def _forward_flow_estimator(
     t: torch.Tensor,
     spks: torch.Tensor,
     cond: torch.Tensor,
+    *,
+    streaming: bool = False,
 ) -> torch.Tensor:
     # note (guozhihao-224): CosyVoice forward_estimator hardcodes TRT shapes to
     # (2, 80, T). Packed Flow is CFG=2N, so TRT uses execute_flow_estimator.
+    # TRT ONNX freezes attention, so streaming is only meaningful for PyTorch.
     estimator = decoder.estimator
     if isinstance(estimator, torch.nn.Module):
-        return decoder.forward_estimator(x, mask, mu, t, spks, cond, streaming=False)
+        return decoder.forward_estimator(
+            x, mask, mu, t, spks, cond, streaming=streaming
+        )
     return execute_flow_estimator(estimator, x, mask, mu, t, spks, cond)
 
 
@@ -312,22 +430,36 @@ class FunCosyVoice3Flow:
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
         generated = _generate_flow(self._flow, packed)
-        outputs: list[torch.Tensor] = []
-        for index, prompt_frames in enumerate(packed.prompt_mel_lengths):
-            mel = generated[
-                index : index + 1,
-                :,
-                prompt_frames : packed.total_mel_lengths[index],
-            ]
-            expected_frames = (
-                packed.target_token_lengths[index] * self._flow.token_mel_ratio
-            )
-            if mel.shape != (1, self._flow.output_size, expected_frames):
-                raise RuntimeError(
-                    f"Flow output {index} has unexpected shape {tuple(mel.shape)}"
-                )
-            outputs.append(mel)
-        return outputs
+        return _split_generated_mels(
+            self._flow,
+            packed,
+            generated,
+            token_lengths=packed.combined_token_lengths,
+            target_token_lengths=packed.target_token_lengths,
+        )
+
+    @torch.inference_mode()
+    def inference_causal(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
+        # note (guozhihao-224): causal hops (first and follow-up). Same
+        # packing as buffered inference, but strip lookahead per row so
+        # mixed prompt lengths can share one DiT call. streaming=True
+        # keeps the chunk mask aligned with CosyVoice3Model hops.
+        packed = _pack_flow_inputs(self._flow, inputs)
+        generated = _generate_flow(self._flow, packed, streaming=True, finalize=False)
+        lookahead = _flow_lookahead(self._flow)
+        target_token_lengths = tuple(
+            max(length - lookahead, 0) for length in packed.target_token_lengths
+        )
+        combined_token_lengths = tuple(
+            max(length - lookahead, 0) for length in packed.combined_token_lengths
+        )
+        return _split_generated_mels(
+            self._flow,
+            packed,
+            generated,
+            token_lengths=combined_token_lengths,
+            target_token_lengths=target_token_lengths,
+        )
 
 
 def load_state(payload: StagePayload) -> FunCosyVoice3State:
@@ -360,13 +492,19 @@ def _attach_flow_estimator_trt(
         )
 
     onnx_path = resolve_flow_estimator_onnx(checkpoint_dir)
-    wrapper = build_flow_estimator_trt(onnx_path, device)
+    # Keep the PyTorch DiT as profile-miss fallback; wrap as nn.Module so
+    # CosyVoice's forward_estimator does not take the raw execute_async_v3
+    # path (hard-coded CFG batch=2, no profile check) under hop-batch.
+    fallback = flow.decoder.estimator
+    wrapper = build_flow_estimator_trt(
+        onnx_path, device, fallback=fallback, wrap_module=True
+    )
     # note (guozhihao-224): CosyVoice registers estimator as an nn.Module child;
     # delete first so assigning the TRT wrapper does not raise TypeError.
     del flow.decoder.estimator
     flow.decoder.estimator = wrapper
     logger.info(
-        "Fun-CosyVoice3 Flow DiT estimator is TensorRT (%s, max_cfg_batch=%d)",
+        "Fun-CosyVoice3 Flow DiT estimator is TensorRT Module (%s, max_cfg_batch=%d)",
         onnx_path,
         wrapper.max_batch,
     )
@@ -449,11 +587,29 @@ def _configure_dit_torch_compile() -> None:
         torch._dynamo.config.accumulated_cache_size_limit = 1024
 
 
+def _disable_compile_on_chunk_mask() -> None:
+    # note (guozhihao-224): inductor NaN-compares subsequent_chunk_mask in
+    # DiT.forward; keep the mask eager.
+    global _CHUNK_MASK_COMPILE_DISABLED
+    if _CHUNK_MASK_COMPILE_DISABLED:
+        return
+    try:
+        import cosyvoice.flow.DiT.dit as dit_mod
+        import cosyvoice.utils.mask as mask_mod
+    except ImportError:
+        return
+    disabled = torch.compiler.disable(mask_mod.add_optional_chunk_mask)
+    mask_mod.add_optional_chunk_mask = disabled
+    dit_mod.add_optional_chunk_mask = disabled
+    _CHUNK_MASK_COMPILE_DISABLED = True
+
+
 def _run_dit_estimator(
     estimator: Any,
     mel_frames: int,
     *,
     compute_dtype: torch.dtype | None = None,
+    streaming: bool = False,
 ) -> None:
 
     param = next(estimator.parameters())
@@ -471,7 +627,7 @@ def _run_dit_estimator(
         dtype=compute_dtype,
         enabled=compute_dtype is not None,
     ):
-        estimator(x, mask, mu, timestep, spks, cond, streaming=False)
+        estimator(x, mask, mu, timestep, spks, cond, streaming=streaming)
 
 
 def _compile_dit_backbone(
@@ -495,15 +651,18 @@ def _compile_dit_backbone(
 
     original_forward = estimator.forward
     _configure_dit_torch_compile()
+    _disable_compile_on_chunk_mask()
     try:
         estimator.forward = torch.compile(original_forward, dynamic=True)
         with torch.inference_mode():
-            for _ in range(warmup_steps):
-                _run_dit_estimator(
-                    estimator,
-                    warmup_mel_frames,
-                    compute_dtype=compute_dtype,
-                )
+            for streaming in (False, True):
+                for _ in range(warmup_steps):
+                    _run_dit_estimator(
+                        estimator,
+                        warmup_mel_frames,
+                        compute_dtype=compute_dtype,
+                        streaming=streaming,
+                    )
     except Exception as exc:
         estimator.forward = original_forward
         logger.warning(
@@ -515,7 +674,7 @@ def _compile_dit_backbone(
         return False
     logger.info(
         "Compiled Fun-CosyVoice3 DiT backbone (dynamic=True, compute_dtype=%s, "
-        "warmup_mel_frames=%d, warmup_steps=%d)",
+        "warmup_mel_frames=%d, warmup_steps=%d, streaming=False/True)",
         compute_dtype,
         warmup_mel_frames,
         warmup_steps,
@@ -547,12 +706,14 @@ def create_sglang_tts_engine_executor(
     dtype: str = "bfloat16",
     server_args_overrides: dict[str, Any] | None = None,
     onnx_intra_op_threads: int = 16,
+    token_hop_len: int = TOKEN_HOP_LEN,
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
     )
 
     return FunCosyVoice3EngineBuilder(
+        token_hop_len=token_hop_len,
         onnx_intra_op_threads=onnx_intra_op_threads,
     ).build(
         model_path,
@@ -647,7 +808,8 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
             raise RuntimeError(
                 "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
             )
-
+        # note (guozhihao-224): AR stores one token per step, serialized as
+        # [T, 1]; Flow takes a single unbatched sequence.
         codes = torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
         return state, codes
 
@@ -696,6 +858,106 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                 f"Fun-CosyVoice3 vocoder returned {len(results)} results for 1 input"
             )
         return results[0]
+
+    def token2wav(
+        self,
+        token: torch.Tensor,
+        prompt_token: torch.Tensor,
+        prompt_feat: torch.Tensor,
+        embedding: torch.Tensor,
+    ) -> torch.Tensor:
+        wav, _, _ = self.token2wav_chunk(
+            token=token,
+            prompt_token=prompt_token,
+            prompt_feat=prompt_feat,
+            embedding=embedding,
+            token_offset=0,
+            streaming=False,
+            finalize=True,
+            hift_mel=None,
+            speech_offset=0,
+        )
+        return wav
+
+    def token2wav_chunk(
+        self,
+        token: torch.Tensor,
+        prompt_token: torch.Tensor,
+        prompt_feat: torch.Tensor,
+        embedding: torch.Tensor,
+        *,
+        token_offset: int,
+        streaming: bool,
+        finalize: bool,
+        hift_mel: torch.Tensor | None,
+        speech_offset: int,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        # note (guozhihao-224): causal hops use streaming=True, finalize=False;
+        # leftover uses streaming=False, finalize=True, matching CosyVoice3Model.
+        # FunCosyVoice3Flow.inference is the buffered batch adapter; hops must
+        # call CosyVoice's token/len/streaming signature on the wrapped module.
+        if token.shape[1] == 0:
+            raise RuntimeError(
+                "Fun-CosyVoice3 generation produced no usable speech tokens"
+            )
+        native_flow = getattr(self._flow, "_flow", self._flow)
+        device = next(native_flow.parameters()).device
+        offset = max(int(token_offset), 0)
+
+        with torch.autocast(
+            device_type=current_platform.device_type,
+            dtype=self._compute_dtype,
+            enabled=self._compute_dtype is not None,
+        ):
+            tts_mel, _ = native_flow.inference(
+                token=token.to(device, dtype=torch.int32),
+                token_len=torch.tensor([token.shape[1]], dtype=torch.int32).to(device),
+                prompt_token=prompt_token.to(device),
+                prompt_token_len=torch.tensor(
+                    [prompt_token.shape[1]], dtype=torch.int32
+                ).to(device),
+                prompt_feat=prompt_feat.to(device),
+                prompt_feat_len=torch.tensor(
+                    [prompt_feat.shape[1]], dtype=torch.int32
+                ).to(device),
+                embedding=embedding.to(device),
+                streaming=streaming,
+                finalize=finalize,
+            )
+        tts_mel = tts_mel[:, :, offset * TOKEN_MEL_RATIO :]
+        return self._hift_delta(
+            tts_mel, hift_mel=hift_mel, speech_offset=speech_offset, finalize=finalize
+        )
+
+    def first_hop_batch(self, items: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
+        """Causal Flow for equal-shape hops. HiFT stays per request.
+
+        # note (guozhihao-224): first hops and follow-up hops share this
+        # path; the scheduler slices new frames at token_offset.
+        """
+        if not items:
+            raise ValueError("first-hop Flow batch must contain at least one input")
+        with torch.autocast(
+            device_type=current_platform.device_type,
+            dtype=self._compute_dtype,
+            enabled=self._compute_dtype is not None,
+        ):
+            return self._flow.inference_causal(items)
+
+    def _hift_delta(
+        self,
+        tts_mel: torch.Tensor,
+        *,
+        hift_mel: torch.Tensor | None,
+        speech_offset: int,
+        finalize: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, int]:
+        if hift_mel is not None:
+            tts_mel = torch.cat([hift_mel.to(device=tts_mel.device), tts_mel], dim=2)
+        tts_speech, _ = self._hift.inference(speech_feat=tts_mel, finalize=finalize)
+        held = max(int(speech_offset), 0)
+        delta = tts_speech[:, held:].detach().cpu()
+        return delta, tts_mel.detach(), int(tts_speech.shape[1])
 
     def _make_flow_input(
         self,
@@ -821,7 +1083,14 @@ def create_vocoder_executor(
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
-) -> SimpleScheduler:
+    token_hop_len: int = TOKEN_HOP_LEN,
+    token_max_hop_len: int = TOKEN_MAX_HOP_LEN,
+    disable_hop_growth: bool = False,
+) -> Any:
+    from sglang_omni.models.fun_cosyvoice3.streaming_vocoder import (
+        FunCosyVoice3StreamingVocoderScheduler,
+    )
+
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
     if enable_flow_estimator_trt and enable_dit_torch_compile:
@@ -855,11 +1124,13 @@ def create_vocoder_executor(
         hift_max_padding_waste=hift_max_padding_waste,
     )
 
-    return SimpleScheduler(
-        vocoder.decode_payload,
-        batch_compute_fn=vocoder.decode_payloads,
+    return FunCosyVoice3StreamingVocoderScheduler(
+        vocoder,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
         request_cost_fn=vocoder._flow_scheduler_cost,
         max_batch_cost=flow_batch_admission_frames,
+        token_hop_len=token_hop_len,
+        token_max_hop_len=token_max_hop_len,
+        disable_hop_growth=disable_hop_growth,
     )

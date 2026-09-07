@@ -49,9 +49,12 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 device=current_platform.device_type,
                 dtype="bfloat16",
                 onnx_intra_op_threads=16,
+                # Keep in sync with vocoder token_hop_len (AR flush cadence).
+                token_hop_len=25,
             ),
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -66,9 +69,15 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 # note (guozhihao-224): mutually exclusive DiT accelerators; both default off.
                 enable_dit_torch_compile=False,
                 enable_flow_estimator_trt=False,
+                # Official CV3 defaults. Keep hop growth on: SeedTTS c=16
+                # A/B preferred growth ON over disable_hop_growth.
+                token_hop_len=25,
+                token_max_hop_len=100,
+                disable_hop_growth=False,
             ),
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 

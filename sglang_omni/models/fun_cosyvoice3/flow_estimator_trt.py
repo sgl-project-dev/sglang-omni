@@ -15,6 +15,13 @@ logger = logging.getLogger(__name__)
 
 _CFG_BATCH = 2
 _MEL_DIM = 80
+# Must match the optimization profile built in `_convert_onnx_to_trt`.
+# note (guozhihao-224): streaming leftover finalize often exceeds the old
+# CosyVoice default of 3000 mel frames; capping there forced PyTorch
+# fallback under c16 and ballooned TTFP. Keep headroom for long refs.
+_PROFILE_MIN_TIME = 4
+_PROFILE_OPT_TIME = 500
+_PROFILE_MAX_TIME = 5000
 _DEFAULT_ONNX_CANDIDATES = (
     "flow.decoder.estimator.fp32.onnx",
     "flow.decoder.estimator.onnx",
@@ -58,7 +65,8 @@ def _resolve_plan_path(onnx_path: str) -> str:
     st = os.stat(onnx_path)
     key = (
         f"{os.path.abspath(onnx_path)}|{st.st_size}|{int(st.st_mtime)}|"
-        f"{dev_name}|trt{trt.__version__}|maxb{_CFG_BATCH}"
+        f"{dev_name}|trt{trt.__version__}|maxb{_CFG_BATCH}|"
+        f"T{_PROFILE_MIN_TIME}-{_PROFILE_OPT_TIME}-{_PROFILE_MAX_TIME}"
     )
     digest = hashlib.sha1(key.encode()).hexdigest()[:16]
     return os.path.join(cache_dir, f"flow_estimator_{digest}.plan")
@@ -115,7 +123,11 @@ def _convert_onnx_to_trt(
 ) -> None:
     import tensorrt as trt
 
-    min_time, opt_time, max_time = 4, 500, 3000
+    min_time, opt_time, max_time = (
+        _PROFILE_MIN_TIME,
+        _PROFILE_OPT_TIME,
+        _PROFILE_MAX_TIME,
+    )
     logger.info(
         "Building Flow-estimator TensorRT engine from %s "
         "(CFG batch=%d, time %d..%d, %s)",
@@ -229,6 +241,12 @@ def _enqueue_once(
             f"{estimator.device}, got tensors on {x.device}"
         )
     shapes = _require_cfg_pair_inputs(x, mask, mu, t, spks, cond)
+    frames = int(x.shape[2])
+    if frames < _PROFILE_MIN_TIME or frames > _PROFILE_MAX_TIME:
+        raise ValueError(
+            f"Flow-estimator TensorRT time dim {frames} is outside the "
+            f"engine profile [{_PROFILE_MIN_TIME}, {_PROFILE_MAX_TIME}]"
+        )
     [context, stream], trt_engine = estimator.acquire_estimator()
     caller_stream = torch.cuda.current_stream(estimator.device)
     stream.wait_stream(caller_stream)
@@ -327,7 +345,72 @@ def execute_flow_estimator(
     return out
 
 
+class FlowEstimatorTRTModule(torch.nn.Module):
+    """``nn.Module`` facade so CosyVoice uses our guarded TRT enqueue path.
+
+    CosyVoice's ``forward_estimator`` treats non-``nn.Module`` estimators as a
+    raw TensorRT context: hard-coded CFG ``batch=2``, no profile check, and
+    ``execute_async_v3`` on the caller's stream. That path crashes under
+    streaming hop-batch (packed CFG ``2N``) and on out-of-range ``T``.
+    Registering this module forces the ``nn.Module`` branch and:
+
+    - runs TRT through ``execute_flow_estimator`` (CFG-pair chunking,
+      profile-checked, dedicated stream);
+    - falls back to the original PyTorch DiT when ``T`` is outside
+      ``[_PROFILE_MIN_TIME, _PROFILE_MAX_TIME]``.
+    """
+
+    def __init__(
+        self,
+        trt: FlowEstimatorTRT,
+        fallback: torch.nn.Module | None = None,
+        *,
+        min_time: int = _PROFILE_MIN_TIME,
+        max_time: int = _PROFILE_MAX_TIME,
+    ) -> None:
+        super().__init__()
+        self.trt = trt
+        self.min_time = int(min_time)
+        self.max_time = int(max_time)
+        self.max_batch = int(trt.max_batch)
+        # Keep fallback off the module tree so CosyVoice's state_dict / to()
+        # paths do not double-register DiT weights; we only call it on miss.
+        self._fallback = fallback
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        mask: torch.Tensor,
+        mu: torch.Tensor,
+        t: torch.Tensor,
+        spks: torch.Tensor,
+        cond: torch.Tensor,
+        streaming: bool = False,
+    ) -> torch.Tensor:
+        frames = int(x.shape[2])
+        if frames < self.min_time or frames > self.max_time:
+            if self._fallback is None:
+                raise ValueError(
+                    f"Flow-estimator TensorRT time dim {frames} is outside "
+                    f"the engine profile [{self.min_time}, {self.max_time}] "
+                    "and no PyTorch fallback estimator is available"
+                )
+            logger.info(
+                "Flow-estimator TensorRT profile miss (T=%d, want %d..%d); "
+                "falling back to PyTorch DiT for this call",
+                frames,
+                self.min_time,
+                self.max_time,
+            )
+            return self._fallback(x, mask, mu, t, spks, cond, streaming=streaming)
+        # TRT ONNX freezes attention; streaming only affects the torch path.
+        del streaming
+        return execute_flow_estimator(self.trt, x, mask, mu, t, spks, cond)
+
+
 def is_flow_estimator_trt(estimator: Any) -> bool:
+    if isinstance(estimator, FlowEstimatorTRTModule):
+        return True
     if isinstance(estimator, torch.nn.Module):
         return False
     if isinstance(estimator, FlowEstimatorTRT):
@@ -340,7 +423,9 @@ def build_flow_estimator_trt(
     device: str | torch.device,
     *,
     trt_concurrent: int = 1,
-) -> FlowEstimatorTRT:
+    fallback: torch.nn.Module | None = None,
+    wrap_module: bool = True,
+) -> FlowEstimatorTRT | FlowEstimatorTRTModule:
     try:
         import tensorrt as trt
     except ImportError as exc:
@@ -363,14 +448,17 @@ def build_flow_estimator_trt(
             f"Failed to deserialize Flow-estimator TensorRT engine {plan_path}"
         )
     logger.info(
-        "Loaded Flow-estimator TensorRT engine (%s, %.1f MiB, max_batch=%d)",
+        "Loaded Flow-estimator TensorRT engine (%s, %.1f MiB, max_cfg_batch=%d)",
         plan_path,
         os.path.getsize(plan_path) / (1 << 20),
         _CFG_BATCH,
     )
-    return FlowEstimatorTRT(
+    trt_engine = FlowEstimatorTRT(
         engine,
         device,
         io_dtype=io_dtype,
         trt_concurrent=trt_concurrent,
     )
+    if not wrap_module:
+        return trt_engine
+    return FlowEstimatorTRTModule(trt_engine, fallback=fallback)
