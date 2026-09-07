@@ -724,3 +724,6 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
   对 78-89ms。r1 首帧 35.6 → 32.1ms。
 - 注意前一轮 "d-default 对 d-pfull" 的对照无效:主机树上 PR 3 的默认已是 full,两臂其实都是 full;
   本轮改为显式 `breakable` 臂后才是真对照。
+- **主机收尾(2026-09-06 22:00 PT)**:eval-h100 上任务容器 `sglang-omni-jaxan-1` 已停止并删除,
+  map 记录已清(map 24 行、jaxan 容器 0 个);全部日志与 254 个输出目录留在
+  `/data/jaxan/runs/20260902-mainline-nari-ab/`。后续若 CI 需要 GPU 复现,按规范新建容器。
