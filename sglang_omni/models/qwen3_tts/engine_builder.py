@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import logging
 from typing import Any
 
 import torch
@@ -16,6 +17,8 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_default_prefill_cuda_graph_bs,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _is_truthy(value: Any) -> bool:
@@ -176,6 +179,24 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        del model_runner
+        server_args = scheduler.server_args
+        running = int(server_args.max_running_requests)
+        context = int(server_args.context_length)
+        pool = scheduler.tp_worker.model_runner.token_to_kv_pool
+        k_bytes, v_bytes = pool.get_kv_size_bytes()
+        logger.info(
+            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against an admission "
+            "bound of %d (%d running x %d context), mem_fraction_static %.3f",
+            int(scheduler.max_total_num_tokens),
+            (int(k_bytes) + int(v_bytes)) / float(1 << 30),
+            running * context,
+            running,
+            context,
+            float(server_args.mem_fraction_static),
+        )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
         model_runner_mod = importlib.import_module(

@@ -6063,6 +6063,46 @@ def test_qwen3_tts_engine_accepts_disabled_torch_compile(value) -> None:
     Qwen3TtsEngineBuilder().adjust_overrides({"enable_torch_compile": value})
 
 
+@pytest.mark.parametrize(
+    "pool_tokens, max_running_requests, context_length",
+    [(131072, 16, 8192), (589142, 128, 8192)],
+)
+def test_qwen3_tts_engine_reports_the_pool_against_the_admission_bound(
+    pool_tokens: int,
+    max_running_requests: int,
+    context_length: int,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    class FakePool:
+        def get_kv_size_bytes(self):
+            return pool_tokens * 1024, pool_tokens * 1024
+
+    scheduler = SimpleNamespace(
+        max_total_num_tokens=pool_tokens,
+        server_args=SimpleNamespace(
+            max_running_requests=max_running_requests,
+            context_length=context_length,
+            mem_fraction_static=0.875,
+        ),
+        tp_worker=SimpleNamespace(
+            model_runner=SimpleNamespace(token_to_kv_pool=FakePool())
+        ),
+    )
+
+    with caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"):
+        Qwen3TtsEngineBuilder().post_scheduler_setup(scheduler, model_runner=None)
+
+    assert caplog.messages == [
+        f"Qwen3-TTS KV pool holds {pool_tokens} tokens, "
+        f"{pool_tokens * 2048 / 2**30:.2f} GiB, against an admission bound of "
+        f"{max_running_requests * context_length} "
+        f"({max_running_requests} running x {context_length} context), "
+        "mem_fraction_static 0.875"
+    ]
+
+
 def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -6123,10 +6163,15 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
             predictor_captures.append((do_sample, top_k, top_p))
             return 6
 
+    class FakePool:
+        def get_kv_size_bytes(self):
+            return 64 * 8192 * 1024, 64 * 8192 * 1024
+
     class FakeSGLangRunner:
         def __init__(self, server_args) -> None:
             self.server_args = server_args
             self.model = FakeModel()
+            self.token_to_kv_pool = FakePool()
 
         def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
@@ -6209,9 +6254,11 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     )
 
     def fake_build_sglang_server_args(model_path, context_length, **kwargs):
-        del model_path, context_length
+        del model_path
         build_kwargs.update(kwargs)
         return SimpleNamespace(
+            context_length=context_length,
+            mem_fraction_static=kwargs["mem_fraction_static"],
             cuda_graph_bs=kwargs["cuda_graph_bs"],
             cuda_graph_max_bs=kwargs["cuda_graph_max_bs"],
             cuda_graph_config=SimpleNamespace(
@@ -6273,7 +6320,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     monkeypatch.setattr(
         scheduler_mod,
         "OmniScheduler",
-        lambda **kwargs: SimpleNamespace(**kwargs),
+        lambda **kwargs: SimpleNamespace(max_total_num_tokens=579894, **kwargs),
     )
 
     scheduler = stages.create_sglang_tts_engine_executor(
@@ -6835,7 +6882,7 @@ def test_qwen3_tts_standalone_preprocessing_ships_tensors_without_registry(
     monkeypatch.setattr(
         qwen3_request_builders,
         "_get_qwen3_tts_adhoc_reference_service_locked",
-        lambda model, wrapper: None,
+        lambda model, wrapper, *, context_length=None: None,
     )
     monkeypatch.setattr(
         qwen3_request_builders,
