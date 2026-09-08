@@ -404,10 +404,11 @@ stages:
 ```
 
 `incremental_codec_cuda_graph`, `incremental_codec_compile` and
-`followup_batch_wait_ms` are the individual switches. At 20 requests per
-second on one H200 the default path holds 2.7% of streams underrun against
-5.4% for the left-context decoder at the same first-audio latency; the
-measurements are in `docs/benchmarks/qwen3_tts_r20_vocoder_study.md`.
+`followup_batch_wait_ms` are the individual switches. Measured on one H100
+80GB at 20 requests per second, three client seeds of roughly 1200 requests
+each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
+for the left-context decoder, with first playable audio at 55 to 58 ms
+against 82 to 89 ms.
 
 #### First-audio chunk ramp
 
