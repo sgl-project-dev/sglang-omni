@@ -983,8 +983,9 @@ def test_special_token_defaults_match_v15_checkpoint():
 # Generation kwargs / state
 
 
-def test_build_generation_kwargs_defaults():
-    kwargs = build_generation_kwargs({}, tts_params={})
+@pytest.mark.parametrize("stream", [False, True])
+def test_build_generation_kwargs_defaults(stream):
+    kwargs = build_generation_kwargs({"stream": stream}, tts_params={})
     assert kwargs["max_new_tokens"] == 4096
     assert kwargs["text_temperature"] == 1.0
     assert kwargs["text_top_p"] == 1.0
@@ -993,6 +994,21 @@ def test_build_generation_kwargs_defaults():
     assert kwargs["audio_top_p"] == 0.8
     assert kwargs["audio_top_k"] == 25
     assert kwargs["audio_repetition_penalty"] == 1.0
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_build_generation_kwargs_streaming_rope_limit(stream):
+    kwargs = build_generation_kwargs(
+        {"stream": stream, "max_new_tokens": 22500}, tts_params={}
+    )
+    assert kwargs["max_new_tokens"] == 22500
+
+    params = {"stream": stream, "max_new_tokens": 22501}
+    if stream:
+        with pytest.raises(ValueError, match="max_new_tokens must be <= 22500"):
+            build_generation_kwargs(params, tts_params={})
+    else:
+        assert build_generation_kwargs(params, tts_params={})["max_new_tokens"] == 22501
 
 
 def test_build_generation_kwargs_explicit_overrides():
