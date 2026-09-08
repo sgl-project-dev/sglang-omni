@@ -8,9 +8,13 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from sglang_omni.quantization import (
+    disable_quantization_for_full_precision_stage,
     needs_quant_config_normalization,
     normalize_quant_config,
+    requires_fp8_gemm_initialization,
     resolve_quant_config,
+    resolve_stage_local_mxfp_profile,
+    validate_stage_local_mxfp_config,
 )
 from sglang_omni.vendor.sglang.server_args import override_server_args
 
@@ -103,6 +107,9 @@ class ModelWorker:
     @staticmethod
     def _apply_arch_override(model_config: ModelConfig, arch: str) -> None:
         """Override model config for a sub-model architecture."""
+        # ModelConfig detects root quantization before the stage override.
+        # Clear inherited metadata for stages declared full precision.
+        disable_quantization_for_full_precision_stage(model_config, arch)
         model_config.hf_config.architectures = [arch]
         if arch == "WhisperForConditionalGeneration":
             cfg = model_config.hf_config
@@ -462,6 +469,9 @@ def _apply_model_worker_backend_policy(
         )
     has_moe = _model_config_has_moe(model_config)
     has_native_fp8_block_quant = _model_config_has_native_fp8_block_quant(model_config)
+    stage_local_mxfp = resolve_stage_local_mxfp_profile(
+        model_config, model_arch_override
+    )
 
     if (
         model_arch_override == "Qwen3OmniTalker"
@@ -514,6 +524,26 @@ def _apply_model_worker_backend_policy(
             "moe_runner_backend='flashinfer_cutlass'. Leave the backend as "
             "'auto' so Omni selects a native-FP8-compatible MoE runner."
         )
+
+    if stage_local_mxfp is not None and has_moe:
+        required_backend = stage_local_mxfp.preferred_cuda_moe_backend
+        if not _is_stage_local_mxfp_supported():
+            raise ValueError(
+                "Stage-local AutoRound MXFP8 requires SM100 CUDA kernels."
+            )
+        if moe_runner_backend == "auto":
+            override_server_args(
+                server_args,
+                "sglang-omni-stage-local-mxfp-policy",
+                moe_runner_backend=required_backend,
+            )
+            moe_runner_backend = server_args.moe_runner_backend
+        elif moe_runner_backend != required_backend:
+            raise ValueError(
+                "Stage-local AutoRound MXFP requires "
+                f"moe_runner_backend={required_backend!r}, got "
+                f"{moe_runner_backend!r}."
+            )
 
     fp8_gemm_backend = _normalize_quantization(server_args.fp8_gemm_runner_backend)
     if (
@@ -591,6 +621,13 @@ def _is_fp8_cutlass_moe_supported() -> bool:
     )
 
 
+def _is_stage_local_mxfp_supported() -> bool:
+    """Stage-local MXFP8 dense kernels currently require SM100."""
+    from sglang.srt.utils import is_sm100_supported
+
+    return bool(is_sm100_supported())
+
+
 def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     """Apply Omni-specific quantization adapters before SGLang builds its config.
 
@@ -600,6 +637,7 @@ def _apply_omni_quantization_adapters(model_config: ModelConfig) -> None:
     against runtime module names, currently AutoRound.
     """
     quant_dict = resolve_quant_config(model_config.hf_config)
+    validate_stage_local_mxfp_config(model_config)
     if quant_dict is None:
         return
 
@@ -619,7 +657,9 @@ def _initialize_model_worker_backend_globals(
 
         initialize_moe_config(server_args)
 
-    if effective_quantization == "fp8":
+    if requires_fp8_gemm_initialization(
+        effective_quantization, model_config.hf_config
+    ):
         from sglang.srt.layers.quantization.fp8_utils import initialize_fp8_gemm_config
 
         initialize_fp8_gemm_config(server_args)

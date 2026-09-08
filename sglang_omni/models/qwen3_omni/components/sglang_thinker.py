@@ -24,6 +24,38 @@ from sglang.srt.utils import add_prefix, logger
 from sglang_omni.quantization import get_weight_preprocessor
 
 
+def _load_expert_parameter(
+    param: torch.nn.Parameter,
+    loaded_weight: torch.Tensor,
+    mapped_name: str,
+    shard_id: str,
+    expert_id: int,
+) -> None:
+    """Load a checkpoint tensor into one fused expert and shard."""
+    weight_loader = getattr(param, "weight_loader", default_weight_loader)
+    weight_loader(param, loaded_weight, mapped_name, shard_id, expert_id)
+
+
+def _expert_parameter_mapping(
+    name: str,
+    mappings: Iterable[tuple[str, str, int, str]],
+) -> tuple[str, str, int] | None:
+    """Map an expert weight or group scale to its fused runtime parameter."""
+    is_weight_scale = name.endswith(".weight_scale")
+    lookup_name = (
+        name[: -len(".weight_scale")] + ".weight" if is_weight_scale else name
+    )
+    parameter_suffix = "_scale" if is_weight_scale else ""
+    for param_name, weight_name, expert_id, shard_id in mappings:
+        if weight_name in lookup_name:
+            return (
+                lookup_name.replace(weight_name, param_name) + parameter_suffix,
+                shard_id,
+                expert_id,
+            )
+    return None
+
+
 class Qwen3OmniThinkerForCausalLM(nn.Module):
     """Qwen3-Omni thinker text model without duplicated audio/vision towers."""
 
@@ -161,13 +193,11 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                 weight_loader(param, loaded_weight, shard_id)
                 break
             else:
-                is_expert_weight = False
-                for mapping in expert_params_mapping:
-                    param_name, weight_name, expert_id, shard_id = mapping
-                    if weight_name not in name:
-                        continue
-                    is_expert_weight = True
-                    mapped = name.replace(weight_name, param_name)
+                expert_mapping = _expert_parameter_mapping(
+                    name, expert_params_mapping
+                )
+                if expert_mapping is not None:
+                    mapped, shard_id, expert_id = expert_mapping
                     if is_fused_expert:
                         loaded = loaded_weight.transpose(-1, -2)
                         if "experts.gate_up_proj" in name:
@@ -196,20 +226,14 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
                         if param is None:
                             continue
                         loaded_weight = preprocess_weight(mapped, loaded_weight)
-                        weight_loader = getattr(
-                            param, "weight_loader", default_weight_loader
-                        )
-                        weight_loader(
+                        _load_expert_parameter(
                             param,
                             loaded_weight,
                             mapped,
-                            shard_id=shard_id,
-                            expert_id=expert_id,
+                            shard_id,
+                            expert_id,
                         )
-                    break
                 else:
-                    if is_expert_weight:
-                        continue
                     if name.endswith(ignore_suffixes) and name not in params_dict:
                         continue
                     param = params_dict.get(name)

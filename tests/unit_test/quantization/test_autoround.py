@@ -8,8 +8,12 @@ from types import SimpleNamespace
 import pytest
 
 from sglang_omni.quantization import (
+    disable_quantization_for_full_precision_stage,
+    get_stage_local_mxfp_policy,
     needs_quant_config_normalization,
     normalize_quant_config,
+    resolve_stage_local_mxfp_profile,
+    validate_stage_local_mxfp_config,
 )
 
 
@@ -39,6 +43,153 @@ class TestNeedsStageLocalNormalization:
 
     def test_false_for_none(self) -> None:
         assert not needs_quant_config_normalization(None)
+
+
+class TestQwen3OmniMxfpConfig:
+    def test_policy_resolves_for_each_model_stage(self) -> None:
+        assert get_stage_local_mxfp_policy(
+            "Qwen3OmniMoeForConditionalGeneration"
+        ) is get_stage_local_mxfp_policy("Qwen3OmniThinkerForCausalLM")
+        assert get_stage_local_mxfp_policy("OtherOmniModel") is None
+
+    def test_runtime_profile_derives_backend_from_registered_policy(self) -> None:
+        quant_config = {
+            "quant_method": "auto-round",
+            "bits": 8,
+            "data_type": "mx_fp",
+            "extra_config": {
+                r"thinker\.model\.layers\..*\.mlp\.experts\..*\.(gate|up|down)_proj": {
+                    "bits": 4,
+                    "data_type": "mx_fp",
+                }
+            },
+        }
+        model_config = _make_model_config(
+            "Qwen3OmniThinkerForCausalLM", quant_config
+        )
+
+        profile = resolve_stage_local_mxfp_profile(model_config)
+
+        assert profile is not None
+        assert profile.has_mxfp4_experts
+        assert profile.preferred_cuda_moe_backend == "flashinfer_mxfp4"
+
+    def test_accepts_mxfp4_overrides_for_thinker_experts(self) -> None:
+        quant_config = {
+            "quant_method": "auto-round",
+            "packing_format": "auto_round:sglang",
+            "bits": 8,
+            "data_type": "mx_fp",
+            "group_size": 32,
+            "block_name_to_quantize": "thinker.model.layers",
+            "extra_config": {
+                r"thinker\.model\.layers\..*\.mlp\.experts\..*\.(gate|up|down)_proj": {
+                    "bits": 4,
+                    "data_type": "mx_fp",
+                }
+            },
+        }
+
+        validate_stage_local_mxfp_config(
+            _make_model_config("Qwen3OmniMoeForConditionalGeneration", quant_config)
+        )
+
+    @pytest.mark.parametrize(
+        "quant_config,error",
+        [
+            (
+                {
+                    "quant_method": "auto-round",
+                    "packing_format": "auto_round:sglang",
+                    "bits": 4,
+                    "data_type": "mx_fp",
+                    "group_size": 32,
+                    "block_name_to_quantize": "thinker.model.layers",
+                },
+                "only for routed MoE experts",
+            ),
+            (
+                {
+                    "quant_method": "auto-round",
+                    "packing_format": "auto_round:sglang",
+                    "bits": 8,
+                    "data_type": "mx_fp",
+                    "group_size": 32,
+                },
+                "must target the registered quantized stage",
+            ),
+            (
+                {
+                    "quant_method": "auto-round",
+                    "packing_format": "auto_round:sglang",
+                    "bits": 8,
+                    "data_type": "mx_fp",
+                    "group_size": 64,
+                    "block_name_to_quantize": "thinker.model.layers",
+                },
+                "group_size must be 32",
+            ),
+            (
+                {
+                    "quant_method": "auto-round",
+                    "packing_format": "auto_round:sglang",
+                    "bits": 8,
+                    "data_type": "mx_fp",
+                    "group_size": 32,
+                    "block_name_to_quantize": "thinker.model.layers,talker.model.layers",
+                },
+                "selects full-precision stages",
+            ),
+            (
+                {
+                    "quant_method": "auto-round",
+                    "packing_format": "auto_round:sglang",
+                    "bits": 8,
+                    "data_type": "mx_fp",
+                    "group_size": 32,
+                    "block_name_to_quantize": "thinker.model.layers",
+                    "extra_config": {
+                        r"thinker\.model\.layers\..*\.self_attn\.q_proj": {
+                            "bits": 4,
+                            "data_type": "mx_fp",
+                        }
+                    },
+                },
+                "only for registered routed MoE expert patterns",
+            ),
+        ],
+    )
+    def test_rejects_unsupported_mxfp_configs(
+        self, quant_config: dict[str, object], error: str
+    ) -> None:
+        with pytest.raises(ValueError, match=error):
+            validate_stage_local_mxfp_config(
+                _make_model_config(
+                    "Qwen3OmniMoeForConditionalGeneration", quant_config
+                )
+            )
+
+    def test_talker_drops_thinker_mxfp_metadata(self) -> None:
+        quant_config = {
+            "quant_method": "auto-round",
+            "packing_format": "auto_round:sglang",
+            "bits": 8,
+            "data_type": "mx_fp",
+            "group_size": 32,
+            "block_name_to_quantize": "thinker.model.layers",
+        }
+        model_config = _make_model_config(
+            "Qwen3OmniMoeForConditionalGeneration", quant_config
+        )
+        model_config.quantization = "auto-round"
+        model_config.is_fp4_experts = True
+
+        assert disable_quantization_for_full_precision_stage(
+            model_config, "Qwen3OmniTalker"
+        )
+        assert model_config.quantization is None
+        assert model_config.hf_config.quantization_config is None
+        assert model_config.is_fp4_experts is False
 
 
 class TestNormalizeStageLocalCheckpointConfig:
@@ -179,6 +330,22 @@ class TestNormalizeStageLocalCheckpointConfig:
         assert quant_config["extra_config"] == {
             r".*model\.layers\.\d+\.mlp\.gate.*": {"bits": 8},
         }
+
+    def test_rejects_pattern_collision_after_normalization(self) -> None:
+        quant_config = {
+            "quant_method": "auto-round",
+            "block_name_to_quantize": "thinker.model.layers",
+            "extra_config": {
+                r"thinker\.model\.layers\.0": {"bits": 4},
+                r"model\.layers\.0": {"bits": 8},
+            },
+        }
+        model_config = _make_model_config(
+            "Qwen3OmniThinkerForCausalLM", quant_config
+        )
+
+        with pytest.raises(ValueError, match="patterns collide"):
+            normalize_quant_config(model_config)
 
     def test_no_change_when_block_names_lack_prefix(self) -> None:
         quant_config = {

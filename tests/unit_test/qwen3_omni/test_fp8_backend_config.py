@@ -86,6 +86,31 @@ def _model_config(
     )
 
 
+def _stage_local_mxfp_model_config(*, mixed_experts: bool) -> SimpleNamespace:
+    extra_config = {}
+    if mixed_experts:
+        extra_config[
+            r"thinker\.model\.layers\..*\.mlp\.experts\..*\.(gate|up|down)_proj"
+        ] = {"bits": 4, "data_type": "mx_fp"}
+    quantization_config = {
+        "quant_method": "auto-round",
+        "packing_format": "auto_round:sglang",
+        "bits": 8,
+        "data_type": "mx_fp",
+        "group_size": 32,
+        "block_name_to_quantize": "thinker.model.layers",
+        "extra_config": extra_config,
+    }
+    return SimpleNamespace(
+        quantization="auto-round",
+        hf_text_config=SimpleNamespace(num_experts_per_tok=8),
+        hf_config=SimpleNamespace(
+            architectures=["Qwen3OmniThinkerForCausalLM"],
+            quantization_config=quantization_config,
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "case",
     [
@@ -433,6 +458,54 @@ def test_model_worker_backend_policy_uses_strict_server_args_override(
     ]
 
 
+@pytest.mark.parametrize(
+    ("mixed_experts", "expected_backend"),
+    [(False, "flashinfer_trtllm"), (True, "flashinfer_mxfp4")],
+)
+def test_stage_local_mxfp_selects_required_sm100_moe_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    mixed_experts: bool,
+    expected_backend: str,
+) -> None:
+    monkeypatch.setattr(model_worker, "_is_stage_local_mxfp_supported", lambda: True)
+    server_args = _server_args()
+
+    effective_quantization = model_worker._apply_model_worker_backend_policy(
+        server_args,
+        _stage_local_mxfp_model_config(mixed_experts=mixed_experts),
+        "Qwen3OmniThinkerForCausalLM",
+    )
+
+    assert effective_quantization == "auto-round"
+    assert server_args.moe_runner_backend == expected_backend
+
+
+def test_stage_local_mxfp_rejects_non_sm100_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(model_worker, "_is_stage_local_mxfp_supported", lambda: False)
+
+    with pytest.raises(ValueError, match="requires SM100"):
+        model_worker._apply_model_worker_backend_policy(
+            _server_args(),
+            _stage_local_mxfp_model_config(mixed_experts=True),
+            "Qwen3OmniThinkerForCausalLM",
+        )
+
+
+def test_stage_local_mxfp_rejects_incompatible_explicit_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(model_worker, "_is_stage_local_mxfp_supported", lambda: True)
+
+    with pytest.raises(ValueError, match="moe_runner_backend='flashinfer_mxfp4'"):
+        model_worker._apply_model_worker_backend_policy(
+            _server_args(moe_runner_backend="triton"),
+            _stage_local_mxfp_model_config(mixed_experts=True),
+            "Qwen3OmniThinkerForCausalLM",
+        )
+
+
 def test_model_config_has_moe_prefers_effective_text_config() -> None:
     model_config = SimpleNamespace(
         hf_config=SimpleNamespace(text_config=SimpleNamespace()),
@@ -504,6 +577,18 @@ def test_backend_global_initialization_for_bf16_moe_omits_fp8(monkeypatch) -> No
     )
 
     assert calls == ["moe"]
+
+
+def test_backend_global_initialization_for_autoround_mxfp8(monkeypatch) -> None:
+    calls: list[str] = []
+
+    _install_fake_backend_modules(monkeypatch, calls)
+    model_config = _stage_local_mxfp_model_config(mixed_experts=True)
+    model_worker._initialize_model_worker_backend_globals(
+        _server_args(), model_config, "auto-round"
+    )
+
+    assert calls == ["moe", "fp8"]
 
 
 @dataclass(frozen=True)

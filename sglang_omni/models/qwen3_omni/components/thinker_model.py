@@ -418,6 +418,9 @@ class Qwen3OmniMoeThinkerTextSparseMoeBlock(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("experts", prefix),
             routing_method_type=RoutingMethodType.Renormalize,
+            # The checkpoint exposes gate_proj and up_proj separately, and
+            # FusedMoE loads them into contiguous [gate; up] halves.
+            gate_up_interleaved=False,
         )
 
         self.gate = ReplicatedLinear(
