@@ -1,4 +1,4 @@
-# Qwen3-TTS r20 vocoder 瓶颈拆解与 Nari 对标(2026-09-05/06)
+# Qwen3-TTS r20 vocoder 瓶颈拆解与 参照引擎 对标(2026-09-05/06)
 
 跟踪 issue:sgl-project/sglang-omni#1754。主机 eval-h100(85.234.79.62,NVIDIA H100 80GB HBM3 ×1,GPU 0;此前误写为 H200,2026-09-06 10:30 PT 按 nvidia-smi 更正),
 容器 `sglang-omni-jaxan-1`,run 根 `/data/jaxan/runs/20260902-mainline-nari-ab`。
@@ -17,14 +17,14 @@ CustomVoice `Ryan`,seed-tts-eval 英文集,1173 请求/臂。所有时间 PT。
    解码负载削减消灭了全部 underrun,说明系统只是刚越过容量阈值。
 4. **config 旋钮全部无效**:收集窗口 1→8ms 让 underrun 从 15.5% 恶化到 33.8%
    (攒到的行被形状切碎,batch 不变宽);worker 2→4 更差、6+ OOM。
-5. **与 Nari 的真实差距是两半**:低负载固定成本(r1 p95 76.7ms 对 26.4ms,2.9×)
+5. **与 参照引擎 的真实差距是两半**:低负载固定成本(r1 p95 76.7ms 对 26.4ms,2.9×)
    和随负载退化(r20 p95 225ms 对 38ms;我们涨 2.9×,它涨 1.4×)。underrun
    那一半已证明可解;TTFA 固定成本那一半尚未碰。
 6. **结构性解法已有在途 PR**:#1846(arena 状态槽的批量增量解码,T-PR8)+
    #1855(COLD/WARM 增量 CUDA graph,T-PR9)。已 rebase 到当前 main,266 单测
    全过,r20 实测进行中(见下)。
 
-## 参照:Nari r20(同机同 harness,3 seed)
+## 参照:参照引擎 r20(同机同 harness,3 seed)
 
 | seed | 成功 | underrun | TTFA p50 | TTFA p95 |
 |---|---|---|---|---|
@@ -32,7 +32,7 @@ CustomVoice `Ryan`,seed-tts-eval 英文集,1173 请求/臂。所有时间 PT。
 | 1 | 1162/1162 | 0.77% | 26.1ms | 38.0ms |
 | 2 | 1201/1201 | 0.17% | 26.2ms | 38.0ms |
 
-Nari 1 RPS 的 p95 为 26.4ms(#1754 记录),r20 只涨到 38ms:几乎不随负载退化。
+参照引擎 1 RPS 的 p95 为 26.4ms(#1754 记录),r20 只涨到 38ms:几乎不随负载退化。
 
 ## 拆解:follow-up decode group 四段计时(r20,main 91e9c309)
 
@@ -417,7 +417,7 @@ resolve(等完成事件)/ commit(切波形+消息+IPC),另记 collect 到的行�
 对 250-510ms,TTFA p99 260ms 对 550-940ms);默认 ramp (1,2,4) 下 underrun 打平
 (20.9% 对 19.3%,噪声内),但尾部同样大幅收紧(首帧 p95 117-134ms 对 159-767ms)。
 **新路径在两种 ramp 下都不差于 legacy,并在尾延迟上显著更好**——这是翻默认的依据。
-Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ramp 下的产能。
+参照引擎 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ramp 下的产能。
 
 - **CUDA 事件探针(v3,提前发射版)**:replay 本身 start→end 均值 3.76ms(p50 3.78,
   p95 6.2;孤立 1.8ms),从发射到完成 21ms(p50 17;两 cohort 在飞,≈ 2 个服务时间),
@@ -445,13 +445,13 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
   | **新默认 ramp (1,2,4)** | 4.35 / 3.96 / 4.16 → **4.2%** | 76-78 / 105-106ms | 86-89 / 168-201ms | 0 | 0.50GB |
   | 第八轮同配置 | 22.8 / 19.7 / 20.3 → 20.9% | 86-87 / 117-134ms | 147-148 / 210-305ms | 0 | 1.07GB |
   | legacy 默认(第八轮) | 19.0 / 17.6 / 21.2 → 19.3% | 83-99 / 159-767ms | 157-175 / 590-980ms | — | — |
-  | Nari 参照 | 0.60 / 0.77 / 0.17 → 0.5% | 26 / 34ms | 26 / 56ms | — | — |
+  | 参照引擎 | 0.60 / 0.77 / 0.17 → 0.5% | 26 / 34ms | 26 / 56ms | — | — |
 
-  读法:把 gather/scatter 收进 graph 后,(2,4) ramp 的 underrun 到了 Nari 的水平
+  读法:把 gather/scatter 收进 graph 后,(2,4) ramp 的 underrun 到了 参照引擎 的水平
   (0.54% 对 0.5%),TTFA p50 从 165ms 降到 105ms;默认 ramp 从 20.9% 降到 4.2%,首帧
   p50 77ms、p95 105ms(legacy 83-99 / 159-767ms)。graph 外的 ~4.7ms 状态搬运确实是
   第八轮剩余等待的主体,与事件探针的归因一致。剩余差距只在首帧固定成本:TTFA p50
-  86-105ms 对 Nari 26ms。
+  86-105ms 对 参照引擎 26ms。
 - **第九轮首批数字需重验(2026-09-06 10:50 PT)**:r1 验收只有 64.8% 请求完成(19 条流挂到
   客户端超时),r20 三 seed 的完成率也是 99.8-99.9% 而非此前各轮的 100%——上表 underrun 只按
   完成的流统计,略偏乐观。根因:提前发射让一个线程同时有两个 cohort 在飞,而 arena 的
@@ -490,7 +490,7 @@ Nari 参照仍是 0.6% / TTFA p50 26ms,差距在首帧固定成本与 (1,2,4) ra
 | ramp (2,4) | 0.68% | 0.09% | 0.00% | **0.26%** | 95-98 / 127-137 ms |
 
 对照此前(有挂流、完成率 99.8-99.9%)的 4.2% / 0.54%:修掉停顿后 underrun 进一步下降,
-默认 ramp 从 legacy 的 20.9% 降到 2.8%(7.5×),ramp (2,4) 0.26% 已低于 Nari 的 0.5%。
+默认 ramp 从 legacy 的 20.9% 降到 2.8%(7.5×),ramp (2,4) 0.26% 已低于 参照引擎 的 0.5%。
 每 seed n≈1160-1200 请求;单 seed 噪声约 ±1 个百分点(默认 ramp)/ ±0.4(ramp 2,4)。
 
 ### 首帧路径分解(请求事件记录器,同一棵树)
@@ -657,12 +657,12 @@ Talker chunk 事件;5456cc54 record_stream;cf6ef922 图在解码流优先级上�
 ### 第十二轮:单帧 bootstrap(2026-09-06 14:50 PT)
 
 `suppress_bootstrap_silence: false`(首块只等 1 帧)r1:47/47、0 underrun、**first playable p50
-27.7ms、min 24.8、p95 40**(默认 35.6 / 32.3 / 50)。即首帧比默认少 8ms,落到 Nari 26ms 的量级。
+27.7ms、min 24.8、p95 40**(默认 35.6 / 32.3 / 50)。即首帧比默认少 8ms,落到 参照引擎 26ms 的量级。
 可闻 TTFA 与 r20 underrun 见下。
 **但可闻 TTFA 反而从 44ms 变成 107ms**:模型的第一帧本来就是 ~80ms 的静音("bootstrap silence"),
 关掉抑制后首块立刻发出的就是这 80ms 静音,可闻音频要等第二帧——first playable −8ms 换来可闻延迟
 +63ms,对听者是净损失。抑制的设计(解码两帧、扣掉静音帧)正是为此。**结论:保留默认抑制。**
-对标口径要写清楚:我们的 first playable(=TTFB)27.7ms 与 Nari 的 26ms 同量级,但那是"首字节",
+对标口径要写清楚:我们的 first playable(=TTFB)27.7ms 与 参照引擎 的 26ms 同量级,但那是"首字节",
 对听者有意义的是可闻 TTFA(默认路径 r1 p50 44ms)。可闻 TTFA 的下限 = 拿到第二帧的时刻 =
 prefill 12 + 一步 7 + vocoder 4.6 + 胶水,所以外审说的 B(full prefill 图,−3.7ms)与 A(predictor
 编译,−3~4ms)对可闻 TTFA 仍然成立,目标从 44 → ~36ms;r20 三 seed 跑完后本轮收口。
@@ -676,7 +676,7 @@ r20 三 seed(单帧 bootstrap 对默认抑制,同树,100% 完成):
 
 underrun 在噪声内(这一轮默认臂偏高:同一棵树九个 seed 的默认臂 underrun 为 0.58-2.33%,
 均值 ~1.2%——单 seed 噪声带比早先估的 ±0.4 更宽,约 ±1 个百分点)。**决定:保留默认抑制**;
-Nari 对标时同时报 TTFB 与可闻 TTFA。
+参照引擎 对标时同时报 TTFB 与可闻 TTFA。
 - **PR 已开(2026-09-06 15:40 PT)**:sgl-project/sglang-omni#1997,从 `qwen3-tts-pr1855-rebase`
   (HEAD 54e2d4f1,含 pinned black 格式化)开到 main,正文含上表与验证方式;已打 `run-ci`、请
   Hayden727 / yxs / zhaochenyang20 / BruceLoveDecimal / leihehehe 评审,并在 #1846、#1855 留了
@@ -785,7 +785,7 @@ cookbook:407 已是 H100 数字并去掉了不在树里的 benchmark doc 引用�
 | 问题 | 默认答案 | 理由 | 回滚 | 外审 |
 |---|---|---|---|---|
 | #1998 的 `eager_on_graph` 失效怎么处理 | 声明 #1998 依赖 #1907,不先于它合并;不把 #1907 的 mrope 修复拷进 #1998 | full backend 下 `eager_on_graph` 是 pass-through,QK-norm/RoPE 被捕获后读到绑定的陈旧 `mrope_positions` 槽,正是 seeded 一致率 92%→74% 的来源;#1907 是根治,拷贝会与 #1907 冲突且让它变冗余 | 若 #1907 被拒,改为在 #1998 内单独实现槽刷新 | JiaxinD 在 review 中明确给出"land #1907 first or drop that comment"两选项,本决定取其一,不另发 ChatGPT 外审 |
-| 只发状态评论还是同时改 issue 正文 | 两者都做 | 正文的 Active/Landed 若不改,下一个读者仍会看到"T-PR9 no PR yet";luojiaxuan 此前已多次编辑该正文(Nari 外部验证条目即是) | GitHub 保留编辑历史,可回退 | 不涉及 |
+| 只发状态评论还是同时改 issue 正文 | 两者都做 | 正文的 Active/Landed 若不改,下一个读者仍会看到"T-PR9 no PR yet";luojiaxuan 此前已多次编辑该正文(参照引擎 外部验证条目即是) | GitHub 保留编辑历史,可回退 | 不涉及 |
 | #1998 的 parity 数字(92%/74%)是否立刻重测 | 不重测,正文如实标注"measured on main without #1907, needs a rerun on the rebased tree before merge" | 重测需数小时 H100;#1907 仍在 review,定稿前重测有白烧风险 | 本地 `sglang-omni-p1907` 的 `f747d1bb` 就是 merge 后的树,随时可跑 | 不涉及 |
 
 ### 新规则:合并时给 reviewer 加 Co-authored-by(2026-09-07 20:10 PT per luojiaxuan)

@@ -69,7 +69,7 @@
 
 - **采纳,立即做:单帧 bootstrap**。"需要两帧"确实是我们自己的 `suppress_bootstrap_silence`
   (解码 2 帧、扣掉首帧静音以保持播放余量)。它牺牲 first playable 换"可闻 TTFA 不变 + 余量不变"。
-  以 Nari 对标的口径是 first playable,先做配置 A/B(`suppress_bootstrap_silence: false`)量
+  以 参照引擎 对标的口径是 first playable,先做配置 A/B(`suppress_bootstrap_silence: false`)量
   r1 首帧、r20 underrun 与可闻 TTFA,再决定是"关掉"还是做它建议的单帧 warm-start 路径。
 - **采纳:B 先于 A**。B 需要改 model runner(Qwen3-TTS 批策略只放行 breakable),排第十三轮。
 - **采纳:C 先打四个时间戳再动**;A 按 ~3ms 规划、先编译后捕获、关 Inductor cudagraph、
