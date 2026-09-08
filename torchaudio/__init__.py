@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
 """Small torchaudio compatibility layer for MUSA smoke deployments.
 
 This is not a full torchaudio replacement. It covers the subset exercised by
@@ -73,8 +75,12 @@ def load(uri, *_, **__) -> tuple[torch.Tensor, int]:
         try:
             import soundfile as sf
         except Exception as exc:
-            raise ValueError("torchaudio shim only supports WAV input without soundfile") from exc
-        audio_np, sample_rate = sf.read(io.BytesIO(data), always_2d=True, dtype="float32")
+            raise ValueError(
+                "torchaudio shim only supports WAV input without soundfile"
+            ) from exc
+        audio_np, sample_rate = sf.read(
+            io.BytesIO(data), always_2d=True, dtype="float32"
+        )
         audio = torch.from_numpy(audio_np).transpose(0, 1).contiguous()
     return audio.to(dtype=torch.float32), int(sample_rate)
 

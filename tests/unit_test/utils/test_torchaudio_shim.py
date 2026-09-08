@@ -1,17 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+
 from __future__ import annotations
 
 import io
 import math
-import os
 import struct
-import tempfile
 import wave
+from pathlib import Path
 
 import torchaudio
 
 
-def _write_sine_wav(path: str) -> None:
-    with wave.open(path, "wb") as wav_file:
+def _write_sine_wav(path: str | Path) -> None:
+    with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(1)
         wav_file.setsampwidth(2)
         wav_file.setframerate(16000)
@@ -22,19 +23,15 @@ def _write_sine_wav(path: str) -> None:
         wav_file.writeframes(frames)
 
 
-def test_torchaudio_shim_load_accepts_path_and_bytesio() -> None:
-    fd, path = tempfile.mkstemp(suffix=".wav")
-    os.close(fd)
-    try:
-        _write_sine_wav(path)
-        audio, sample_rate = torchaudio.load(path)
-        assert sample_rate == 16000
-        assert audio.shape == (1, 160)
+def test_torchaudio_shim_load_accepts_path_and_bytesio(tmp_path) -> None:
+    path = tmp_path / "sine.wav"
+    _write_sine_wav(path)
+    audio, sample_rate = torchaudio.load(path)
+    assert sample_rate == 16000
+    assert audio.shape == (1, 160)
 
-        with open(path, "rb") as f:
-            audio_bytes, sample_rate_bytes = torchaudio.load(io.BytesIO(f.read()))
+    with path.open("rb") as f:
+        audio_bytes, sample_rate_bytes = torchaudio.load(io.BytesIO(f.read()))
 
-        assert sample_rate_bytes == 16000
-        assert audio_bytes.shape == (1, 160)
-    finally:
-        os.remove(path)
+    assert sample_rate_bytes == 16000
+    assert audio_bytes.shape == (1, 160)
