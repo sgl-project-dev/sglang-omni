@@ -54,13 +54,10 @@ class SpeechTokenizerV3:
         )
         option.intra_op_num_threads = max(1, int(intra_op_threads))
 
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if device.startswith("cuda")
-            else ["CPUExecutionProvider"]
-        )
         self.session = onnxruntime.InferenceSession(
-            model_path, sess_options=option, providers=providers
+            model_path,
+            sess_options=option,
+            providers=["CPUExecutionProvider"],
         )
         self.device = device
 
