@@ -320,7 +320,8 @@ def _validate_prefill_graph_policy(
         return
     if backend not in allowed_prefill_backends:
         allowed = ", ".join(
-            repr(str(candidate)) for candidate in (*allowed_prefill_backends, "disabled")
+            repr(str(candidate))
+            for candidate in (*allowed_prefill_backends, "disabled")
         )
         errors.append(
             f"prefill CUDA graph backend must be one of {allowed}, got {backend!r}"
