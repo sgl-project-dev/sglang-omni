@@ -799,10 +799,20 @@ cookbook:407 已是 H100 数字并去掉了不在树里的 benchmark doc 引用�
 不追补(改它要 force-push 共享分支)。#1997 带了被 squash 抹掉的原作者
 (BruceLoveDecimal、leihehehe),但 reviewer @JiaxinD 未列入。
 
-**#1998 合并时必须带上(名单已核,`gh api .../reviews` + `.../comments`):**
+**#1998 的 trailer 已经写进分支本身**(2026-09-07 20:20 PT,tip amend 为 `6bca62be`),
+而不是只记在这里等合并时再补——这样即使由别人从网页 UI 合并、走仓库默认的
+`COMMIT_MESSAGES` 拼接,GitHub 也会把 co-author 认出来:
 
 ```
 Co-authored-by: charliechenye <32603442+charliechenye@users.noreply.github.com>
 Co-authored-by: JiaxinD <49501057+JiaxinD@users.noreply.github.com>
 ```
+
+### 另一条新规则:tracking issue 用编辑不用追加评论(2026-09-07 20:25 PT per luojiaxuan)
+
+起因是我在 #1754 上一条接一条摞状态评论,用户的原话是"显得太像 AI"。已写入
+全局 CLAUDE.md 的「Development Rules」:现状写进 issue **正文**,同一段进展有
+后续时**编辑自己上一条评论**而不是再发一条。本轮已回溯执行:把今天两条评论
+合并成一条(`5578169739`,另一条已删),并把正文里 T-PR8/T-PR9 移进 Landed、
+T-PR15 更新为 #1900+#1907 已合入、T-PR19 的 observability 半边标为已落地。
 
