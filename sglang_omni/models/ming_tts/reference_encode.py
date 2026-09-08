@@ -3,17 +3,14 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
 
 import onnxruntime
 import torch
 import torchaudio
-import torchaudio.compliance.kaldi as kaldi
 import torchaudio.functional as F
 
-from sglang_omni.models.ming_tts.audio_config import AudioVAEconfig
-from sglang_omni.models.ming_tts.audio_decode import MingAudioDecoder
+from sglang_omni.models.ming_omni.talker.audio_vae.modeling_audio_vae import AudioVAE
 from sglang_omni.models.ming_tts.payload_types import (
     MING_TTS_SAMPLE_RATE,
     load_ming_tts_state,
@@ -27,6 +24,7 @@ from sglang_omni.scheduling.reference_encoder import (
     KeyedReferenceEncodeHook,
     ReferenceEncodeService,
 )
+from sglang_omni.utils.audio_features import cached_fbank
 
 
 class MingSpeakerEmbeddingExtractor:
@@ -48,10 +46,9 @@ class MingSpeakerEmbeddingExtractor:
     def __call__(self, waveform: Any) -> Any:
         if not isinstance(waveform, torch.Tensor):
             waveform = torch.as_tensor(waveform)
-        feat = kaldi.fbank(
+        feat = cached_fbank(
             waveform,
             num_mel_bins=80,
-            dither=0,
             sample_frequency=self.target_sr,
         )
         feat = feat - feat.mean(dim=0, keepdim=True)
@@ -61,12 +58,7 @@ class MingSpeakerEmbeddingExtractor:
 
 
 class _MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
-    """M4a hook: cache (speaker embedding, prompt latent) per reference file.
-
-    The artifact is the text-independent conditioning bundle; prompt build
-    stays per-request in encode_payload. Keys are full-content file hashes
-    so a re-uploaded identical reference hits across request ids.
-    """
+    """Cache text-independent reference conditioning by audio content."""
 
     model_revision = ""
     encoder_id = "ming_audio_vae_campplus"
@@ -77,17 +69,15 @@ class _MingTTSReferenceEncodeHook(KeyedReferenceEncodeHook[str, dict, dict]):
         self.model_id = str(model_identity)
         self.encoder_config_hash = (
             f"sr{encoder.sample_rate}:patch{encoder.patch_size}:"
-            f"dtype{encoder._audio_vae_floating_dtype()}"
+            f"dtype{encoder.dtype}"
         )
 
     def normalize_input(self, raw_input: Any) -> str:
         return str(raw_input)
 
     def input_key(self, item: str) -> str | None:
-        # Full-content memoized hash; the sampled variant can collide for
-        # same-size files that differ only in the middle (review on #858).
-        # None means unreadable input: bypass the cache and let encode_one
-        # raise the real error to the caller.
+        # Note (yzxiao): Full-content hashing avoids same-size middle-content
+        # collisions; unreadable paths bypass the cache to preserve the source error.
         return reference_path_cache_key(item, trust_stat=False)
 
     def encode_one(self, item: str) -> dict:
@@ -105,7 +95,7 @@ class MingTTSReferenceEncoder:
 
     def __init__(
         self,
-        decoder: MingAudioDecoder,
+        audio_vae: AudioVAE,
         speaker_encoder: MingSpeakerEmbeddingExtractor,
         *,
         patch_size: int,
@@ -113,9 +103,11 @@ class MingTTSReferenceEncoder:
         cache_max_items: int | None = 256,
         cache_max_bytes: int | None = 64 * 1024 * 1024,
     ) -> None:
-        self.audio_vae = decoder.audio_vae
-        self.sample_rate = int(decoder.sample_rate)
-        self.device = decoder.device
+        self._audio_vae = audio_vae
+        self.sample_rate = int(audio_vae.config.sample_rate)
+        first_parameter = next(audio_vae.parameters())
+        self.device = first_parameter.device
+        self.dtype = first_parameter.dtype
         self.patch_size = int(patch_size)
         self.speaker_encoder = speaker_encoder
         if self.sample_rate != MING_TTS_SAMPLE_RATE:
@@ -136,33 +128,6 @@ class MingTTSReferenceEncoder:
                 log_prefix="Ming-Omni-TTS ref cache",
             )
 
-    @classmethod
-    def from_config(
-        cls,
-        audio_config: AudioVAEconfig,
-        *,
-        checkpoint_dir: str,
-        device: str = "cuda:0",
-        dtype: str = "bfloat16",
-        patch_size: int,
-        ref_audio_cache: bool = True,
-        ref_audio_cache_max_items: int = 256,
-        ref_audio_cache_max_bytes: int = 64 * 1024 * 1024,
-    ) -> "MingTTSReferenceEncoder":
-        decoder = MingAudioDecoder.from_config(
-            audio_config,
-            device=device,
-            dtype=dtype,
-        )
-        return cls(
-            decoder,
-            MingSpeakerEmbeddingExtractor(str(Path(checkpoint_dir) / "campplus.onnx")),
-            patch_size=patch_size,
-            cache_model_identity=str(checkpoint_dir) if ref_audio_cache else None,
-            cache_max_items=ref_audio_cache_max_items,
-            cache_max_bytes=ref_audio_cache_max_bytes,
-        )
-
     def _encode_reference(self, ref_audio: str) -> dict:
         """Text-independent conditioning bundle for one reference audio."""
 
@@ -176,20 +141,20 @@ class MingTTSReferenceEncoder:
                 device=self.device,
             )
             prompt_waveform = self._prepare_audio_vae_waveform(prompt_waveform)
-            prompt_latent, _prompt_latent_length = self.audio_vae.encode_latent(
+            prompt_latent, _prompt_latent_length = self._audio_vae.encode_latent(
                 prompt_waveform,
                 waveform_length,
             )
         frames = int(prompt_latent.shape[1])
         speaker_embedding = self.speaker_encoder(speaker_waveform)
 
-        # note (luojiaxuan): keep artifacts on CPU float32 so the shared cache
+        # Note (luojiaxuan): Keep artifacts on CPU float32 so the shared cache
         # never pins device memory and typed_tensor emits float32 unchanged.
+        speaker = speaker_embedding.detach().to(device="cpu", dtype=torch.float32)
+        prompt_latent = prompt_latent.detach().to(device="cpu", dtype=torch.float32)
         return {
-            "spk_emb": speaker_embedding.detach().to(device="cpu", dtype=torch.float32),
-            "prompt_latent": prompt_latent.detach().to(
-                device="cpu", dtype=torch.float32
-            ),
+            "spk_emb": speaker,
+            "prompt_latent": prompt_latent,
             "prompt_latent_token_count": frames // self.patch_size,
         }
 
@@ -213,7 +178,6 @@ class MingTTSReferenceEncoder:
         state.spk_emb = artifact["spk_emb"]
         state.prompt_latent = artifact["prompt_latent"]
         state.prompt_latent_token_count = int(artifact["prompt_latent_token_count"])
-        state.prompt_text = str(state.ref_text)
 
         plan = build_ming_tts_prompt(
             state,
@@ -233,9 +197,7 @@ class MingTTSReferenceEncoder:
         state.prompt = plan.effective_prompt
         state.input_ids = plan.input_ids
         state.prompt_tokens = plan.prompt_tokens
-        state.spk_token_positions = plan.spk_token_positions
         state.spk_injection_positions = plan.spk_injection_positions
-        state.audio_token_position = plan.audio_token_position
         state.prompt_latent_start_position = plan.prompt_latent_start_position
         state.prompt_latent_token_count = plan.prompt_latent_token_count
 
@@ -248,7 +210,7 @@ class MingTTSReferenceEncoder:
                 "Ming-Omni-TTS currently supports only mono reference audio, "
                 f"got shape {tuple(waveform.shape)}"
             )
-        speaker_waveform = waveform.clone()
+        speaker_waveform = waveform
         if int(sample_rate) != self.sample_rate:
             waveform = F.resample(
                 waveform,
@@ -274,7 +236,7 @@ class MingTTSReferenceEncoder:
             dtype=waveform.dtype,
             device=waveform.device,
         )
-        padded[:, : int(waveform.shape[-1])] = waveform.clone()
+        padded[:, : int(waveform.shape[-1])] = waveform
         return padded
 
     def _prepare_audio_vae_waveform(self, waveform: Any) -> Any:
@@ -284,14 +246,8 @@ class MingTTSReferenceEncoder:
         # under bf16 autocast, so this split stage must match weight dtype.
         return waveform.to(
             device=self.device,
-            dtype=self._audio_vae_floating_dtype(),
+            dtype=self.dtype,
         )
-
-    def _audio_vae_floating_dtype(self) -> Any:
-        for parameter in self.audio_vae.parameters():
-            if parameter.is_floating_point():
-                return parameter.dtype
-        return torch.float32
 
 
 __all__ = [

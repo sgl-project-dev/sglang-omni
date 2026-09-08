@@ -1,6 +1,7 @@
 """Qwen3-ASR model compatible with HuggingFace weights"""
 
 import logging
+from types import MethodType
 from typing import Any, Iterable, List, Optional, Tuple
 
 import torch
@@ -22,9 +23,95 @@ from sglang.srt.models.qwen3 import Qwen3ForCausalLM
 from sglang.srt.models.qwen3_omni_moe import Qwen3OmniMoeAudioEncoder
 from sglang.srt.utils import add_prefix
 
+from sglang_omni.platforms import current_platform
+
 from .configuration_qwen3_asr import Qwen3ASRConfig
+from .encoder_cuda_graph import (
+    Qwen3ASREncoderLayerStackGraphRunner,
+    build_buckets,
+    eager_preamble,
+    window_lens_from_token_counts,
+)
 
 logger = logging.getLogger(__name__)
+fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
+
+_MROPE_ONLY_KEYS = frozenset({"interleaved", "mrope_interleaved", "mrope_section"})
+
+
+def _normalize_asr_text_rope(text_config: Any) -> None:
+    # note (luojiaxuan): ASR has no spatial axes: all three MRoPE position
+    # rows are identical, so ordinary text RoPE is numerically equivalent and
+    # avoids the multimodal permutation/copy path on every decoder layer.
+    for attr in ("rope_parameters", "rope_scaling"):
+        parameters = getattr(text_config, attr, None)
+        if not isinstance(parameters, dict) or "mrope_section" not in parameters:
+            continue
+        setattr(
+            text_config,
+            attr,
+            {
+                key: value
+                for key, value in parameters.items()
+                if key not in _MROPE_ONLY_KEYS
+            },
+        )
+
+
+def _fused_asr_forward_prepare_native(
+    attention: Any,
+    positions: torch.Tensor,
+    hidden_states: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    if hidden_states.dtype != torch.bfloat16 or fused_qk_norm_rope is None:
+        return attention._asr_unfused_forward_prepare_native(
+            positions,
+            hidden_states,
+        )
+    if positions.dtype != torch.int32:
+        # note(ratish): the prefill CUDA graph bypasses forward()'s int32
+        # cast; the kernel rejects int64 positions.
+        positions = positions.to(torch.int32)
+    qkv, _ = attention.qkv_proj(hidden_states)
+    fused_qk_norm_rope(
+        qkv,
+        attention.num_heads,
+        attention.num_kv_heads,
+        attention.num_kv_heads,
+        attention.head_dim,
+        attention.q_norm.variance_epsilon,
+        attention.q_norm.weight,
+        attention.k_norm.weight,
+        attention.rope_theta,
+        attention.rotary_emb.is_neox_style,
+        positions,
+        1.0,
+        0,
+        0,
+        1.0,
+    )
+    return qkv.split(
+        [attention.q_size, attention.kv_size, attention.kv_size],
+        dim=-1,
+    )
+
+
+def _enable_fused_asr_qk_norm_rope(language_model: nn.Module) -> None:
+    # note (luojiaxuan): the sgl-kernel op operates in place on packed QKV and
+    # replaces split + two RMSNorm launches + RoPE for the equivalent text
+    # positions. Keep the original bound method for non-bfloat16 fallbacks.
+    if fused_qk_norm_rope is None:
+        return
+
+    for layer in language_model.model.layers:
+        attention = layer.self_attn
+        if attention.head_dim not in (64, 128, 256):
+            continue
+        attention._asr_unfused_forward_prepare_native = attention.forward_prepare_native
+        attention.forward_prepare_native = MethodType(
+            _fused_asr_forward_prepare_native,
+            attention,
+        )
 
 
 class Qwen3ASRForConditionalGeneration(nn.Module):
@@ -58,13 +145,33 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         if getattr(thinker_config, "audio_config", None) is None:
             thinker_config.audio_config = Qwen3OmniMoeAudioEncoderConfig()
 
+        _normalize_asr_text_rope(thinker_config.text_config)
+
         self.audio_tower = Qwen3OmniMoeAudioEncoder(thinker_config.audio_config)
         self.language_model = Qwen3ForCausalLM(
             thinker_config.text_config,
             quant_config,
             prefix=add_prefix("language_model", prefix),
         )
+        _enable_fused_asr_qk_norm_rope(self.language_model)
         self.pattern = MultiModalityDataPaddingPatternMultimodalTokens()
+        self._encoder_graph_runner: Qwen3ASREncoderLayerStackGraphRunner | None = None
+
+    def init_encoder_graphs(
+        self, *, max_batch_size: int, max_tokens_per_clip: int
+    ) -> None:
+        device = next(self.audio_tower.parameters()).device
+        graph_backend = current_platform.get_device_graph_backend(device)
+        if graph_backend is None:
+            return
+        runner = Qwen3ASREncoderLayerStackGraphRunner(
+            self.audio_tower,
+            buckets=build_buckets(max_batch_size, max_tokens_per_clip),
+            max_batch_size=max_batch_size,
+            graph_backend=graph_backend,
+        )
+        runner.capture_all()
+        self._encoder_graph_runner = runner
 
     def pad_input_ids(self, input_ids: List[int], mm_inputs: MultimodalInputs):
         return self.pattern.pad_input_tokens(input_ids, mm_inputs)
@@ -131,6 +238,23 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
                 -1, input_features.shape[1]
             )
 
+        runner = self._encoder_graph_runner
+        if runner is not None:
+            token_counts = [
+                (item.model_specific_data or {}).get("num_audio_tokens")
+                for item in items
+            ]
+            if all(count is not None for count in token_counts):
+                window_lens = window_lens_from_token_counts(
+                    token_counts, tokens_per_window=runner.tokens_per_window
+                )
+                hidden = eager_preamble(
+                    self.audio_tower, input_features, audio_feature_lengths
+                )
+                graphed = runner.run(hidden, window_lens)
+                if graphed is not None:
+                    return graphed.unsqueeze(0)
+
         audio_outputs = self.audio_tower(
             input_features,
             feature_lens=audio_feature_lengths,
@@ -145,7 +269,12 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
         **kwargs: Any,
     ) -> torch.Tensor:
         if forward_batch.mrope_positions is not None:
-            positions = forward_batch.mrope_positions
+            positions = forward_batch.mrope_positions[0]
+        positions = positions.to(
+            dtype=(torch.int32 if fused_qk_norm_rope is not None else torch.long),
+            device=input_ids.device,
+            non_blocking=True,
+        ).contiguous()
 
         hidden_states = general_mm_embed_routine(
             input_ids=input_ids,

@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import numpy as np
 import torch
 from sglang.srt.managers.schedule_batch import (
     Modality,
@@ -34,6 +35,7 @@ _AUDIO_PAD = "<|audio_pad|>"
 _AUDIO_START = "<|audio_start|>"
 _AUDIO_END = "<|audio_end|>"
 _SPECIAL_TOKEN_RE = re.compile(r"<\|(?:im_start|im_end|endoftext)\|>")
+_WHISPER_ENCODER_STRIDE = 2
 DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 0.95
 DEFAULT_TOP_K = 50
@@ -42,6 +44,15 @@ DEFAULT_TOP_K = 50
 # tokens per audio second including time markers, so 10 leaves roughly 2x
 # headroom without approaching the input token cost of the same audio.
 _OUTPUT_TOKENS_PER_AUDIO_SECOND = 10
+# Floor for the duration-scaled budget. Short, dense multi-speaker clips need
+# room for transcript text plus repeated timestamp and speaker-label framing;
+# a 128-token floor truncated valid outputs in the movies800times ASR set.
+# This remains far below the legacy 5120-token default that allowed short
+# non-speech repetition loops to run for thousands of tokens.
+_MIN_SCALED_OUTPUT_TOKENS = 512
+# A zero-duration input has no legitimate transcript to preserve, so retain a
+# tighter fallback than the floor used for short, dense speech.
+_EMPTY_AUDIO_OUTPUT_TOKENS = 128
 # Note (yichi): MOSS-Transcribe-Diarize is an audio LLM: a Qwen3 text decoder
 # over Whisper audio embeddings, trained on a fixed transcribe+diarize
 # instruction with the timestamped/speaker-labelled transcript as the target
@@ -166,7 +177,29 @@ def postprocess_moss_transcribe_diarize_text(text: str) -> str:
     return _SPECIAL_TOKEN_RE.sub("", text).strip()
 
 
-def _prompt_from_payload(payload: StagePayload, processor: Any) -> str:
+def _render_prompt(processor: Any, input_text: str) -> str:
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "audio", "audio": ""},
+                {"type": "text", "text": input_text},
+            ],
+        }
+    ]
+    return processor.apply_chat_template(
+        messages,
+        tokenize=False,
+        add_generation_prompt=True,
+    )
+
+
+def _prompt_from_payload(
+    payload: StagePayload,
+    processor: Any,
+    *,
+    default_prompt: str | None = None,
+) -> str:
     inputs = payload.request.inputs
     params = payload.request.params or {}
 
@@ -190,22 +223,11 @@ def _prompt_from_payload(payload: StagePayload, processor: Any) -> str:
         return str(input_text)
 
     if not str(input_text).strip():
+        if default_prompt is not None:
+            return default_prompt
         input_text = DEFAULT_TRANSCRIBE_DIARIZE_PROMPT
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "audio", "audio": ""},
-                {"type": "text", "text": str(input_text)},
-            ],
-        }
-    ]
-    return processor.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    return _render_prompt(processor, str(input_text))
 
 
 def _contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, int]]:
@@ -222,6 +244,79 @@ def _contiguous_offsets(input_ids: list[int], token_id: int) -> list[tuple[int, 
     if start is not None:
         offsets.append((start, len(input_ids) - 1))
     return offsets
+
+
+def _prompt_token_parts(
+    prompt: str,
+    tokenizer: Any,
+    audio_token: str,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    audio_token_count = prompt.count(audio_token)
+    if audio_token_count != 1:
+        raise ValueError(
+            f"Expected exactly one {audio_token!r} token per text sample, "
+            f"got {audio_token_count}."
+        )
+    before_audio, after_audio = prompt.split(audio_token, maxsplit=1)
+    return (
+        tuple(tokenizer.encode(before_audio, add_special_tokens=False)),
+        tuple(tokenizer.encode(after_audio, add_special_tokens=False)),
+    )
+
+
+def _audio_feature_lengths_from_waveform(
+    processor: Any,
+    num_samples: int,
+) -> torch.Tensor:
+    """Derive the processor's per-chunk token lengths without extracting mel."""
+    feature_extractor = processor.feature_extractor
+    chunk_samples = int(feature_extractor.n_samples)
+    stride = (
+        int(feature_extractor.hop_length)
+        * _WHISPER_ENCODER_STRIDE
+        * int(processor.audio_merge_size)
+    )
+    if chunk_samples <= 0 or stride <= 0:
+        raise ValueError("MOSS-Transcribe-Diarize processor has invalid audio strides")
+    return torch.tensor(
+        [
+            (min(chunk_samples, num_samples - start) - 1) // stride + 1
+            for start in range(0, num_samples, chunk_samples)
+        ],
+        dtype=torch.long,
+    )
+
+
+def _extract_audio_features(
+    processor: Any,
+    audio: np.ndarray,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]:
+    feature_extractor = processor.feature_extractor
+    n_samples = int(feature_extractor.n_samples)
+    audio_feature_lengths = _audio_feature_lengths_from_waveform(
+        processor,
+        int(audio.shape[0]),
+    )
+    chunks: list[np.ndarray] = []
+    for start in range(0, audio.shape[0], n_samples):
+        chunk = audio[start : start + n_samples]
+        if chunk.shape[0] < n_samples:
+            chunk = np.pad(chunk, (0, n_samples - chunk.shape[0]))
+        chunks.append(chunk)
+
+    input_features = feature_extractor(
+        chunks,
+        sampling_rate=int(feature_extractor.sampling_rate),
+        padding="max_length",
+        return_tensors="pt",
+    )["input_features"]
+    audio_feature_lengths = audio_feature_lengths.to(input_features.device)
+    return (
+        input_features,
+        audio_feature_lengths,
+        torch.zeros_like(audio_feature_lengths),
+        int(audio_feature_lengths.sum().item()),
+    )
 
 
 def make_moss_transcribe_diarize_scheduler_adapters(
@@ -243,6 +338,13 @@ def make_moss_transcribe_diarize_scheduler_adapters(
     audio_end_id = int(tokenizer.convert_tokens_to_ids(_AUDIO_END))
     eos_token_id = int(tokenizer.eos_token_id)
     vocab_size = int(tokenizer.vocab_size)
+    audio_token = str(processor.audio_token)
+    default_prompt = _render_prompt(processor, DEFAULT_TRANSCRIBE_DIARIZE_PROMPT)
+    default_prompt_parts = _prompt_token_parts(
+        default_prompt,
+        tokenizer,
+        audio_token,
+    )
 
     def request_builder(payload: StagePayload) -> MossTranscribeDiarizeRequestData:
         params = payload.request.params or {}
@@ -257,7 +359,11 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         audio = prepared.waveform
         audio_duration_s = prepared.duration_s
         fingerprint = prepared.fingerprint
-        prompt = _prompt_from_payload(payload, processor)
+        prompt = _prompt_from_payload(
+            payload,
+            processor,
+            default_prompt=default_prompt,
+        )
 
         # note (db-ol): cap the processor limit at the model context. The
         # processor rejects sequences past max_length rather than truncating,
@@ -266,18 +372,47 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         max_length = min(
             int(params.get("max_length") or context_length), context_length
         )
-        encoded = processor(
-            text=prompt,
-            audio=audio,
-            return_tensors="pt",
-            max_length=max_length,
-        )
-        input_ids = encoded["input_ids"][0].tolist()
-        features = encoded["input_features"]
-        audio_feature_lengths = encoded["audio_feature_lengths"]
-        audio_chunk_mapping = encoded["audio_chunk_mapping"]
+        cached_embedding = None
+        if audio_encoder_service is not None:
+            audio_feature_lengths = _audio_feature_lengths_from_waveform(
+                processor,
+                len(audio),
+            )
+            cached_embedding = audio_encoder_service.lookup_cached_embedding(
+                fingerprint,
+                int(audio_feature_lengths.sum().item()),
+            )
 
-        offsets = _contiguous_offsets(input_ids, audio_token_id)
+        if cached_embedding is None:
+            (
+                features,
+                audio_feature_lengths,
+                audio_chunk_mapping,
+                audio_token_count,
+            ) = _extract_audio_features(processor, audio)
+        else:
+            features = None
+            audio_chunk_mapping = torch.zeros_like(audio_feature_lengths)
+            audio_token_count = int(audio_feature_lengths.sum().item())
+
+        if prompt == default_prompt:
+            prefix_ids, suffix_ids = default_prompt_parts
+        else:
+            prefix_ids, suffix_ids = _prompt_token_parts(
+                prompt,
+                tokenizer,
+                audio_token,
+            )
+        audio_span_ids = processor._audio_span_ids(audio_token_count)
+        if len(prefix_ids) + len(audio_span_ids) + len(suffix_ids) > max_length:
+            raise ValueError(f"Prompt/audio sequence exceeds max_length={max_length}")
+        offsets = [
+            (start + len(prefix_ids), end + len(prefix_ids))
+            for start, end in _contiguous_offsets(
+                audio_span_ids,
+                audio_token_id,
+            )
+        ]
         if not offsets:
             raise ValueError("MOSS-Transcribe-Diarize prompt has no audio tokens")
 
@@ -288,22 +423,31 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             model_specific_data={
                 "audio_feature_lengths": audio_feature_lengths,
                 "audio_chunk_mapping": audio_chunk_mapping,
+                "audio_fingerprint": fingerprint,
             },
         )
         audio_item.set_pad_value()
         audio_item.offsets = offsets
 
         if audio_encoder_service is not None:
-            audio_encoder_service.encode_item(audio_item)
+            if cached_embedding is None:
+                audio_encoder_service.encode_item(audio_item)
+            else:
+                audio_encoder_service.attach_embedding(audio_item, cached_embedding)
 
-        padded_input_ids = [
+        padded_audio_span_ids = [
             audio_item.pad_value if token_id == audio_token_id else token_id
-            for token_id in input_ids
+            for token_id in audio_span_ids
+        ]
+        padded_input_ids = [
+            *prefix_ids,
+            *padded_audio_span_ids,
+            *suffix_ids,
         ]
 
         mm_inputs = MultimodalInputs(
             mm_items=[audio_item],
-            num_image_tokens=int(audio_feature_lengths.sum().item()),
+            num_image_tokens=audio_token_count,
             audio_token_id=audio_token_id,
             audio_start_id=audio_start_id,
             audio_end_id=audio_end_id,
@@ -314,6 +458,15 @@ def make_moss_transcribe_diarize_scheduler_adapters(
         )
         top_p = _sampling_param(params, explicit_fields, "top_p", DEFAULT_TOP_P, float)
         top_k = _sampling_param(params, explicit_fields, "top_k", DEFAULT_TOP_K, int)
+        # Opt-in mitigation for repetition loops (#975): honoured only when
+        # the caller sets it explicitly, so greedy defaults stay unchanged.
+        repetition_penalty = _sampling_param(
+            params, explicit_fields, "repetition_penalty", 1.0, float
+        )
+        # Same range SamplingParams enforces; failing here keeps the error
+        # on the request path instead of inside the scheduler.
+        if not 0.0 < repetition_penalty <= 2.0:
+            raise ValueError("repetition_penalty must be in (0, 2]")
         # note (db-ol): the model default was sized for short clips and
         # silently cuts transcripts past about 20 minutes. Scale the default
         # budget with duration unless the operator configured a fixed one.
@@ -327,16 +480,29 @@ def make_moss_transcribe_diarize_scheduler_adapters(
                 raise ValueError("max_new_tokens must be at least 1")
         elif duration_scaled_default:
             if audio_duration_s <= 0.0:
+                # Empty audio has no legitimate long transcript; keep the
+                # same floor as the scaled path so a loop cannot burn the
+                # full fixed default here either.
+                request_max_new_tokens = min(max_new_tokens, _EMPTY_AUDIO_OUTPUT_TOKENS)
                 logger.warning(
                     "Request %s decoded to empty audio, the output budget "
-                    "falls back to the fixed default %d",
+                    "falls back to %d",
                     payload.request_id,
-                    max_new_tokens,
+                    request_max_new_tokens,
                 )
-            request_max_new_tokens = max(
-                max_new_tokens,
-                math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
-            )
+            else:
+                # Note (Ruilin Gao): scale the budget with duration in both directions.
+                # Raising it keeps dense transcripts past ~20 minutes from
+                # being cut; capping it keeps greedy decoding from looping
+                # until the fixed default on short non-speech audio
+                # (laughter, noise), which inflated per-request latency
+                # ~40x and cut CI batch throughput ~19% (#975). The floor
+                # never exceeds the operator's fixed default, so a small
+                # configured budget still bounds short requests.
+                request_max_new_tokens = max(
+                    min(max_new_tokens, _MIN_SCALED_OUTPUT_TOKENS),
+                    math.ceil(audio_duration_s * _OUTPUT_TOKENS_PER_AUDIO_SECOND),
+                )
         else:
             request_max_new_tokens = max_new_tokens
         sampling_params = SamplingParams(
@@ -344,6 +510,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            repetition_penalty=repetition_penalty,
             stop_token_ids=[eos_token_id],
         )
         sampling_params.normalize(tokenizer=None)
@@ -374,6 +541,7 @@ def make_moss_transcribe_diarize_scheduler_adapters(
             temperature=temperature,
             top_p=top_p,
             top_k=top_k,
+            repetition_penalty=repetition_penalty,
             audio_duration_s=audio_duration_s,
             language=str(params.get("language") or "auto"),
             engine_start_s=time.perf_counter(),

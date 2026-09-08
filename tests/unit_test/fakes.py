@@ -10,9 +10,15 @@ from types import SimpleNamespace
 class FakeExecutionBridge:
     """SGLangExecutionBridge double for scheduler-owned ModelRunner tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, device: object | None = None) -> None:
+        import torch
+
         self.published: list[tuple[object, object]] = []
         self.isolate_sampling_calls: list[bool] = []
+        self.device = (
+            torch.device(device) if device is not None else torch.device("cpu")
+        )
+        self.device_module = torch.get_device_module(self.device)
 
     @contextlib.contextmanager
     def forward_context(self, batch: object, *, isolate_sampling: bool = False):
@@ -24,13 +30,11 @@ class FakeExecutionBridge:
         self.published.append((batch, next_token_ids))
 
     def record_completion(self):
-        import torch
-
-        return torch.cuda.Event()
+        return self.device_module.Event()
 
 
 class FakeServerArgs(SimpleNamespace):
-    """ServerArgs double exposing the 0.5.16 override() mutation entry point."""
+    """ServerArgs double exposing the override() mutation entry point."""
 
     def override(self, source: str, **fields: object) -> None:
         del source

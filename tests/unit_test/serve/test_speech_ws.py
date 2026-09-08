@@ -12,9 +12,11 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from sglang_omni.client import GenerateChunk
 from sglang_omni.client.types import SpeechResult
+from sglang_omni.config import CustomVoiceConfig
 from sglang_omni.serve import create_app
 from sglang_omni.serve import speech_ws as speech_ws_module
 from sglang_omni.serve.protocol import SpeechStreamSessionConfig
+from sglang_omni.serve.speech_errors import SpeechAPIError
 from sglang_omni.serve.speech_service import (
     MAX_SPEECH_INPUT_CHARS,
     SpeechRequestValidator,
@@ -23,6 +25,10 @@ from sglang_omni.serve.speech_ws import (
     MAX_BUFFERED_RECEIVE_MESSAGES_DURING_GENERATION,
     MAX_TEXT_MESSAGE_BYTES,
     SpeechWebSocketSession,
+)
+
+CONTEXT_LENGTH_ERROR = (
+    "Requested token count exceeds the model's maximum context length"
 )
 
 
@@ -189,6 +195,19 @@ class InvalidAudioStreamingSpeechClient:
         self.aborted.append(request_id)
 
 
+class ContextRejectingStreamingSpeechClient:
+    def __init__(self) -> None:
+        self.aborted: list[str] = []
+
+    async def generate(self, request: Any, request_id: str | None = None):
+        del request, request_id
+        raise RuntimeError(CONTEXT_LENGTH_ERROR)
+        yield
+
+    async def abort(self, request_id: str) -> None:
+        self.aborted.append(request_id)
+
+
 class CountingSpeechRequestValidator(SpeechRequestValidator):
     def __init__(self) -> None:
         super().__init__(default_model="tts")
@@ -316,6 +335,83 @@ def test_speech_websocket_streams_sentences_as_binary_frames() -> None:
         assert session_done["total_sentences"] == 2
 
     assert client_impl.generated_prompts == ["Hello.", "Second"]
+
+
+def test_speech_websocket_commit_flushes_segments_without_closing() -> None:
+    client_impl = StreamingSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(_session_config(response_format="pcm", stream_audio=True))
+        assert websocket.receive_json()["type"] == "session.configured"
+
+        websocket.send_json({"type": "input.text", "text": "First segment."})
+        websocket.send_json({"type": "input.commit"})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+        first_commit = websocket.receive_json()
+
+        assert first_commit["type"] == "input.committed"
+        assert first_commit["segment_index"] == 0
+        assert first_commit["segment_sentences"] == 1
+        assert first_commit["total_sentences"] == 1
+
+        websocket.send_json({"type": "input.text", "text": "Second segment"})
+        websocket.send_json({"type": "input.commit"})
+        assert websocket.receive_json()["type"] == "audio.start"
+        assert websocket.receive_bytes()
+        assert websocket.receive_json()["type"] == "audio.done"
+        second_commit = websocket.receive_json()
+
+        assert second_commit["type"] == "input.committed"
+        assert second_commit["segment_index"] == 1
+        assert second_commit["segment_sentences"] == 1
+        assert second_commit["total_sentences"] == 2
+
+        websocket.send_json({"type": "input.commit"})
+        empty_commit = websocket.receive_json()
+        assert empty_commit["type"] == "input.committed"
+        assert empty_commit["segment_index"] == 2
+        assert empty_commit["segment_sentences"] == 0
+        assert empty_commit["total_sentences"] == 2
+
+        websocket.send_json({"type": "input.done"})
+        session_done = websocket.receive_json()
+        assert session_done["type"] == "session.done"
+        assert session_done["total_sentences"] == 2
+
+    assert client_impl.generated_prompts == ["First segment.", "Second segment"]
+
+
+@pytest.mark.asyncio
+async def test_custom_voice_websocket_uses_shared_config() -> None:
+    config = CustomVoiceConfig(speakers=("speaker",), task_type="CustomVoice")
+    service = SpeechRequestValidator(default_model="tts", custom_voice_config=config)
+    client = StreamingSpeechClient()
+    session = SpeechWebSocketSession(
+        RecordingWebSocket(), client=client, speech_service=service
+    )
+    with pytest.raises(SpeechAPIError) as exc:
+        await session._parse_config(
+            {
+                "type": "session.config",
+                "response_format": "pcm",
+                "voice": "missing",
+            }
+        )
+    assert exc.value.param == "voice"
+    config = await session._parse_config(
+        {
+            "type": "session.config",
+            "response_format": "pcm",
+            "speaker": "SPEAKER",
+        }
+    )
+    assert config.voice == "SPEAKER"
+    assert config.task_type is None
+    assert session.config_prepared_request.reference_descriptors == []
+    assert not client.generated_prompts and not client.speech_prompts
 
 
 def test_speech_websocket_config_uses_served_model_and_default_voice() -> None:
@@ -753,6 +849,31 @@ def test_speech_websocket_stream_exception_aborts_active_request() -> None:
         assert websocket.sent_text[-1]["type"] == "audio.done"
         assert websocket.sent_text[-1]["error"] is True
         assert session.active_request_id is None
+
+    asyncio.run(run())
+
+
+def test_speech_websocket_context_rejection_is_bad_request() -> None:
+    async def run() -> None:
+        client_impl = ContextRejectingStreamingSpeechClient()
+        websocket = RecordingWebSocket()
+        session = SpeechWebSocketSession(
+            websocket,
+            client=client_impl,
+            speech_service=SpeechRequestValidator(default_model="tts"),
+        )
+        session.config = SpeechStreamSessionConfig(stream_audio=True)
+
+        await session._generate_sentence("Hello.")
+
+        error = websocket.sent_text[-2]
+        assert error == {
+            "type": "error",
+            "message": CONTEXT_LENGTH_ERROR,
+            "error_type": "BadRequestError",
+            "code": 400,
+        }
+        assert client_impl.aborted == [f"{session.session_id}-0"]
 
     asyncio.run(run())
 

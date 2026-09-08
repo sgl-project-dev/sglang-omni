@@ -6,7 +6,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+import torch
 
+import sglang_omni.platforms as platforms
 from sglang_omni.pipeline import stage_workers
 from sglang_omni.pipeline.stage_workers import (
     StageLaunchConfig,
@@ -14,9 +16,23 @@ from sglang_omni.pipeline.stage_workers import (
     _patched_spawn_env,
 )
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
+from sglang_omni.platforms.rocm import ROCMOmniPlatform
+from sglang_omni.utils.gpu_memory import get_gpu_startup_lock_path
 from tests.unit_test.fixtures.pipeline_fakes import FakeScheduler, fake_factory_path
 
 cuda_platform = CUDAOmniPlatform()
+
+
+@pytest.fixture(autouse=True)
+def _force_cuda_device(monkeypatch):
+    """These tests assert the CUDA TP env/device contract (CUDA_VISIBLE_DEVICES,
+    torch.cuda.set_device). Pin the device layer to CUDA so they exercise that
+    path regardless of the test host's real accelerator; otherwise an XPU host
+    takes the ZE_AFFINITY_MASK / all-cards-visible branch and the assertions fail.
+    """
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
 
 
 def _tp_spec(*, gpu_id: int) -> StageLaunchConfig:
@@ -45,6 +61,53 @@ def test_tp_process_env_maps_logical_gpu_through_visible_devices() -> None:
     assert env["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
 
 
+def test_tp_process_env_turns_nccl_nvls_off() -> None:
+    env = cuda_platform.get_stage_process_env(_tp_spec(gpu_id=0), {})
+
+    assert env["NCCL_NVLS_ENABLE"] == "0"
+
+
+def test_tp_process_env_leaves_an_operator_nvls_value_alone() -> None:
+    env = cuda_platform.get_stage_process_env(
+        _tp_spec(gpu_id=0), {"NCCL_NVLS_ENABLE": "1"}
+    )
+
+    assert "NCCL_NVLS_ENABLE" not in env
+
+
+def test_spawn_env_maps_the_planned_gpu_even_with_a_configured_visibility(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    stage_spec = _tp_spec(gpu_id=1)
+    stage_spec.env_defaults = {"CUDA_VISIBLE_DEVICES": "2,3"}
+
+    with _patched_spawn_env(_worker_spec(stage_spec)):
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "1"
+
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+def test_spawn_env_keeps_a_configured_stage_nvls_value(monkeypatch) -> None:
+    monkeypatch.delenv("NCCL_NVLS_ENABLE", raising=False)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,4")
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    stage_spec = _tp_spec(gpu_id=1)
+    stage_spec.env_defaults = {"NCCL_NVLS_ENABLE": "1"}
+
+    with _patched_spawn_env(_worker_spec(stage_spec)):
+        assert os.environ["NCCL_NVLS_ENABLE"] == "1"
+
+    assert "NCCL_NVLS_ENABLE" not in os.environ
+
+
+def test_non_tp_stage_gets_no_cuda_process_env() -> None:
+    spec = StageLaunchConfig(stage_name="thinker", tp_size=1, gpu_id=0)
+
+    assert cuda_platform.get_stage_process_env(spec, {}) == {}
+
+
 def test_tp_process_env_rejects_single_visible_device_for_second_gpu() -> None:
     with pytest.raises(ValueError, match="CUDA_VISIBLE_DEVICES only exposes"):
         cuda_platform.get_stage_process_env(
@@ -59,10 +122,91 @@ def test_tp_process_env_requires_gpu_id() -> None:
         )
 
 
-def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
-    """Child startup normalizes the already-mapped TP device to local cuda:0."""
-    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+def test_xpu_tp_process_env_emits_no_visibility_variable() -> None:
+    """XPU TP must keep every card visible: ZE_AFFINITY_MASK isolation hides peers
+    and hangs XCCL discovery, unlike CUDA_VISIBLE_DEVICES with NCCL. With nothing
+    inherited the hook narrows nothing and emits no mask at all -- an empty mask
+    would hide every card."""
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    env = XPUOmniPlatform().get_stage_process_env(_tp_spec(gpu_id=1), {})
+
+    assert "CUDA_VISIBLE_DEVICES" not in env
+    assert env == {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"}
+
+
+def test_xpu_tp_preserves_a_mask_that_covers_the_whole_group() -> None:
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    env = XPUOmniPlatform().get_stage_process_env(
+        _tp_spec(gpu_id=1), {"ZE_AFFINITY_MASK": "4,5"}
+    )
+
+    assert "ZE_AFFINITY_MASK" not in env
+    assert env == {"SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false"}
+
+
+def test_xpu_tp_rejects_a_mask_too_small_for_the_group() -> None:
+    """A single-card mask cannot host a 2-rank stage. Dropping it would silently
+    move the stage to physical 0..1, so fail loudly instead."""
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    with pytest.raises(ValueError, match="exposes 1"):
+        XPUOmniPlatform().get_stage_process_env(
+            _tp_spec(gpu_id=1), {"ZE_AFFINITY_MASK": "3"}
+        )
+
+
+def test_xpu_tp_rejects_a_gpu_id_outside_the_mask() -> None:
+    """gpu_id indexes into the mask's numbering, not the host's."""
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    with pytest.raises(ValueError, match="exposes only 2 cards"):
+        XPUOmniPlatform().get_stage_process_env(
+            _tp_spec(gpu_id=2), {"ZE_AFFINITY_MASK": "4,5"}
+        )
+
+
+def test_spawn_env_leaves_a_group_affinity_mask_intact_for_the_child(
+    monkeypatch,
+) -> None:
+    """End-to-end through the spawn hook: the child inherits the operator's mask
+    unchanged, so its xpu:N indices keep meaning the cards the operator chose."""
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
+    monkeypatch.setenv("ZE_AFFINITY_MASK", "4,5")
+
+    with _patched_spawn_env(_worker_spec(_tp_spec(gpu_id=1))):
+        assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
+
+    assert os.environ["ZE_AFFINITY_MASK"] == "4,5"
+
+
+def test_xpu_tp_process_env_requires_gpu_id() -> None:
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    with pytest.raises(ValueError, match="requires a GPU id"):
+        XPUOmniPlatform().get_stage_process_env(
+            StageLaunchConfig(stage_name="thinker", tp_size=2), {}
+        )
+
+
+def test_xpu_tp_rank_keeps_its_card_despite_an_inherited_cuda_marker(
+    monkeypatch,
+) -> None:
+    """SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS is a CUDA placement marker: only
+    CUDAOmniPlatform sets it, and pinned SGLang honors it solely under
+    is_cuda_alike(). An XPU child that inherited it must not take the fast path --
+    that normalized every rank to gpu_id=0, so all ranks would bind xpu:0 and XPU's
+    own visibility policy would never run.
+    """
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    monkeypatch.setattr(stage_workers, "current_platform", XPUOmniPlatform())
     monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("ZE_AFFINITY_MASK", raising=False)
     spec = StageLaunchConfig(
         stage_name="thinker",
         role="follower",
@@ -73,13 +217,72 @@ def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
         comm_config={"gpu_id": 1},
     )
 
-    stage_workers._prepare_cuda_environment(spec, _RecordingLog())
+    stage_workers._prepare_accelerator_environment(spec, _RecordingLog())
+
+    assert spec.gpu_id == 1
+    assert spec.factory_arg_defaults["gpu_id"] == 1
+    assert spec.comm_config["gpu_id"] == 1
+    assert spec.placement_gpu_id is None
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
+
+
+def test_tp_child_keeps_parent_mapped_visible_device(monkeypatch) -> None:
+    """Child startup normalizes the already-mapped TP device to local cuda:0."""
+    monkeypatch.setattr(stage_workers, "current_platform", cuda_platform)
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        gpu_id=1,
+        factory_kwargs={"gpu_id": 1},
+        typed_kwargs={"gpu_id": 1},
+        factory_arg_defaults={"gpu_id": 1},
+        comm_config={"gpu_id": 1},
+    )
+
+    stage_workers._prepare_accelerator_environment(spec, _RecordingLog())
+
+    assert spec.gpu_id == 0
+    assert spec.placement_gpu_id == 1
+    assert spec.typed_kwargs["gpu_id"] == 0
+    assert spec.factory_arg_defaults["gpu_id"] == 0
+    assert spec.comm_config["gpu_id"] == 0
+    # The pipeline author's own channel is not placement owned, so narrowing
+    # the device must leave it alone.
+    assert spec.factory_kwargs["gpu_id"] == 1
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
+
+
+def test_rocm_tp_child_keeps_parent_mapped_hip_visible_device(monkeypatch) -> None:
+    """ROCm TP children normalize the single HIP-visible card to local cuda:0."""
+    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "5")
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "5")
+    monkeypatch.setenv("SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS", "true")
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        gpu_id=1,
+        factory_arg_defaults={"gpu_id": 1},
+        comm_config={"gpu_id": 1},
+    )
+    log = _RecordingLog()
+
+    stage_workers._prepare_accelerator_environment(spec, log)
 
     assert spec.gpu_id == 0
     assert spec.placement_gpu_id == 1
     assert spec.factory_arg_defaults["gpu_id"] == 0
     assert spec.comm_config["gpu_id"] == 0
-    assert os.environ["CUDA_VISIBLE_DEVICES"] == "4"
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+    assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
+    assert any("CUDA_VISIBLE_DEVICES=5" in message for message in log.messages)
+    assert get_gpu_startup_lock_path(spec.gpu_id).name.endswith("_gpu_5_startup.lock")
 
 
 def test_spawn_env_applies_stage_defaults_before_child_start(monkeypatch) -> None:
@@ -122,6 +325,20 @@ def test_spawn_env_combines_stage_defaults_with_tp_visible_device(monkeypatch) -
 
     assert "SGLANG_TEST_STAGE_ENV" not in os.environ
     assert os.environ["CUDA_VISIBLE_DEVICES"] == "3,4"
+
+
+def test_rocm_spawn_env_maps_rank_through_hip_visible_devices(monkeypatch) -> None:
+    monkeypatch.setenv("HIP_VISIBLE_DEVICES", "3,5")
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.setattr(stage_workers, "current_platform", ROCMOmniPlatform())
+
+    with _patched_spawn_env(_worker_spec(_tp_spec(gpu_id=1))):
+        assert os.environ["HIP_VISIBLE_DEVICES"] == "5"
+        assert os.environ["CUDA_VISIBLE_DEVICES"] == "5"
+        assert os.environ["SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS"] == "true"
+
+    assert os.environ["HIP_VISIBLE_DEVICES"] == "3,5"
+    assert "CUDA_VISIBLE_DEVICES" not in os.environ
 
 
 class _RecordingLog:
@@ -169,7 +386,7 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     spec = StageLaunchConfig(
         stage_name="thinker",
         factory=fake_factory_path("runtime_factory"),
-        factory_args={
+        factory_kwargs={
             "model_path": "runtime-model",
             "thinker_max_seq_len": 128,
         },
@@ -189,11 +406,26 @@ def test_scheduler_applies_child_defaults_without_overriding_explicit_args(
     assert seen_gpu_ids == [3]
 
 
+def test_scheduler_rejects_replica_device_factory_without_gpu_id() -> None:
+    spec = StageLaunchConfig(
+        stage_name="legacy@r0",
+        factory=fake_factory_path("runtime_factory_with_device"),
+        factory_kwargs={"device": "cuda:0"},
+        factory_arg_defaults={"model_path": "model", "gpu_id": 1},
+        require_factory_gpu_id=True,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="legacy@r0.*replica_devices.*does not declare a gpu_id parameter",
+    ):
+        stage_workers._construct_scheduler(spec, 1, _RecordingLog())
+
+
 def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     monkeypatch,
 ) -> None:
     """Placement-owned gpu_id must drive device setup and startup lock."""
-    import torch
 
     class _FakeStage:
         def __init__(self, **kwargs):
@@ -208,7 +440,7 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
         yield Path("/tmp/test.lock")
 
     monkeypatch.setattr(
-        torch.cuda,
+        torch.get_device_module(platforms.current_platform.device_type),
         "set_device",
         lambda gpu_id: set_device_calls.append(int(gpu_id)),
     )
@@ -231,6 +463,40 @@ def test_construct_stage_uses_placement_gpu_id_for_device_and_startup_lock(
     assert [stage.scheduler.gpu_id for stage in stages] == [0, 0]
     assert set_device_calls == [0, 0]
     assert seen_gpu_ids == [0, 0]
+
+
+def test_narrowed_tp_child_locks_its_local_device(monkeypatch) -> None:
+    """A TP child narrowed to one card locks through its local gpu_id.
+
+    The lock path resolves the physical card via CUDA_VISIBLE_DEVICES, so the
+    pre-narrowing placement id must not be used: it would index past the
+    single visible device.
+    """
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "4")
+    seen_gpu_ids: list[int] = []
+
+    @contextmanager
+    def _fake_lock(gpu_id: int):
+        seen_gpu_ids.append(gpu_id)
+        yield get_gpu_startup_lock_path(gpu_id)
+
+    monkeypatch.setattr(stage_workers, "gpu_startup_lock", _fake_lock)
+    spec = StageLaunchConfig(
+        stage_name="thinker",
+        role="follower",
+        tp_rank=1,
+        tp_size=2,
+        placement_gpu_id=1,
+        gpu_id=0,
+        factory=fake_factory_path("make_scheduler_accepting_gpu_id"),
+        factory_arg_defaults={"gpu_id": 0},
+    )
+
+    scheduler = stage_workers._construct_scheduler(spec, 0, _RecordingLog())
+
+    assert scheduler.gpu_id == 0
+    assert seen_gpu_ids == [0]
+    assert get_gpu_startup_lock_path(0).name.endswith("_gpu_4_startup.lock")
 
 
 def test_cpu_scheduler_construction_skips_startup_lock(monkeypatch) -> None:

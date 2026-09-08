@@ -10,7 +10,7 @@ from typing import Any, Mapping
 import torch
 
 from sglang_omni.models.moss_tts.payload_types import (
-    MossTTSState,
+    load_moss_tts_state,
     resolve_moss_audio_pad_code,
 )
 from sglang_omni.proto import StagePayload
@@ -67,7 +67,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
             raise ValueError("stream holdback must be >= 0")
 
         self._vocoder = vocoder
-        self._audio_tokenizer = vocoder._audio_tokenizer
+        self._audio_vocoder = vocoder._audio_vocoder
         self._stream_stride = int(stream_stride)
         self._stream_followup_stride = int(stream_followup_stride)
         self._stream_overlap_tokens = int(stream_overlap_tokens)
@@ -79,9 +79,9 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         self._default_audio_pad_code = resolve_moss_audio_pad_code(
             getattr(vocoder._processor, "model_config", None)
         )
-        sample_rate = int(self._audio_tokenizer.sample_rate)
+        sample_rate = int(self._audio_vocoder.sample_rate)
         self._default_samples_per_frame = self._resolve_samples_per_frame(
-            self._audio_tokenizer, sample_rate
+            self._audio_vocoder, sample_rate
         )
 
         super().__init__(
@@ -112,7 +112,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
     ) -> None:
         if origin == "payload":
             payload = source
-            final_state = MossTTSState.from_dict(payload.data)
+            final_state = load_moss_tts_state(payload)
             delayed = final_state.delayed_audio_codes
             n_vq = state.n_vq
             if delayed is not None:
@@ -261,7 +261,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
         state: _MossStreamState,
     ) -> dict[str, Any]:
         del request_id
-        final_state = MossTTSState.from_dict(payload.data)
+        final_state = load_moss_tts_state(payload)
         final_state.delayed_audio_codes = None
         final_state.sample_rate = int(state.sample_rate or self._sample_rate)
         data = final_state.to_dict()
@@ -306,7 +306,7 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
 
         window_start = max(0, emitted_frames - self._stream_overlap_tokens)
         window = torch.stack(segment.frames[window_start:], dim=0)
-        decoded = self._audio_tokenizer.decode_codes([window])
+        decoded = self._audio_vocoder.decode_codes([window])
         if not decoded:
             return None
         audio = torch.as_tensor(decoded[0]).detach().reshape(-1).to(torch.float32)
@@ -418,10 +418,10 @@ class MossStreamingVocoderScheduler(StreamingVocoderBase[_MossStreamState, None]
 
     @staticmethod
     def _resolve_samples_per_frame(
-        audio_tokenizer: Any,
+        audio_vocoder: Any,
         sample_rate: int,
     ) -> int | None:
-        config = getattr(getattr(audio_tokenizer, "model", None), "config", None)
+        config = getattr(getattr(audio_vocoder, "model", None), "config", None)
         for attr in (
             "downsample_rate",
             "samples_per_frame",

@@ -10,10 +10,12 @@ PERMISSIONS_FILE_PATH = ".github/CI_PERMISSIONS.json"
 TTS_MODEL_LABELS = {
     "higgs": "run-higgs",
     "moss": "run-moss",
+    "qwen3-tts": "run-qwen3-tts",
 }
 ASR_MODEL_LABELS = {
     "fun-asr": "run-fun-asr",
     "qwen3-asr": "run-qwen3-asr",
+    "whisper-asr": "run-whisper-asr",
 }
 
 
@@ -55,15 +57,13 @@ def load_permissions(user_login):
 def parse_model_targets(tokens):
     tts_targets = [token for token in tokens[1:] if token in TTS_MODEL_LABELS]
     if len(set(tts_targets)) > 1:
-        return None, None, "Specify only one TTS CI model target: higgs or moss."
+        allowed = ", ".join(sorted(TTS_MODEL_LABELS))
+        return None, None, f"Specify only one TTS CI model target: {allowed}."
 
     asr_targets = [token for token in tokens[1:] if token in ASR_MODEL_LABELS]
     if len(set(asr_targets)) > 1:
-        return (
-            None,
-            None,
-            "Specify only one ASR CI model target: fun-asr or qwen3-asr.",
-        )
+        allowed = ", ".join(sorted(ASR_MODEL_LABELS))
+        return None, None, f"Specify only one ASR CI model target: {allowed}."
     return (
         tts_targets[0] if tts_targets else None,
         asr_targets[0] if asr_targets else None,

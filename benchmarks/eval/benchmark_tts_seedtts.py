@@ -75,112 +75,29 @@ Usage (CI):
         --model fishaudio/s2-pro \
         --output-dir results/s2pro_en \
         --lang en --port 8000
-
-
-Reference Results
-
-Reproducibility references for the FULL eval set — NOT CI thresholds.
-CI runs on a subset and has its own thresholds elsewhere (see tasks/*.py).
-
-Benchmark: SeedTTS  |  Dataset: seed-tts-eval, full set (EN=1088, ZH=2020)
-Hardware:  1 x H200 (default; non-H200 sources are tagged in Source column)
-Last verified: 2026-05-25
-
-Accuracy (accuracy.wer)
-
-Note: the Higgs TTS EN raw corpus WER includes 2 samples above 50% WER; the
-outlier-excluded corpus WER is 1.36%.
-
-Note: the MOSS-TTS EN raw corpus WER includes 5 samples above 50% WER; the
-outlier-excluded corpus WER is 1.54%.
-
-| Model  | Config           | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source                         |
-| ------ | ---------------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------------------------------ |
-| S2-Pro | EN, stream=False | 1.07%      | 1.03%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 1.05%      | 1.00%               | 0.00%                 | 3.5%               | 1088/1088 | 0       | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 1.02%      | 0.98%               | 0.00%                 | 3.3%               | 2020/2020 | 0       | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 0.93%      | 0.89%               | 0.00%                 | 2.2%               | 2020/2020 | 0       | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=False | 1.03%      | 0.98%               | 0.00%                 | 3.4%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 0.98%      | 0.94%               | 0.00%                 | 3.3%               | 1088/1088 | 0       | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 0.93%      | 0.89%               | 0.00%                 | 2.2%               | 2020/2020 | 0       | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 0.98%      | 0.94%               | 0.00%                 | 2.4%               | 2020/2020 | 0       | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=False | 1.16%      | 1.12%               | 0.00%                 | 3.7%               | 1088/1088 | 0       | PR #411 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 1.06%      | 1.02%               | 0.00%                 | 3.5%               | 1088/1088 | 0       | PR #411 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 0.92%      | 0.87%               | 0.00%                 | 2.1%               | 2020/2020 | 0       | PR #411 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 0.90%      | 0.86%               | 0.00%                 | 2.1%               | 2020/2020 | 0       | PR #411 [H100, full-set, c=16] |
-| Higgs TTS | EN, stream=False | 4.68%   | 4.16%               | 0.00%                 | 91.2%              | 1088/1088 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
-| Higgs TTS | ZH, stream=False | 1.14%   | 1.08%               | 0.00%                 | 2.7%               | 2020/2020 | 0       | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
-| MOSS-TTS | EN, stream=False | 1.93%   | 1.98%               | 0.00%                 | 8.1%               | 1088/1088 | 0       | PR #609 [H100, full-set, c=16, token-count=auto] |
-
-Generation speed (generation.speed)
-
-| Model  | Config           | latency_mean_s | latency_p95_s | rtf_mean | throughput_qps | output_tok_per_req_s | Source                         |
-| ------ | ---------------- | -------------- | ------------- | -------- | -------------- | ------------------------------ | ------------------------------ |
-| S2-Pro | EN, stream=False | 15.836         | 21.509        | 4.269    | 1.005          | 75.0                           | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 16.135         | 21.733        | 4.357    | 0.985          | 74.1                           | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 16.114         | 20.092        | 3.018    | 0.990          | 73.1                           | PR #411 [H200, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 17.070         | 22.120        | 3.203    | 0.935          | 71.5                           | PR #411 [H200, full-set, c=16] |
-| S2-Pro | EN, stream=False | 9.38           | 14.65         | 2.48     | 1.700          | 56.0                           | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 9.92           | 15.49         | 2.62     | 1.607          | 53.2                           | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 9.64           | 13.61         | 1.80     | 1.655          | 55.2                           | PR #351 [H100, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 9.27           | 13.11         | 1.74     | 1.722          | 51.1                           | PR #351 [H100, full-set, c=16] |
-| S2-Pro | EN, stream=False | 12.247         | 16.703        | 3.289    | 1.299          | 67.8                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | EN, stream=True  | 12.164         | 16.717        | 3.265    | 1.308          | 67.0                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | ZH, stream=False | 12.028         | 15.526        | 2.256    | 1.327          | 65.7                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| S2-Pro | ZH, stream=True  | 11.417         | 15.020        | 2.141    | 1.398          | 65.5                           | PR #411 [H100, V1-pipeline, full-set, c=16] |
-| Higgs TTS | EN, stream=False | 1.749       | 2.600         | 0.425    | 9.104          | 112.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
-| Higgs TTS | ZH, stream=False | 1.629       | 2.110         | 0.282    | 9.792          | 109.9                          | PR #534 [H200, full-set, c=16, CUDA Graph on, torch.compile off] |
-| MOSS-TTS | EN, stream=False | 3.890       | 4.781         | 0.913    | 4.091          | 54.1                           | PR #609 [H100, full-set, c=16, token-count=auto] |
-
-Higgs TTS concurrency sweep
-
-Full SeedTTS EN set, 1088/1088 successful requests per run, 3 runs per concurrency. Scores are mean over the 3 complete runs.
-
-| concurrency | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | rtf_mean | rtf_median | rtf_p95 | rtf_p99 | audio_duration_mean_s | audio_throughput_s_per_s | output_throughput_tok_s | output_tok_per_req_s | throughput_qps | Source |
-| ----------- | -------------- | ---------------- | ------------- | ------------- | -------- | ---------- | ------- | ------- | --------------------- | ------------------------ | ----------------------- | -------------------- | -------------- | ------ |
-| 1           | 0.617          | 0.595            | 0.882         | 1.010         | 0.1473   | 0.1448     | 0.1665  | 0.1927  | 4.251                 | 6.885                    | 183.5                   | 196.2                | 1.620          | Local H100, full-set, n=3 mean, c=1|
-| 2           | 0.742          | 0.721            | 1.060         | 1.264         | 0.1801   | 0.1710     | 0.2374  | 0.2931  | 4.218                 | 11.368                   | 303.1                   | 183.4                | 2.695          | Local H100, full-set, n=3 mean, c=2|
-| 4           | 0.733          | 0.718            | 1.045         | 1.227         | 0.1774   | 0.1743     | 0.2056  | 0.2436  | 4.189                 | 22.837                   | 609.1                   | 166.0                | 5.452          | Local H100, full-set, n=3 mean, c=4|
-| 8           | 0.898          | 0.880            | 1.289         | 1.513         | 0.2171   | 0.2131     | 0.2557  | 0.3096  | 4.198                 | 37.383                   | 996.9                   | 135.1                | 8.905          | Local H100, full-set, n=3 mean, c=8|
-| 16          | 1.079          | 1.057            | 1.567         | 1.834         | 0.2616   | 0.2527     | 0.3288  | 0.4096  | 4.195                 | 61.842                   | 1649.3                  | 114.5                | 14.742         | Local H100, full-set, n=3 mean, c=16|
-| 32          | 2.106          | 2.085            | 2.675         | 2.966         | 0.5273   | 0.5031     | 0.7190  | 0.9553  | 4.191                 | 63.009                   | 1680.5                  | 56.2                 | 15.034         | Local H100, full-set, n=3 mean, c=32|
-| 64          | 4.236          | 4.261            | 4.959         | 5.361         | 1.0784   | 1.0226     | 1.6119  | 2.1907  | 4.214                 | 62.232                   | 1659.2                  | 28.4                 | 14.765         | Local H100, full-set, n=3 mean, c=64|
-
-| concurrency | latency_mean_s | latency_median_s | latency_p95_s | latency_p99_s | rtf_mean | rtf_median | rtf_p95 | rtf_p99 | audio_duration_mean_s | audio_throughput_s_per_s | output_throughput_tok_s | output_tok_per_req_s | throughput_qps | Source |
-| ----------- | -------------- | ---------------- | ------------- | ------------- | -------- | ---------- | ------- | ------- | --------------------- | ------------------------ | ----------------------- | -------------------- | -------------- | ------ |
-| 1           | 0.581          | 0.569            | 0.835         | 0.968         | 0.1408   | 0.1379     | 0.1631  | 0.1867  | 4.186                 | 7.200                    | 192.0                   | 208.9                | 1.720          | Local H200, full-set, n=3 mean, c=1|
-| 2           | 0.729          | 0.701            | 1.023         | 1.226         | 0.1749   | 0.1662     | 0.2335  | 0.2923  | 4.287                 | 11.757                   | 313.1                   | 192.4                | 2.743          | Local H200, full-set, n=3 mean, c=2|
-| 4           | 0.734          | 0.715            | 1.037         | 1.203         | 0.1779   | 0.1727     | 0.2178  | 0.2620  | 4.207                 | 22.892                   | 610.4                   | 172.0                | 5.441          | Local H200, full-set, n=3 mean, c=4|
-| 8           | 0.864          | 0.838            | 1.219         | 1.405         | 0.2077   | 0.2032     | 0.2517  | 0.2996  | 4.239                 | 39.198                   | 1044.7                  | 145.8                | 9.248          | Local H200, full-set, n=3 mean, c=8|
-| 16          | 1.165          | 1.124            | 1.762         | 2.144         | 0.2818   | 0.2671     | 0.3779  | 0.4947  | 4.214                 | 57.640                   | 1536.8                  | 108.3                | 13.679         | Local H200, full-set, n=3 mean, c=16|
-| 32          | 2.319          | 2.252            | 3.162         | 3.954         | 0.5806   | 0.5473     | 0.8384  | 1.1300  | 4.189                 | 57.277                   | 1527.7                  | 51.5                 | 13.674         | Local H200, full-set, n=3 mean, c=32|
-| 64          | 4.466          | 4.494            | 5.205         | 5.597         | 1.1363   | 1.0770     | 1.6952  | 2.3054  | 4.238                 | 59.416                   | 1583.6                  | 27.3                 | 14.021         | Local H200, full-set, n=3 mean, c=64|
-
-Higgs TTS H200 concurrency sweep (accuracy.wer)
-
-| concurrency | wer_corpus | wer_per_sample_mean | wer_per_sample_median | wer_per_sample_std | evaluated | skipped | Source |
-| ----------- | ---------- | ------------------- | --------------------- | ------------------ | --------- | ------- | ------ |
-| 1           | 1.03%      | 1.01%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=1|
-| 2           | 1.11%      | 1.08%               | 0.00%                 | 3.8%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=2|
-| 4           | 1.05%      | 1.00%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=4|
-| 8           | 1.12%      | 1.08%               | 0.00%                 | 4.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=8|
-| 16          | 1.10%      | 1.08%               | 0.00%                 | 4.1%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=16|
-| 32          | 1.07%      | 1.04%               | 0.00%                 | 3.6%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=32|
-| 64          | 1.09%      | 1.07%               | 0.00%                 | 3.8%               | 1088/1088 | 0       | Local H200, full-set, n=3 mean, c=64|
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+import math
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
-from benchmarks.benchmarker.runner import BenchmarkRunner, RunConfig
+from benchmarks.benchmarker.data import RequestResult
+from benchmarks.benchmarker.runner import (
+    BenchmarkRunner,
+    RunConfig,
+    SendFn,
+    resolve_warmup,
+)
 from benchmarks.benchmarker.utils import managed_omni_server
-from benchmarks.dataset.seedtts import load_seedtts_samples
+from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
 from benchmarks.metrics.performance import (
     build_speed_results,
     compute_speed_metrics,
@@ -200,6 +117,7 @@ from benchmarks.tasks.tts import (
     save_generated_audio_metadata,
     save_speed_results,
 )
+from sglang_omni.admission import QueueFullError
 
 logging.basicConfig(
     level=logging.INFO,
@@ -231,6 +149,10 @@ class TtsSeedttsBenchmarkConfig:
     # Reference payload shape for voice cloning. The default keeps the original
     # ref_audio/ref_text fields; Higgs TTS should pass --ref-format references.
     ref_format: str = "flat"
+    # Keeps ref_audio but drops ref_text/references[].text — for cross-lingual
+    # runs where the reference speaker is cloned but no reference transcript is
+    # sent. Only meaningful when voice_clone=True; ignored otherwise.
+    no_ref_text: bool = False
     response_format: str = "wav"
     output_dir: str = "results/tts_seedtts"
     max_samples: int | None = None
@@ -245,19 +167,29 @@ class TtsSeedttsBenchmarkConfig:
     top_k: int | None = None
     repetition_penalty: float | None = None
     seed: int | None = None
-    warmup: int = 1
+    # Note (Shulei He): Fraction of requests sent with subtalker_dosample=True (rest use False),
+    # deterministically alternated by sample index so runs are reproducible.
+    # None leaves subtalker_dosample unset, i.e. the server-side default applies.
+    subtalker_dosample_ratio: float | None = None
+    warmup: int | None = None
     concurrency: int = DEFAULT_TTS_BENCHMARK_CONCURRENCY
     request_rate: float = float("inf")
     stream: bool = False
     initial_codec_chunk_frames: int | None = None
     disable_tqdm: bool = False
     max_running_requests: int = 64
+    max_queued_requests: int | None = None
+    overshoot_duration_s: float = 10.0
     cuda_graph_max_bs: int = 64
     # note (luojiaxuan): optional sglang-omni pipeline config yaml forwarded
     # to the managed TTS server as ``--config`` (e.g.
     # examples/configs/dots_tts.yaml to run the canonical optimized
     # deployment).
     server_config: str | None = None
+    # SGLang quantization mode (e.g. fp8) forwarded to the TTS generation
+    # stage; recorded as run provenance so bf16 vs fp8 archives are
+    # distinguishable. None = bf16.
+    quantization: str | None = None
     # Transcribe phase
     lang: str = "en"
     device: str = "cuda:0"
@@ -285,6 +217,23 @@ def _build_generation_kwargs(config: TtsSeedttsBenchmarkConfig) -> dict:
     return generation_kwargs
 
 
+def _resolve_warmup(config: TtsSeedttsBenchmarkConfig) -> int:
+    return resolve_warmup(config.warmup, config.concurrency)
+
+
+def _subtalker_dosample_flags(
+    samples: list[SampleInput],
+    ratio: float,
+) -> dict[str, bool]:
+    if not 0.0 <= ratio <= 1.0:
+        raise ValueError(f"--subtalker-dosample-ratio must be in [0, 1], got {ratio}")
+    flags: dict[str, bool] = {}
+    for index, sample in enumerate(samples):
+        dosample = math.floor((index + 1) * ratio) > math.floor(index * ratio)
+        flags[sample.sample_id] = dosample
+    return flags
+
+
 def _build_results_config(
     config: TtsSeedttsBenchmarkConfig,
     *,
@@ -296,6 +245,7 @@ def _build_results_config(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -305,27 +255,22 @@ def _build_results_config(
         "sample_offset": config.sample_offset,
         "max_new_tokens": config.max_new_tokens,
         "seed": config.seed,
+        "subtalker_dosample_ratio": config.subtalker_dosample_ratio,
         "token_count": config.token_count,
-        "warmup": config.warmup,
+        "warmup": _resolve_warmup(config),
         "concurrency": config.concurrency,
         "request_rate": config.request_rate,
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "max_running_requests": config.max_running_requests,
+        "max_queued_requests": config.max_queued_requests,
+        "overshoot_duration_s": config.overshoot_duration_s,
         "cuda_graph_max_bs": config.cuda_graph_max_bs,
         "server_config": config.server_config,
+        "quantization": config.quantization,
     }
 
 
-async def run_tts_seedtts_benchmark(
-    config: TtsSeedttsBenchmarkConfig,
-) -> dict:
-    """Generate audio and measure speed. Always saves audio for WER use.
-
-    Returns a dict with keys: summary, per_request, config.
-    """
-    base_url = build_base_url(config)
-    api_url = f"{base_url}/v1/audio/speech"
-
+def _load_benchmark_samples(config: TtsSeedttsBenchmarkConfig) -> list[SampleInput]:
     # Note (Jiaxin Deng): a negative offset would silently slice from the end
     # instead of skipping the first N, contaminating the shard it claims to take.
     if config.sample_offset < 0:
@@ -334,39 +279,97 @@ async def run_tts_seedtts_benchmark(
         )
     if config.sample_offset:
         head = config.sample_offset + (config.max_samples or 0)
-        samples = load_seedtts_samples(
+        return load_seedtts_samples(
             config.meta, head if config.max_samples else None, split=config.lang
         )[config.sample_offset :]
-    else:
-        samples = load_seedtts_samples(
-            config.meta, config.max_samples, split=config.lang
-        )
-    logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
+    return load_seedtts_samples(config.meta, config.max_samples, split=config.lang)
 
-    save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
-    os.makedirs(save_audio_dir, exist_ok=True)
 
-    generation_kwargs = _build_generation_kwargs(config)
-    send_fn = make_tts_send_fn(
+def _make_subtalker_dosample_send_fn(
+    config: TtsSeedttsBenchmarkConfig,
+    api_url: str,
+    common_send_kwargs: dict,
+    generation_kwargs: dict,
+    samples: list[SampleInput],
+) -> SendFn:
+    # Note (Shulei He): Qwen3-TTS-only: alternate subtalker_dosample per request for mixed
+    # sampled/greedy predictor traffic.
+    dosample_by_id = _subtalker_dosample_flags(samples, config.subtalker_dosample_ratio)
+    send_fn_true = make_tts_send_fn(
         config.model,
         api_url,
+        **common_send_kwargs,
+        **generation_kwargs,
+        stage_params={"tts_engine": {"subtalker_dosample": True}},
+    )
+    send_fn_false = make_tts_send_fn(
+        config.model,
+        api_url,
+        **common_send_kwargs,
+        **generation_kwargs,
+        stage_params={"tts_engine": {"subtalker_dosample": False}},
+    )
+    send_fn_by_id = {
+        sample_id: (send_fn_true if dosample else send_fn_false)
+        for sample_id, dosample in dosample_by_id.items()
+    }
+
+    async def send_fn(session, sample):
+        return await send_fn_by_id[sample.sample_id](session, sample)
+
+    return send_fn
+
+
+async def run_tts_seedtts_benchmark(
+    config: TtsSeedttsBenchmarkConfig,
+    *,
+    samples: list[SampleInput] | None = None,
+    save_audio: bool = True,
+) -> dict:
+    """Generate audio and measure speed.
+
+    Saves audio by default so the transcribe phase can reuse it.
+    """
+    base_url = build_base_url(config)
+    api_url = f"{base_url}/v1/audio/speech"
+    if samples is None:
+        samples = _load_benchmark_samples(config)
+    logger.info(f"Prepared {len(samples)} requests (offset {config.sample_offset})")
+
+    save_audio_dir = None
+    if save_audio:
+        save_audio_dir = os.path.abspath(os.path.join(config.output_dir, "audio"))
+        os.makedirs(save_audio_dir, exist_ok=True)
+    else:
+        os.makedirs(config.output_dir, exist_ok=True)
+
+    generation_kwargs = _build_generation_kwargs(config)
+    common_send_kwargs = dict(
         response_format=config.response_format,
         stream=config.stream,
         initial_codec_chunk_frames=config.initial_codec_chunk_frames,
         no_ref_audio=not config.voice_clone,
         ref_format=config.ref_format,
+        no_ref_text=config.no_ref_text,
         voice=config.voice,
         task_type=config.task_type,
         instructions=config.instructions,
         save_audio_dir=save_audio_dir,
-        **generation_kwargs,
     )
+    if config.subtalker_dosample_ratio is None:
+        send_fn = make_tts_send_fn(
+            config.model, api_url, **common_send_kwargs, **generation_kwargs
+        )
+    else:
+        send_fn = _make_subtalker_dosample_send_fn(
+            config, api_url, common_send_kwargs, generation_kwargs, samples
+        )
 
     runner = BenchmarkRunner(
         RunConfig(
             max_concurrency=config.concurrency,
             request_rate=config.request_rate,
-            warmup=config.warmup,
+            warmup=_resolve_warmup(config),
             disable_tqdm=config.disable_tqdm,
         )
     )
@@ -399,6 +402,7 @@ def run_tts_seedtts_transcribe(
         "meta": config.meta,
         "voice_clone": config.voice_clone,
         "ref_format": config.ref_format,
+        "no_ref_text": config.no_ref_text,
         "response_format": config.response_format,
         "voice": config.voice,
         "task_type": config.task_type,
@@ -411,6 +415,7 @@ def run_tts_seedtts_transcribe(
         "initial_codec_chunk_frames": config.initial_codec_chunk_frames,
         "concurrency": config.concurrency,
         "asr_concurrency": config.asr_concurrency,
+        "quantization": config.quantization,
     }
     return run_seedtts_transcribe(
         config,
@@ -436,6 +441,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         instructions=args.instructions,
         voice_clone=voice_clone,
         ref_format=args.ref_format,
+        no_ref_text=args.no_ref_text,
         response_format=response_format,
         output_dir=args.output_dir,
         max_samples=args.max_samples,
@@ -447,6 +453,7 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         top_k=args.top_k,
         repetition_penalty=args.repetition_penalty,
         seed=args.seed,
+        subtalker_dosample_ratio=args.subtalker_dosample_ratio,
         warmup=args.warmup,
         concurrency=args.concurrency,
         request_rate=args.request_rate,
@@ -454,8 +461,11 @@ def _config_from_args(args: argparse.Namespace) -> TtsSeedttsBenchmarkConfig:
         initial_codec_chunk_frames=args.initial_codec_chunk_frames,
         disable_tqdm=args.disable_tqdm,
         max_running_requests=args.max_running_requests,
+        max_queued_requests=args.max_queued_requests,
+        overshoot_duration_s=args.overshoot_duration_s,
         cuda_graph_max_bs=args.cuda_graph_max_bs,
         server_config=args.server_config,
+        quantization=args.quantization,
         lang=args.lang,
         device=args.device,
         similarity_checkpoint=args.similarity_checkpoint,
@@ -477,6 +487,221 @@ def _parse_token_count(value: str) -> int | str:
     if token_count <= 0:
         raise argparse.ArgumentTypeError("token count must be positive")
     return token_count
+
+
+def _parse_concurrencies(value: str) -> list[int]:
+    tokens = [token.strip() for token in value.split(",") if token.strip()]
+    if not tokens:
+        raise argparse.ArgumentTypeError(
+            "concurrencies must be a non-empty comma-separated list"
+        )
+    values: list[int] = []
+    for token in tokens:
+        try:
+            parsed = int(token)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(f"invalid concurrency {token!r}") from exc
+        if parsed <= 0:
+            raise argparse.ArgumentTypeError("concurrency must be > 0")
+        values.append(parsed)
+    return values
+
+
+@dataclass(frozen=True)
+class SustainedOvershootPlan:
+    capacity: int
+    request_rate: float
+    duration_s: float
+    request_count: int
+    concurrency: int
+    overshoot_ratio: float
+
+
+def plan_sustained_overshoot(
+    *,
+    max_running_requests: int,
+    max_queued_requests: int,
+    duration_s: float,
+    request_rate: float | None = None,
+    overshoot_factor: float = 2.0,
+) -> SustainedOvershootPlan:
+    """Open-loop arrivals above ``running + queued`` for ``duration_s``."""
+    if max_running_requests < 1 or max_queued_requests < 1:
+        raise ValueError("max_running_requests and max_queued_requests must be >= 1")
+    if duration_s <= 0 or overshoot_factor <= 1:
+        raise ValueError("overshoot duration_s must be positive and factor > 1")
+    capacity = max_running_requests + max_queued_requests
+    rate = overshoot_factor * capacity if request_rate is None else float(request_rate)
+    if rate <= capacity:
+        raise ValueError(
+            "sustained overshoot requires request_rate > admission capacity "
+            f"({rate} <= {capacity})"
+        )
+    return SustainedOvershootPlan(
+        capacity=capacity,
+        request_rate=rate,
+        duration_s=float(duration_s),
+        request_count=max(1, math.ceil(rate * duration_s)),
+        concurrency=0,
+        overshoot_ratio=rate / capacity,
+    )
+
+
+def expand_samples_for_overshoot(
+    samples: list[SampleInput], request_count: int
+) -> list[SampleInput]:
+    if not samples or request_count < 1:
+        raise ValueError("sustained overshoot requires samples and request_count >= 1")
+    n = len(samples)
+    expanded: list[SampleInput] = []
+    for index in range(request_count):
+        source = samples[index % n]
+        expanded.append(replace(source, sample_id=f"{source.sample_id}#{index}"))
+    return expanded
+
+
+def classify_overshoot_outcomes(records: list[Any]) -> dict[str, Any]:
+    success_ttfa: list[float] = []
+    reject_latency: list[float] = []
+    success = queue_full = other_failed = 0
+    for record in records:
+        if isinstance(record, RequestResult):
+            ok, error, ttfa, latency = (
+                record.is_success,
+                record.error,
+                record.audio_ttfp_s,
+                record.latency_s,
+            )
+        else:
+            ok = bool(record.get("is_success"))
+            error = record.get("error")
+            ttfa = record.get("audio_ttfp_s")
+            latency = float(record.get("latency_s") or 0.0)
+        if ok:
+            success += 1
+            if ttfa is not None:
+                success_ttfa.append(float(ttfa))
+        elif QueueFullError.matches(error):
+            queue_full += 1
+            reject_latency.append(float(latency))
+        else:
+            other_failed += 1
+    return {
+        "total_requests": len(records),
+        "success": success,
+        "queue_full": queue_full,
+        "other_failed": other_failed,
+        "success_ttfa_p95_s": _percentile(success_ttfa, 95),
+        "queue_full_latency_p95_s": _percentile(reject_latency, 95),
+    }
+
+
+def _percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(values)
+    rank = min(len(ordered) - 1, max(0, math.ceil(pct / 100.0 * len(ordered)) - 1))
+    return ordered[rank]
+
+
+async def run_tts_concurrency_sweep(
+    config: TtsSeedttsBenchmarkConfig,
+    concurrencies: list[int],
+) -> dict[str, Any]:
+    """Run generate-only once per concurrency and write a summary JSON."""
+    rows: list[dict[str, Any]] = []
+    for concurrency in concurrencies:
+        point_output_dir = os.path.join(config.output_dir, f"c{concurrency}")
+        point = replace(
+            config,
+            concurrency=concurrency,
+            output_dir=point_output_dir,
+        )
+        print(f"[conc={concurrency}] generate pass")
+        results = await run_tts_seedtts_benchmark(point)
+        summary = results["summary"]
+        success = int(summary.get("completed_requests") or 0)
+        failed = int(summary.get("failed_requests") or 0)
+        row = {
+            "concurrency": concurrency,
+            "warmup": _resolve_warmup(point),
+            "output_dir": point_output_dir,
+            "success": success,
+            "failed": failed,
+            "latency_p95_s": summary.get("latency_p95_s"),
+            "audio_ttfp_p95_s": summary.get("audio_ttfp_p95_s"),
+            "summary": summary,
+        }
+        rows.append(row)
+        print_speed_summary(summary, config.model, concurrency=concurrency)
+        print(
+            f"  success={success} failed={failed} "
+            f"latency_p95={row['latency_p95_s']} "
+            f"ttfa_p95={row['audio_ttfp_p95_s']}"
+        )
+
+    payload = {
+        "config": _build_results_config(config, base_url=build_base_url(config)),
+        "concurrencies": concurrencies,
+        "rows": rows,
+    }
+    out_path = os.path.join(config.output_dir, "concurrency_sweep.json")
+    os.makedirs(config.output_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info("Wrote concurrency sweep to %s", out_path)
+    return payload
+
+
+async def run_tts_sustained_overshoot(
+    config: TtsSeedttsBenchmarkConfig,
+) -> dict[str, Any]:
+    """Hold offered load above admission capacity instead of stepping concurrency."""
+    if config.max_queued_requests is None:
+        raise ValueError("--sustained-overshoot requires --max-queued-requests")
+    request_rate = None if config.request_rate == float("inf") else config.request_rate
+    plan = plan_sustained_overshoot(
+        max_running_requests=config.max_running_requests,
+        max_queued_requests=config.max_queued_requests,
+        duration_s=config.overshoot_duration_s,
+        request_rate=request_rate,
+    )
+    point = replace(
+        config,
+        concurrency=plan.concurrency,
+        request_rate=plan.request_rate,
+        output_dir=os.path.join(config.output_dir, "overshoot"),
+    )
+    print(
+        f"[overshoot] open-loop rate={plan.request_rate:.3f}/s "
+        f"capacity={plan.capacity} duration={plan.duration_s}s "
+        f"n={plan.request_count}"
+    )
+    corpus = _load_benchmark_samples(config)
+    samples = expand_samples_for_overshoot(corpus, plan.request_count)
+    results = await run_tts_seedtts_benchmark(point, samples=samples, save_audio=False)
+    outcomes = classify_overshoot_outcomes(results["per_request"])
+    payload = {
+        "plan": asdict(plan),
+        "outcomes": outcomes,
+        "summary": results["summary"],
+        "config": results["config"],
+    }
+    out_path = os.path.join(point.output_dir, "sustained_overshoot.json")
+    os.makedirs(point.output_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    logger.info("Wrote sustained overshoot to %s", out_path)
+    print_speed_summary(results["summary"], config.model, concurrency=plan.concurrency)
+    print(
+        f"  success={outcomes['success']} queue_full={outcomes['queue_full']} "
+        f"other_failed={outcomes['other_failed']} "
+        f"ttfa_p95={outcomes['success_ttfa_p95_s']} "
+        f"reject_p95={outcomes['queue_full_latency_p95_s']}"
+    )
+    return payload
 
 
 async def benchmark(config: TtsSeedttsBenchmarkConfig) -> dict:
@@ -542,6 +767,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Skip ref audio/text from testset (TTS without voice cloning).",
     )
     parser.add_argument(
+        "--no-ref-text",
+        dest="no_ref_text",
+        action="store_true",
+        help=(
+            "Keep ref_audio (voice cloning) but drop ref_text/references[].text "
+            "from the request, for cross-lingual-style runs. Ignored when "
+            "--no-ref-audio is also set."
+        ),
+    )
+    parser.add_argument(
         "--ref-format",
         choices=["flat", "references"],
         default="flat",
@@ -583,7 +818,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Per-request sampler seed for reproducible generation.",
     )
-    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument(
+        "--subtalker-dosample-ratio",
+        type=float,
+        default=None,
+        help=(
+            "Optional model-specific (Qwen3-TTS only) fraction of requests "
+            "sent with subtalker_dosample=True (the rest use False), "
+            "deterministically interleaved by sample index. 1.0 = all "
+            "sampled, 0.0 = all greedy, 0.5 = alternating mixed traffic. "
+            "Omit to leave subtalker_dosample unset (server-side default)."
+        ),
+    )
+    parser.add_argument(
+        "--warmup",
+        type=int,
+        default=None,
+        help="Warmup requests; defaults to the configured concurrency.",
+    )
     parser.add_argument(
         "--concurrency",
         "--max-concurrency",
@@ -593,10 +845,27 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Maximum concurrent requests.",
     )
     parser.add_argument(
+        "--concurrencies",
+        type=_parse_concurrencies,
+        default=None,
+        help="Comma-separated concurrency levels to sweep (requires --generate-only).",
+    )
+    parser.add_argument(
+        "--sustained-overshoot",
+        action="store_true",
+        help="Open-loop soak above running+queued (needs --generate-only and --max-queued-requests).",
+    )
+    parser.add_argument(
+        "--overshoot-duration-s",
+        type=float,
+        default=10.0,
+        help="Wall-clock seconds to keep offering overshoot load.",
+    )
+    parser.add_argument(
         "--request-rate",
         type=float,
         default=float("inf"),
-        help="Requests per second (inf = send all at once).",
+        help="Requests/s (inf = burst). Soak defaults to 2x capacity if omitted.",
     )
     parser.add_argument(
         "--stream",
@@ -672,6 +941,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--max-queued-requests",
+        type=int,
+        default=None,
+        help=(
+            "SGLang generation stage max_queued_requests for the managed "
+            "server. Omit to leave the pipeline default."
+        ),
+    )
+    parser.add_argument(
         "--cuda-graph-max-bs",
         type=int,
         default=64,
@@ -690,6 +968,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "TTS server as --config (e.g. examples/configs/dots_tts.yaml for "
             "the canonical optimized dots.tts deployment). Ignored with "
             "--use-existing-server."
+        ),
+    )
+    parser.add_argument(
+        "--quantization",
+        type=str,
+        default=None,
+        help=(
+            "SGLang quantization mode (e.g. fp8) for the TTS generation stage "
+            "of the server started by this benchmark. The ASR server is always "
+            "left unquantized. Defaults to none (bf16)."
         ),
     )
     parser.add_argument(
@@ -734,9 +1022,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    parser = _build_arg_parser()
-    args = parser.parse_args()
+def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if (
         args.initial_codec_chunk_frames is not None
         and args.initial_codec_chunk_frames < 0
@@ -744,13 +1030,41 @@ def main() -> None:
         parser.error("--initial-codec-chunk-frames must be non-negative")
     if args.max_running_requests <= 0:
         parser.error("--max-running-requests must be positive")
+    if args.max_queued_requests is not None and args.max_queued_requests < 1:
+        parser.error("--max-queued-requests must be >= 1")
     if args.cuda_graph_max_bs <= 0:
         parser.error("--cuda-graph-max-bs must be positive")
+    if args.concurrencies is not None and not args.generate_only:
+        parser.error("--concurrencies currently requires --generate-only")
+    if args.sustained_overshoot and not args.generate_only:
+        parser.error("--sustained-overshoot currently requires --generate-only")
+    if args.sustained_overshoot and args.concurrencies is not None:
+        parser.error("--sustained-overshoot cannot be combined with --concurrencies")
+    if args.sustained_overshoot and args.max_queued_requests is None:
+        parser.error("--sustained-overshoot requires --max-queued-requests")
+    if args.overshoot_duration_s <= 0:
+        parser.error("--overshoot-duration-s must be positive")
+    if args.sustained_overshoot and args.request_rate != float("inf"):
+        try:
+            plan_sustained_overshoot(
+                max_running_requests=args.max_running_requests,
+                max_queued_requests=args.max_queued_requests,
+                duration_s=args.overshoot_duration_s,
+                request_rate=args.request_rate,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
     if args.use_existing_server and not (args.generate_only or args.transcribe_only):
         parser.error(
             "--use-existing-server currently requires --generate-only or "
             "--transcribe-only"
         )
+
+
+def main() -> None:
+    parser = _build_arg_parser()
+    args = parser.parse_args()
+    _validate_args(parser, args)
     config = _config_from_args(args)
     wait_for_gpu_release = not args.skip_gpu_cleanup
 
@@ -780,8 +1094,16 @@ def main() -> None:
                 run_tts_seedtts_transcribe(config, asr_router_port=config.port)
         return
 
+    async def _run_generate() -> None:
+        if args.concurrencies is not None:
+            await run_tts_concurrency_sweep(config, args.concurrencies)
+        elif args.sustained_overshoot:
+            await run_tts_sustained_overshoot(config)
+        else:
+            await benchmark(config)
+
     if args.use_existing_server:
-        asyncio.run(benchmark(config))
+        asyncio.run(_run_generate())
     else:
         with managed_omni_server(
             model_path=config.model,
@@ -789,12 +1111,14 @@ def main() -> None:
             host=config.host,
             server_config=config.server_config,
             max_running_requests=config.max_running_requests,
+            max_queued_requests=config.max_queued_requests,
             cuda_graph_max_bs=config.cuda_graph_max_bs,
+            quantization=config.quantization,
             log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
             timeout=args.server_timeout,
             wait_for_gpu_release=wait_for_gpu_release,
         ):
-            asyncio.run(benchmark(config))
+            asyncio.run(_run_generate())
 
     if args.generate_only:
         return

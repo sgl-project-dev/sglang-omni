@@ -89,14 +89,15 @@ def test_cpu_selection_is_rerun_stable_and_conflicts_fail_before_h100() -> None:
     assert 'printf "%s" "${GITHUB_RUN_ID}" | sha256sum' in run
     assert "RUN_HIGGS_LABEL" in selection["env"]
     assert "RUN_MOSS_LABEL" in selection["env"]
-    assert "cannot both be set" in run
+    assert "RUN_QWEN3_TTS_LABEL" in selection["env"]
+    assert "mutually exclusive" in run
     assert "GITHUB_RUN_ATTEMPT" not in run.partition("selection_digest=")[0]
     assert "tts_stage1_topology" not in omni["on"]["workflow_dispatch"]["inputs"]
     assert "pick-tts-model" not in omni["jobs"]
     assert "selected_model" in omni["jobs"]["preflight"]["outputs"]
 
 
-def test_mps_config_resolution_covers_both_selected_models() -> None:
+def test_mps_config_resolution_covers_the_colocated_models() -> None:
     omni = _workflow(OMNI_WORKFLOW)
     run = _step(omni["jobs"]["preflight"], "Select TTS model once")["run"]
     assert "examples/mps_dp/configs/higgs_h100_dp3.yaml" in run
@@ -104,3 +105,30 @@ def test_mps_config_resolution_covers_both_selected_models() -> None:
     assert "examples/mps_dp/configs/moss_local_h100_dp2.yaml" in run
     assert "MossTTSLocalPipelineConfig" in run
     assert "resolved config mismatch" in run
+    # A single-instance model borrows the moss pool rather than skipping.
+    assert 'mps_model="moss"' in run
+    assert "resolved_mps_model" in omni["jobs"]["preflight"]["outputs"]
+
+
+def test_mps_stage_measures_the_pool_model_not_the_rotation_model() -> None:
+    """Stage 5 can run a different model than stages 1-4, so it must say so.
+
+    The evidence writer and the threshold lookup both key on the model name,
+    and both reject a name they have no MPS references for.
+    """
+    mps = _workflow(TTS_WORKFLOW)["jobs"]["stage-5-mps"]
+    assert (
+        _step(mps, "Run TTS MPS non-streaming validation")["env"]["TTS_CI_MODEL"]
+        == "${{ inputs.tts_mps_model }}"
+    )
+    assert (
+        '--selected-model "${{ inputs.tts_mps_model }}"'
+        in _step(mps, "Initialize TTS MPS evidence")["run"]
+    )
+    assert "inputs.tts_ci_model" not in yaml.safe_dump(mps)
+    # Passing the config without the model would gate a moss pool on whichever
+    # model the test defaults to.
+    tts_ci = _workflow(OMNI_WORKFLOW)["jobs"]["tts-ci"]["with"]
+    assert (
+        tts_ci["tts_mps_model"] == "${{ needs.preflight.outputs.resolved_mps_model }}"
+    )

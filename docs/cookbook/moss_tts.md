@@ -29,7 +29,12 @@ The processor ships with the checkpoint, so no extra TTS package is needed. Deco
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`.
+The pipeline is `preprocessing → tts_engine → vocoder`. By default the vocoder
+runs in its own process (GPU memory fractions 0.10 / 0.72 / 0.18 for the three
+stages): its Python decode loop no longer shares the interpreter with the AR
+scheduler, which on H200 lifts single-replica throughput by about 70% at every
+concurrency cap. `config_cls: MossTTSSingleProcessPipelineConfig` restores the
+single-process layout; the bounded 24 GB and 32 GB configurations keep it.
 
 ```bash
 sgl-omni serve \
@@ -37,6 +42,53 @@ sgl-omni serve \
   --config examples/configs/moss_tts.yaml \
   --port 8000
 ```
+
+The default model-specific layout places the repository-local encoder and
+vocoder components on the configured pipeline GPU. The encoder and decoder
+weights materialize in BF16 according to `compute_dtype`; the quantizers and
+explicit FP32 norms remain in FP32. Each stage constructs only the codec
+components it uses instead of loading a complete codec copy.
+
+The bounded 24 GB and 32 GB configurations explicitly move preprocessing to
+CPU. They retain BF16 compute unless `compute_dtype` is overridden.
+
+Speech input admission follows the text backbone's context metadata rather than
+the generic 4,096-character precheck. Requests that exceed the effective model
+context are rejected with an OpenAI-compatible HTTP 400 error.
+
+For the bounded 32 GB qualification layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_32gb.yaml \
+  --port 8000
+```
+
+This configuration limits request concurrency and CUDA Graph capture to batch
+size 1. It completed startup and reference-less non-streaming synthesis on one
+RTX 5090 with 32,607 MiB, peaking at 26,939 MiB. Treat this as a measured
+qualification point rather than a general claim for every 32 GB card.
+
+For the directly measured 24 GB layout, use:
+
+```bash
+sgl-omni serve \
+  --model-path OpenMOSS-Team/MOSS-TTS-v1.5 \
+  --config examples/configs/moss_tts_24gb.yaml \
+  --port 8000
+```
+
+This profile completed startup, CUDA Graph capture, reference and
+reference-less synthesis, streaming, cancellation, and recovery on one RTX
+4090 with 24,564 MiB. Peak sampled VRAM was 23,251 MiB, leaving a minimum of
+960 MiB free. SGLang profiled an effective 6,708-token KV capacity below the
+requested `max_total_tokens: 8192`. Treat this as a concurrency-1,
+CUDA-Graph-cap-1 qualification point, not a broader 24 GB capacity claim.
+
+Both policies can be changed explicitly through the preprocessing/vocoder
+stages' `factory.*` entries when profiling another layout. Explicit `device`
+values take precedence over the GPU selected by stage placement.
 
 ## Synthesizing Speech
 

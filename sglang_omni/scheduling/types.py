@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,12 @@ class SchedulerRequest:
     error: Exception | None = None
     arrival_time: float = 0.0
     finish_time: float | None = None
+
+
+@dataclass(slots=True)
+class DeferredAdmission:
+    value: Any
+    ready: Future[Any]
 
 
 @dataclass
@@ -78,6 +85,10 @@ class ARRequestData:
     max_new_tokens: int | None = None
     enforce_request_limits: bool = False
     temperature: float = 0.0
+    # note(ratish): the scheduler clears both on every request it finishes and
+    # compacts the history of every request it retracts, whatever the model.
+    prefill_input_embeds: "torch.Tensor | None" = None
+    decode_input_embeds: list["torch.Tensor"] | None = field(default_factory=list)
 
 
 def sampled_logprobs_to_list(next_token_logprobs: Any) -> list[float] | None:

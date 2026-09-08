@@ -1,0 +1,22 @@
+config_cls: MossTTSSingleProcessPipelineConfig
+model_path: OpenMOSS-Team/MOSS-TTS-v1.5
+
+stages:
+  preprocessing:
+    factory:
+      device: cpu
+      compute_dtype: bfloat16
+      max_concurrency: 1
+
+  tts_engine:
+    engine:
+      max_running_requests: 1
+      max_total_tokens: 8192
+      mem_fraction_static: 0.78
+      cuda_graph_max_bs: 1
+
+  vocoder:
+    factory:
+      dtype: bfloat16
+      max_batch_size: 1
+      max_batch_wait_ms: 2

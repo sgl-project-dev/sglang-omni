@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 import torch
 
+from sglang_omni.config.schema import StageConfig
 from sglang_omni.models.qwen3_omni.components import code2wav_scheduler
 from sglang_omni.models.qwen3_omni.components.code2wav_cuda_graph import (
     Code2WavRunResult,
@@ -37,6 +38,14 @@ class _FactoryModel(FakeCode2WavModel):
     def eval(self):
         self.eval_calls += 1
         return self
+
+
+def _pin_cuda_platform(monkeypatch) -> None:
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
 
 
 class _FakeCudaGraphRunner:
@@ -123,7 +132,7 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     )
 
     def _unexpected_build(*args, **kwargs):
-        raise AssertionError("disabled default must not build CUDA graphs")
+        raise AssertionError("disabled default must not build device graphs")
 
     monkeypatch.setattr(
         code2wav_scheduler.Code2WavCudaGraphRunner,
@@ -139,6 +148,33 @@ def test_qwen_code2wav_factory_default_does_not_build_cuda_graphs(monkeypatch) -
     assert scheduler._cuda_graph_runner is None
 
 
+def test_only_graph_capable_platforms_enable_the_code2wav_graph() -> None:
+    from sglang_omni.platforms.cpu import CPUOmniPlatform
+    from sglang_omni.platforms.cuda import CUDAOmniPlatform
+    from sglang_omni.platforms.npu import NPUOmniPlatform
+    from sglang_omni.platforms.rocm import ROCMOmniPlatform
+    from sglang_omni.platforms.xpu import XPUOmniPlatform
+
+    assert XPUOmniPlatform().enable_code2wav_graph() is True
+    assert CUDAOmniPlatform().enable_code2wav_graph() is True
+    assert NPUOmniPlatform().enable_code2wav_graph() is False
+    assert CPUOmniPlatform().enable_code2wav_graph() is False
+    assert ROCMOmniPlatform().enable_code2wav_graph() is False
+
+
+def test_the_code2wav_stage_takes_its_graph_flag_from_the_platform() -> None:
+    """config.py must wire the hook through, since the factory no longer guards."""
+    from sglang_omni.config import resolve_stage_factory_args
+    from sglang_omni.models.qwen3_omni.config import Qwen3OmniSpeechPipelineConfig
+    from sglang_omni.platforms import current_platform
+
+    config = Qwen3OmniSpeechPipelineConfig(model_path="unused")
+    stage = next(s for s in config.stages if s.name == "code2wav")
+    args = resolve_stage_factory_args(stage, config)
+
+    assert args["enable_cuda_graph"] is current_platform.enable_code2wav_graph()
+
+
 def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
     monkeypatch,
 ) -> None:
@@ -151,7 +187,7 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
 
     monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
 
-    with pytest.raises(ValueError, match="total_gpu_memory_fraction"):
+    with pytest.raises(ValueError, match="gpu_memory_fraction") as excinfo:
         code2wav_scheduler.create_code2wav_scheduler(
             "dummy",
             device="cuda:0",
@@ -159,30 +195,127 @@ def test_qwen_code2wav_enabled_factory_rejects_missing_typed_budget_before_load(
         )
 
     assert load_calls == 0
+    # The message aborts startup, so the key it names has to be settable.
+    named = {word.strip("'\".,:") for word in str(excinfo.value).split()}
+    assert named & set(StageConfig.model_fields), str(excinfo.value)
 
 
-def test_qwen_code2wav_factory_rejects_batching_with_cuda_graph_before_load(
+def test_qwen_code2wav_factory_allows_batching_with_cuda_graph(
     monkeypatch,
 ) -> None:
-    load_calls = 0
+    _pin_cuda_platform(monkeypatch)
+    model = _FactoryModel(num_quantizers=12)
+    runner = SimpleNamespace(
+        available_batch_sizes=lambda frames: (8, 4, 2, 1),
+        stats=lambda: {"enabled": True, "disable_reason": None},
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler, "load_code2wav_model", lambda *a, **k: model.eval()
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.Code2WavCudaGraphRunner,
+        "build",
+        staticmethod(lambda *args, **kwargs: runner),
+    )
 
-    def _load(*args, **kwargs):
-        nonlocal load_calls
-        load_calls += 1
-        return _FactoryModel()
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda:0",
+        enable_batching=True,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
 
-    monkeypatch.setattr(code2wav_scheduler, "load_code2wav_model", _load)
+    assert scheduler._enable_batching is True
+    assert scheduler._cuda_graph_runner is runner
+    assert scheduler._chunk_aligned_dispatch is True
 
-    with pytest.raises(ValueError, match="cannot be enabled together"):
-        code2wav_scheduler.create_code2wav_scheduler(
-            "dummy",
-            device="cuda:0",
-            enable_batching=True,
-            enable_cuda_graph=True,
-            total_gpu_memory_fraction=0.02,
-        )
 
-    assert load_calls == 0
+def test_qwen_code2wav_factory_combines_batching_with_cuda_graph(
+    monkeypatch,
+) -> None:
+    _pin_cuda_platform(monkeypatch)
+    captured_keys: list[tuple] = []
+
+    class _RecordingRunner:
+        @staticmethod
+        def build(model, **kwargs):
+            captured_keys.append(tuple(kwargs["graph_keys"]))
+            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
+            runner.stats = lambda: {"enabled": True, "disable_reason": None}
+            return runner
+
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "load_code2wav_model",
+        lambda *args, **kwargs: _FactoryModel(),
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "Code2WavCudaGraphRunner",
+        _RecordingRunner,
+    )
+
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda:0",
+        enable_batching=True,
+        batch_ceiling=4,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    assert scheduler._enable_batching is True
+    assert scheduler._cuda_graph_runner is not None
+    (keys,) = captured_keys
+    frames = (10, 20, 30, 35)
+    assert keys == tuple(
+        code2wav_scheduler.GraphKey(batch_size=1, frames=f) for f in frames
+    ) + tuple(
+        code2wav_scheduler.GraphKey(batch_size=b, frames=f)
+        for b in (2, 4)
+        for f in frames
+    )
+
+
+def test_qwen_code2wav_factory_disables_batching_when_runner_disabled(
+    monkeypatch,
+) -> None:
+    _pin_cuda_platform(monkeypatch)
+    build_calls: list[tuple] = []
+
+    class _DisabledRunner:
+        @staticmethod
+        def build(model, **kwargs):
+            build_calls.append(tuple(kwargs["graph_keys"]))
+            runner = object.__new__(code2wav_scheduler.Code2WavCudaGraphRunner)
+            runner.stats = lambda: {"enabled": False, "disable_reason": "test"}
+            return runner
+
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "load_code2wav_model",
+        lambda *args, **kwargs: _FactoryModel(),
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler,
+        "Code2WavCudaGraphRunner",
+        _DisabledRunner,
+    )
+
+    scheduler = code2wav_scheduler.create_code2wav_scheduler(
+        "dummy",
+        device="cuda:0",
+        enable_batching=True,
+        enable_cuda_graph=True,
+        total_gpu_memory_fraction=0.02,
+    )
+
+    # Note (ruoyu): the runner degrades internally, so the factory never
+    # rebuilds; it only drops batching once the runner is fully disabled.
+    assert len(build_calls) == 1
+    assert scheduler._enable_batching is False
+    assert scheduler._chunk_aligned_dispatch is False
 
 
 @pytest.mark.parametrize(
@@ -227,10 +360,21 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     )
     load_call: dict = {}
     build_call: dict = {}
+    import sglang_omni.platforms as platforms
+
     monkeypatch.setattr(
-        code2wav_scheduler.torch.cuda,
-        "current_device",
-        lambda: 3,
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_device",
+        lambda index: torch.device("cuda", index),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        code2wav_scheduler.torch,
+        "get_device_module",
+        lambda *args: SimpleNamespace(current_device=lambda: 3),
     )
 
     def _load(*args, **kwargs):
@@ -277,7 +421,7 @@ def test_qwen_code2wav_enabled_factory_normalizes_device_and_derives_graph_keys(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == runner.stats()
 
@@ -301,6 +445,17 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
         "build",
         staticmethod(lambda *args, **kwargs: runner),
     )
+    import sglang_omni.platforms as platforms
+
+    monkeypatch.setattr(
+        platforms.current_platform, "device_type", "cuda", raising=False
+    )
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_device",
+        lambda index: torch.device("cuda", index),
+        raising=False,
+    )
 
     with caplog.at_level(logging.INFO, logger=code2wav_scheduler.__name__):
         scheduler = code2wav_scheduler.create_code2wav_scheduler(
@@ -314,7 +469,7 @@ def test_qwen_code2wav_enabled_factory_logs_disabled_build_reason(
     stats_record = next(
         record
         for record in caplog.records
-        if "CUDA graph startup stats=" in record.message
+        if "device graph startup stats=" in record.message
     )
     assert json.loads(stats_record.message.split("stats=", 1)[1]) == {
         "disable_reason": "capture_failed: RuntimeError: capture failed",

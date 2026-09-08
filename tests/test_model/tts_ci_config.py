@@ -29,6 +29,11 @@ class TtsCiThresholdPreset:
     stream_wer_corpus: float
     similarity_mean_min: float
     utmos_mean_min: float
+    # Note: (Jiaxin Deng) False while the values are seeds rather than
+    # worst-of-N observations from the CI runner. A seed can be far off for a
+    # topology it was not measured on, so gating on one fails builds for no
+    # reason or waves regressions through; a contract test refuses that pair.
+    calibrated: bool = True
 
 
 @dataclass(frozen=True)
@@ -45,28 +50,28 @@ THRESHOLD_SLACK_LOWER = 1.25
 
 
 # Higgs thresholds.
-HIGGS_VC_WER_MAX_CORPUS = 0.0109
+HIGGS_VC_WER_MAX_CORPUS = 0.0116
 HIGGS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_WER_MAX_CORPUS)
-HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0106
+HIGGS_VC_STREAM_WER_MAX_CORPUS = 0.0102
 HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(HIGGS_VC_STREAM_WER_MAX_CORPUS)
-HIGGS_VC_SIMILARITY_MEAN_MIN = 66.06310302734374
-HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.163
+HIGGS_VC_SIMILARITY_MEAN_MIN = 66.07207473754883
+HIGGS_VC_UTMOS_MEAN_REFERENCE = 4.1643
 HIGGS_VC_UTMOS_MEAN_MIN = apply_mos_slack(HIGGS_VC_UTMOS_MEAN_REFERENCE)
 
 _HIGGS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 15.846,
-        "output_tok_per_req_s": 131.1,
-        "latency_mean_s": 1.005,
-        "rtf_mean": 0.2451,
+        "throughput_qps": 19.725,
+        "output_tok_per_req_s": 160.7,
+        "latency_mean_s": 0.806,
+        "rtf_mean": 0.1929,
     }
 }
 
 _HIGGS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 17.467,
-        "latency_mean_s": 0.854,
-        "rtf_mean": 0.2049,
+        "throughput_qps": 19.932,
+        "latency_mean_s": 0.798,
+        "rtf_mean": 0.19,
     }
 }
 
@@ -79,28 +84,28 @@ HIGGS_VC_STREAM_THRESHOLDS = apply_slack(
 
 
 # MOSS Local thresholds.
-MOSS_VC_WER_MAX_CORPUS = 0.0222
+MOSS_VC_WER_MAX_CORPUS = 0.0253
 MOSS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_WER_MAX_CORPUS)
-MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0229
+MOSS_VC_STREAM_WER_MAX_CORPUS = 0.0254
 MOSS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(MOSS_VC_STREAM_WER_MAX_CORPUS)
-MOSS_VC_SIMILARITY_MEAN_MIN = 62.690567626953126
-MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9545
+MOSS_VC_SIMILARITY_MEAN_MIN = 64.07273590087891
+MOSS_VC_UTMOS_MEAN_REFERENCE = 3.9511
 MOSS_VC_UTMOS_MEAN_MIN = apply_mos_slack(MOSS_VC_UTMOS_MEAN_REFERENCE)
 
 _MOSS_VC_NON_STREAM_P95 = {
     16: {
-        "throughput_qps": 14.166,
-        "output_tok_per_req_s": 69.2,
-        "latency_mean_s": 1.123,
-        "rtf_mean": 0.2615,
+        "throughput_qps": 18.71,
+        "output_tok_per_req_s": 84.8,
+        "latency_mean_s": 0.851,
+        "rtf_mean": 0.197,
     }
 }
 
 _MOSS_VC_STREAM_P95 = {
     16: {
-        "throughput_qps": 7.209,
-        "latency_mean_s": 2.199,
-        "rtf_mean": 0.5223,
+        "throughput_qps": 11.157,
+        "latency_mean_s": 1.426,
+        "rtf_mean": 0.3345,
     }
 }
 
@@ -109,6 +114,49 @@ MOSS_VC_NON_STREAM_THRESHOLDS = apply_slack(
 )
 MOSS_VC_STREAM_THRESHOLDS = apply_slack(
     _MOSS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+
+# Qwen3-TTS 1.7B. This is the variant the community deploys, and it is gated as
+# a single instance: on one H100 the tuned single instance beats the same-card
+# MPS-DP2 pool on peak throughput and holds a several-fold better first-audio
+# latency, so colocation is no longer the recommended topology for it.
+#
+# Note: (wenyao) recalibrated on the CI host, lane 2,3 pinned cpuset
+# (16-31,80-95), worst-of-5 clean rounds with destructive rejection
+# (run .tune-runs/20260830T024753Z_tts_combined). Raw pre-slack references
+# only; the CI slack calculation is unchanged.
+QWEN3_TTS_VC_WER_MAX_CORPUS = 0.0112
+QWEN3_TTS_VC_WER_CORPUS_THRESHOLD = apply_wer_slack(QWEN3_TTS_VC_WER_MAX_CORPUS)
+QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS = 0.011
+QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD = apply_wer_slack(
+    QWEN3_TTS_VC_STREAM_WER_MAX_CORPUS
+)
+QWEN3_TTS_VC_SIMILARITY_MEAN_MIN = 69.00611707687378
+QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE = 4.1926
+QWEN3_TTS_VC_UTMOS_MEAN_MIN = apply_mos_slack(QWEN3_TTS_VC_UTMOS_MEAN_REFERENCE)
+
+_QWEN3_TTS_VC_NON_STREAM_P95 = {
+    16: {
+        "throughput_qps": 18.007,
+        "output_tok_per_req_s": 74.9,
+        "latency_mean_s": 0.882,
+        "rtf_mean": 0.2182,
+    }
+}
+
+_QWEN3_TTS_VC_STREAM_P95 = {
+    16: {
+        "throughput_qps": 16.58,
+        "latency_mean_s": 0.96,
+        "rtf_mean": 0.2341,
+    }
+}
+
+QWEN3_TTS_VC_NON_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_VC_NON_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
+)
+QWEN3_TTS_VC_STREAM_THRESHOLDS = apply_slack(
+    _QWEN3_TTS_VC_STREAM_P95, THRESHOLD_SLACK_HIGHER, THRESHOLD_SLACK_LOWER
 )
 
 
@@ -128,6 +176,33 @@ TTS_CI_PRESETS: dict[str, TtsCiPreset] = {
             stream_wer_corpus=HIGGS_VC_STREAM_WER_CORPUS_THRESHOLD,
             similarity_mean_min=HIGGS_VC_SIMILARITY_MEAN_MIN,
             utmos_mean_min=HIGGS_VC_UTMOS_MEAN_MIN,
+        ),
+    ),
+    "qwen3-tts": TtsCiPreset(
+        model=TtsCiModelPreset(
+            model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            ref_format="references",
+            # Note: (Jiaxin Deng) the shipped defaults cap the AR engine at 16
+            # running requests and colocate every stage in one process; both are
+            # what kept this variant behind, so CI measures the tuned point.
+            worker_extra_args=(
+                "--tts_engine.engine.max_running_requests 64 "
+                "--tts_engine.engine.cuda_graph_max_bs 64 "
+                "--tts_engine.engine.torch_compile_max_bs 64 "
+                "--vocoder.process vocoder "
+                "--tts_engine.gpu_memory_fraction 0.85 "
+                "--vocoder.gpu_memory_fraction 0.10"
+            ),
+            startup_timeout=300,
+            gate_thresholds=True,
+        ),
+        thresholds=TtsCiThresholdPreset(
+            non_stream_speed=QWEN3_TTS_VC_NON_STREAM_THRESHOLDS,
+            stream_speed=QWEN3_TTS_VC_STREAM_THRESHOLDS,
+            wer_corpus=QWEN3_TTS_VC_WER_CORPUS_THRESHOLD,
+            stream_wer_corpus=QWEN3_TTS_VC_STREAM_WER_CORPUS_THRESHOLD,
+            similarity_mean_min=QWEN3_TTS_VC_SIMILARITY_MEAN_MIN,
+            utmos_mean_min=QWEN3_TTS_VC_UTMOS_MEAN_MIN,
         ),
     ),
     "moss": TtsCiPreset(

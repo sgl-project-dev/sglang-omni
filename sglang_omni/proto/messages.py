@@ -7,6 +7,10 @@ from typing import Any
 import msgspec
 
 from sglang_omni.proto.admin import AdminOperation, AdminResult
+from sglang_omni.proto.kv_transfer import (
+    KVTransferPrepareMessage,
+    KVTransferReadyMessage,
+)
 from sglang_omni.proto.request import StagePayload
 
 
@@ -21,6 +25,7 @@ class DataReadyMessage:
     chunk_id: int | None = None
     is_done: bool = False
     error: str | None = None
+    replica_bindings: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         _require_str(self.request_id, "request_id")
@@ -55,6 +60,8 @@ class DataReadyMessage:
         if self.error is not None:
             _require_str(self.error, "error")
             d["error"] = self.error
+        if self.replica_bindings:
+            d["replica_bindings"] = dict(self.replica_bindings)
         return d
 
     @classmethod
@@ -92,6 +99,7 @@ class DataReadyMessage:
             chunk_id=chunk_id,
             is_done=is_done,
             error=error,
+            replica_bindings=d.get("replica_bindings"),
         )
 
 
@@ -240,19 +248,27 @@ class SubmitMessage:
 
     request_id: str
     data: Any
+    replica_bindings: dict[str, int] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = self.data
         if isinstance(self.data, StagePayload):
             data = self.data.to_dict()
-        return {"type": "submit", "request_id": self.request_id, "data": data}
+        d = {"type": "submit", "request_id": self.request_id, "data": data}
+        if self.replica_bindings:
+            d["replica_bindings"] = dict(self.replica_bindings)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> "SubmitMessage":
         data = d["data"]
         if isinstance(data, dict) and data.get("_type") == "StagePayload":
             data = StagePayload.from_dict(data)
-        return cls(request_id=d["request_id"], data=data)
+        return cls(
+            request_id=d["request_id"],
+            data=data,
+            replica_bindings=d.get("replica_bindings"),
+        )
 
 
 @dataclass
@@ -344,6 +360,8 @@ def parse_message(
     | AdminResultMessage
     | DataAckMessage
     | DataReadyMessage
+    | KVTransferPrepareMessage
+    | KVTransferReadyMessage
     | AbortMessage
     | CompleteMessage
     | StreamMessage
@@ -358,6 +376,10 @@ def parse_message(
         return DataReadyMessage.from_dict(d)
     elif msg_type == "data_ack":
         return DataAckMessage.from_dict(d)
+    elif msg_type == "kv_transfer_prepare":
+        return KVTransferPrepareMessage.from_dict(d)
+    elif msg_type == "kv_transfer_ready":
+        return KVTransferReadyMessage.from_dict(d)
     elif msg_type == "abort":
         return AbortMessage.from_dict(d)
     elif msg_type == "complete":

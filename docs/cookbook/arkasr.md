@@ -10,6 +10,8 @@ SGLang's native Qwen2 decoder. The checkpoint's tokenizer and config are loaded
 with `trust_remote_code=True` (the served `ServerArgs` also sets it), so the
 first launch will prompt to execute the checkpoint's bundled code.
 
+ARK-ASR does not support `/v1/audio/translations`; that endpoint returns HTTP 400. Use `/v1/audio/transcriptions`.
+
 ## Prerequisites
 
 Install `sglang-omni` by following [Installation](../get_started/installation.md), then download the model:
@@ -21,12 +23,69 @@ hf download AutoArk-AI/ARK-ASR-3B
 ## Server Configuration
 
 ARK-ASR runs a single ASR stage on one GPU, in `bfloat16` by default.
+Async decode is enabled by default for decode batches of at least two requests,
+allowing the shared one-step-lookahead path to overlap host-side result
+processing with the next GPU decode forward. Use `--asr.factory.enable_async_decode false` to disable
+it, or tune the crossover with `--async-lookahead-min-batch-size`.
+Request concurrency and audio-encoder batching are controlled separately:
+
+- `max_running_requests` defaults to `32` and limits requests admitted by the
+  ASR scheduler.
+- `encoder_max_batch_size` defaults to `8` and limits the number of uncached
+  audio items processed by one encoder forward. Larger cache-miss batches are
+  processed as sequential encoder microbatches, so request concurrency does
+  not directly create an unbounded encoder batch.
 
 ```bash
 sgl-omni serve \
   --model-path AutoArk-AI/ARK-ASR-3B \
   --port 8000
 ```
+
+The encoder activation memory is in addition to the model weights and KV
+cache. For long clips or high concurrency, leave additional runtime headroom
+by lowering SGLang's static memory fraction, for example:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --mem-fraction-static 0.75 \
+  --port 8000
+```
+
+`mem_fraction_static` controls the SGLang memory budget for model weights and
+the KV-cache pool; it does not replace `encoder_max_batch_size`. The two
+settings protect different parts of the serving path. ARK does not override
+SGLang's default static memory fraction; use `0.75` when long clips or high
+concurrency still need additional encoder headroom and the reduced KV-cache
+capacity is acceptable.
+
+To force synchronous decode while comparing modes, use:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.factory.enable_async_decode false \
+  --port 8000
+```
+
+### Prefill Coalescing
+
+ARK-ASR holds newly built requests briefly by default so the scheduler can
+admit a larger prefill batch. The tuned defaults are 16 requests / 32 ms:
+
+```bash
+sgl-omni serve \
+  --model-path AutoArk-AI/ARK-ASR-3B \
+  --prefill-coalesce-requests 16 \
+  --prefill-coalesce-wait-ms 32 \
+  --port 8000
+```
+
+Admission is released after either the request threshold or wait deadline is
+reached; it can release earlier when pending request-build work drains. Set
+`--prefill-coalesce-requests 0` to disable coalescing. Tune these values for the
+target request distribution and latency requirements.
 
 ## Transcribe Audio
 
@@ -57,6 +116,31 @@ resp.raise_for_status()
 print(resp.json()["text"])
 ```
 
+## Stream Transcription
+
+Set the multipart `stream` field to `true` and keep `response_format` as
+`json` or `text` to receive Server-Sent Events (SSE):
+
+```bash
+curl -N -X POST http://localhost:8000/v1/audio/transcriptions \
+  -F model=AutoArk-AI/ARK-ASR-3B \
+  -F file=@tests/data/query_to_cars.wav \
+  -F language=en \
+  -F response_format=json \
+  -F stream=true
+```
+
+The response contains zero or more `transcript.text.delta` events, followed
+by one `transcript.text.done` event with the complete post-processed
+transcript, then `data: [DONE]`. Streaming primarily reduces time to first
+text; it does not change the final transcript.
+
+Treat `transcript.text.done` as the authoritative transcript: it is the same
+post-processed string as the non-stream `text` field. Incremental
+`transcript.text.delta` events are a live preview. Concatenating them may
+differ from `done` by leading or trailing whitespace (the final adapter
+`.strip()`s the full decode). Persist `done.text`, not `"".join(deltas)`.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -65,6 +149,7 @@ print(resp.json()["text"])
 | `model` | string | server default | Model identifier |
 | `language` | string | `en` | Language hint recorded on the request. The transcription instruction is a fixed English prompt (`Please transcribe this audio.`); ARK-ASR auto-detects the spoken language, so this field does not switch prompt templates. |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
+| `stream` | boolean | `false` | Emit SSE text deltas. Streaming accepts only `json` or `text` response formats |
 | `temperature` | float | `0` (greedy) | Sampling temperature. When unset or `0`, SGLang's sampling normalization selects greedy decoding (`top_k=1`); no non-zero temperature is substituted. |
 
 ### Response Formats
@@ -117,6 +202,83 @@ adversarial / OOD audio. The request builder defensively suppresses every reserv
 marker (all special + `<...>`-added ids except EOS) at sampling via `logit_bias`
 and strips them on decode. This is a verified no-op on clean speech.
 
+## Pre-LM Audio Encoder
+
+Audio encoding runs **before LM admission**, not inside the LM forward. The
+audio encoder executes at request-build time on a dedicated worker thread and
+CUDA stream, and a request is admitted only once its complete LM-ready
+embedding is attached (`MultimodalDataItem.precomputed_embeddings`). Without
+this, every admission stalls the running decode batch for the whole encoder
+forward on the scheduler thread and the default stream.
+
+Encoded embeddings are cached in a bounded CPU LRU keyed on the audio
+fingerprint plus a namespace digest of the encoder pipeline (checkpoint path,
+model config including `merge_factor`, mel front-end fields, dtype, attention
+backend). Changing any of those re-keys the cache rather than serving a stale
+embedding. Concurrent requests for identical audio are deduplicated
+single-flight, so the clip is encoded once.
+
+Request building submits encoder work without waiting for the GPU. The
+scheduler holds the built LM request outside its waiting queue until that
+request's encoder future completes, then performs normal admission on the
+scheduler thread. A bounded encoder queue applies backpressure before mel
+tensors can accumulate without limit.
+
+| knob | default | meaning |
+|---|---|---|
+| `enable_pre_lm_encoder` | `true` | Off falls back to encoding inside the LM forward. |
+| `pre_lm_cache_max_entries` | `4096` | Max cached embeddings. |
+| `pre_lm_cache_size_bytes` | `2 GiB` | Byte budget; LRU evicts past it. |
+| `pre_lm_max_batch_size` | `8` | Max queued requests drained into one `get_audio_feature` call. |
+| `pre_lm_max_batch_wait_ms` | `0` | Batch-formation window. `0` is a greedy drain: items queued while the previous group encoded are taken instantly, so an idle-arrival request pays no batching latency. |
+| `pre_lm_max_pending` | `32` | Max encoder items waiting behind the active batch. |
+
+### How this relates to `encoder_max_batch_size`
+
+The two batch knobs act at different levels and both stay in force:
+
+- `pre_lm_max_batch_size` decides **how many queued requests are handed to one
+  `get_audio_feature` call**.
+- `encoder_max_batch_size` decides **how that call is executed** — it pads and
+  masks the group, then splits it into sequential microbatches to bound
+  encoder activation memory.
+
+Both default to `8`, so one drained group is exactly one encoder microbatch.
+Raising `pre_lm_max_batch_size` above `encoder_max_batch_size` turns a group
+into several bounded forwards; it never widens a single forward, so it does
+not change peak encoder activation memory.
+
+`request_build_max_workers` defaults to **2** and
+`request_build_max_pending` to **16**. These workers only perform CPU request
+construction; encoder concurrency and backpressure are owned by the separate
+pre-LM queue.
+
+## Encoder CUDA Graph
+
+The audio encoder CUDA Graph is enabled by default. At startup it captures
+batch buckets derived from `encoder_max_batch_size` (powers of two, plus the
+limit itself; the default of 8 yields `1/2/4/8`) and mel-frame buckets in
+64-frame steps up to about 10 s (1024 frames). Longer clips, any uncaptured
+bucket, and a failed capture or replay use the eager encoder; requests never
+trigger capture.
+
+The graphs are captured after SGLang's generation CUDA graphs and before the
+pre-LM encoder service. To profile eager encoder execution:
+
+```bash
+sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B \
+  --asr.factory.enable_encoder_cuda_graph false
+```
+
+Or in a pipeline config:
+
+```yaml
+stages:
+  asr:
+    factory:
+      enable_encoder_cuda_graph: false
+```
+
 ## Benchmarking
 
 Use `benchmarks/eval/benchmark_asr_seedtts.py` to sweep ASR concurrency on
@@ -125,12 +287,26 @@ SeedTTS reference audio through `/v1/audio/transcriptions`. Pass
 `benchmarks.tasks.asr`.
 
 ```bash
+# Download the test set once:
+python -m benchmarks.dataset.prepare --dataset seedtts
+
+# Launch ARK-ASR:
 sgl-omni serve --model-path AutoArk-AI/ARK-ASR-3B --port 8000
 
 # Sweep the full SeedTTS EN set (1088 clips) at 1..64 concurrency, 3 repeats:
 python -m benchmarks.eval.benchmark_asr_seedtts \
   --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
   --concurrencies 1,2,4,8,16,32,64 --repeats 3 --warmup
+
+# Quick smoke on a 20-sample subset:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1
+
+# Measure text TTFT and inter-chunk latency through the SSE endpoint:
+python -m benchmarks.eval.benchmark_asr_seedtts \
+  --port 8000 --model-path AutoArk-AI/ARK-ASR-3B \
+  --max-samples 20 --concurrencies 2 --repeats 1 --stream
 ```
 
 The script reports corpus WER, throughput, and latency per concurrency level.

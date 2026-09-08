@@ -44,7 +44,7 @@ python examples/run_omni.py qwen3-speech-server \
   --model-path Qwen/Qwen3-Omni-30B-A3B-Instruct \
   --gpu-thinker 0 \
   --gpu-talker 1 \
-  --gpu-code2wav 1 \
+  --gpu-code2wav 0 \
   --port 8000 \
   --model-name qwen3-omni
 ```
@@ -54,6 +54,16 @@ Qwen3-Omni FP8, one-GPU colocated H100/H20:
 ```bash
 sgl-omni serve \
   --config examples/configs/qwen3_omni_fp8_colocated.yaml \
+  --colocate \
+  --model-name qwen3-omni \
+  --port 8000
+```
+
+Qwen3-Omni BF16, one-GPU colocated AMD MI355X (gfx950, ROCm):
+
+```bash
+sgl-omni serve \
+  --config examples/configs/qwen3_omni_colocated_gfx950_bf16.yaml \
   --colocate \
   --model-name qwen3-omni \
   --port 8000

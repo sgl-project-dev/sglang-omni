@@ -4,12 +4,13 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import torch
-from sgl_kernel import fused_qk_norm_rope
+from sglang.srt.runtime_context import get_parallel, get_stream
 from torch import nn
 from transformers import PretrainedConfig
 
 from sglang_omni.models.qwen3_omni.hf_config import Qwen3OmniMoeTextConfig
 from sglang_omni.models.weight_loader import default_weight_loader
+from sglang_omni.platforms import current_platform
 from sglang_omni.quantization import get_weight_preprocessor
 from sglang_omni.utils import add_prefix
 from sglang_omni.vendor.sglang.core import ForwardBatch
@@ -31,8 +32,6 @@ from sglang_omni.vendor.sglang.layers import (
     RowParallelLinear,
     TopK,
     VocabParallelEmbedding,
-    get_attention_tp_rank,
-    get_attention_tp_size,
     get_moe_impl_class,
     get_rope,
     should_use_flashinfer_cutlass_moe_fp4_allgather,
@@ -44,6 +43,8 @@ from sglang_omni.vendor.sglang.models import (
 )
 from sglang_omni.vendor.sglang.server_args import get_global_server_args
 from sglang_omni.vendor.sglang.utils import make_layers
+
+fused_qk_norm_rope = current_platform.get_fused_qk_norm_rope()
 
 logger = logging.getLogger(__name__)
 
@@ -159,14 +160,14 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
         dual_chunk_attention_config: Optional[dict[str, Any]] = None,
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.Stream] = None,
     ) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.layer_id = layer_id
 
-        attn_tp_rank = get_attention_tp_rank()
-        attn_tp_size = get_attention_tp_size()
+        attn_tp_rank = get_parallel().attn_tp_rank
+        attn_tp_size = get_parallel().attn_tp_size
 
         self.config = config
         self.total_num_heads = num_heads
@@ -230,6 +231,7 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
         self.use_fused_qk_norm_rope = (
             get_global_server_args().enable_fused_qk_norm_rope
             and self.compatible_with_fused_qk_norm_rope
+            and fused_qk_norm_rope is not None
         )
         self._used_fused_qk_norm_rope_last_call = False
         self._used_fused_set_kv_buffer_last_call = False
@@ -307,7 +309,8 @@ class Qwen3OmniMoeThinkerTextAttention(nn.Module):
                 alt_stream=self.alt_stream,
             )
             use_fused_set_kv_buffer = (
-                enable_fused_set_kv_buffer(forward_batch)
+                current_platform.is_cuda()
+                and enable_fused_set_kv_buffer(forward_batch)
                 and self.compatible_with_fused_kv_buffer
             )
             q, k = self.rotary_emb(
@@ -471,7 +474,7 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
         layer_id: int,
         quant_config: Optional[QuantizationConfig] = None,
         prefix: str = "",
-        alt_stream: Optional[torch.cuda.Stream] = None,
+        alt_stream: Optional[torch.Stream] = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -503,8 +506,8 @@ class Qwen3OmniMoeThinkerTextDecoderLayer(nn.Module):
 
         self.layer_id = layer_id
 
-        self.attn_tp_size = get_attention_tp_size()
-        self.attn_tp_rank = get_attention_tp_rank()
+        self.attn_tp_size = get_parallel().attn_tp_size
+        self.attn_tp_rank = get_parallel().attn_tp_rank
 
         # Qwen3MoE all layers are sparse and have no nextn now
         self.is_layer_sparse = True
@@ -623,7 +626,7 @@ class Qwen3OmniMoeThinkerTextModel(nn.Module):
             prefix=add_prefix(prefix, "embed_tokens"),
         )
 
-        alt_stream = torch.cuda.Stream()
+        alt_stream = get_stream("alt") if current_platform.is_cuda() else None
         result = make_layers(
             config.num_hidden_layers,
             lambda idx, prefix: Qwen3OmniMoeThinkerTextDecoderLayer(

@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Adapters between stage objects and data-plane refs."""
+
 from __future__ import annotations
 
 import base64
@@ -118,6 +119,23 @@ def restore_tensors(obj: Any, tensors: dict[str, torch.Tensor]) -> Any:
     if isinstance(obj, (list, tuple)):
         return type(obj)(restore_tensors(value, tensors) for value in obj)
     return obj
+
+
+def strip_process_local_metadata(
+    metadata: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Drop values that only mean something inside the sending process.
+
+    A CUDA event orders a same-process consumer after the producer's stream;
+    across a process boundary the transport establishes readiness itself.
+    """
+    if metadata is None:
+        return None
+    return {
+        key: value
+        for key, value in metadata.items()
+        if not isinstance(value, torch.cuda.Event)
+    }
 
 
 def should_use_direct_cuda_ipc_stream_chunk(
@@ -247,6 +265,75 @@ def serialize_direct_cuda_ipc_stream_chunk(
     return ref
 
 
+_INLINE_STREAM_CHUNK_TYPE = "InlineStreamChunk"
+_INLINE_STREAM_CHUNK_BYTES_LIMIT = 16 * 1024
+
+
+def serialize_inline_stream_chunk(
+    data: Any, metadata: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(data, torch.Tensor) or data.device.type != "cpu":
+        return None
+    if _contains_cuda_tensor(metadata) or _contains_cpu_tensor(metadata):
+        return None
+    if data.element_size() * data.numel() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        return None
+    data = data.detach()
+    if data.untyped_storage().nbytes() > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        data = data.clone(memory_format=torch.contiguous_format)
+    payload = pickle.dumps((data, metadata))
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        return None
+    return {
+        "_type": _INLINE_STREAM_CHUNK_TYPE,
+        "version": 1,
+        "payload": payload,
+    }
+
+
+def is_inline_stream_chunk_ref(value: Any) -> bool:
+    return isinstance(value, dict) and value.get("_type") == _INLINE_STREAM_CHUNK_TYPE
+
+
+def deserialize_inline_stream_chunk(
+    data_ref: dict[str, Any],
+) -> tuple[torch.Tensor, dict[str, Any] | None]:
+    if data_ref.get("_type") != _INLINE_STREAM_CHUNK_TYPE:
+        raise ValueError("data_ref is not an inline stream chunk")
+    if data_ref.get("version") != 1:
+        raise ValueError(
+            f"unsupported inline stream chunk version {data_ref.get('version')!r}"
+        )
+    payload = data_ref.get("payload")
+    if not isinstance(payload, bytes):
+        raise TypeError(
+            f"inline stream chunk payload must be bytes, got "
+            f"{type(payload).__name__}"
+        )
+    if len(payload) > _INLINE_STREAM_CHUNK_BYTES_LIMIT:
+        raise ValueError(
+            "inline stream chunk payload exceeds "
+            f"{_INLINE_STREAM_CHUNK_BYTES_LIMIT} bytes"
+        )
+    data, metadata = pickle.loads(payload)
+    if not isinstance(data, torch.Tensor):
+        raise TypeError(
+            f"inline stream chunk data must be torch.Tensor, got "
+            f"{type(data).__name__}"
+        )
+    if data.device.type != "cpu":
+        device_type = data.device.type
+        raise ValueError(
+            f"inline stream chunk data must be a CPU tensor, got {device_type}"
+        )
+    if metadata is not None and not isinstance(metadata, dict):
+        raise TypeError(
+            "inline stream chunk metadata must be dict or None, got "
+            f"{type(metadata).__name__}"
+        )
+    return data, metadata
+
+
 def is_direct_cuda_ipc_stream_chunk_ref(value: Any) -> bool:
     return (
         isinstance(value, dict)
@@ -328,6 +415,7 @@ async def read_payload(
     relay: Relay,
     request_id: str,
     data_ref: DataRef,
+    local_device: str | None = None,
 ) -> StagePayload:
     if data_ref.kind is not DataKind.STAGE_PAYLOAD:
         raise ValueError(f"expected stage_payload, got {data_ref.kind.value}")
@@ -341,6 +429,7 @@ async def read_payload(
             .view(_torch_dtype(entry.dtype))
             .reshape(entry.shape),
             entry.device,
+            local_device,
         )
         for entry in data_ref.tensors
     }
@@ -367,6 +456,7 @@ async def write_tensor(
         raise TypeError(
             f"write_tensor requires torch.Tensor, got {type(tensor).__name__}"
         )
+    source_device = str(tensor.device)
     packed = tensor.contiguous().view(torch.uint8).reshape(-1)
     target_device = torch.device(relay_device(relay))
     if packed.device != target_device:
@@ -394,6 +484,7 @@ async def write_tensor(
             ),
             shape=tuple(int(dim) for dim in tensor.shape),
             dtype=str(tensor.dtype),
+            device=source_device,
             offset=offset,
         ),
         op,
@@ -428,10 +519,12 @@ async def write_stream_chunk(
     target_stage: str,
     from_stage: str,
     chunk_id: int,
+    object_id: str | None = None,
     metadata: dict | None = None,
     transport: TransportKind,
 ) -> tuple[DataRef, list[Any]]:
-    object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
+    if object_id is None:
+        object_id = f"{request_id}:stream:{from_stage}:{target_stage}:{chunk_id}"
     data_ref, op = await write_tensor(
         relay,
         object_id,
@@ -457,14 +550,19 @@ async def write_stream_chunk(
 async def read_stream_chunk(
     relay: Relay,
     data_ref: DataRef,
+    local_device: str | None = None,
 ) -> tuple[torch.Tensor, dict[str, Any] | None]:
     data = await read_tensor(relay, data_ref)
+    if data_ref.device is not None:
+        data = _restore_tensor_device(data, data_ref.device, local_device)
     metadata = dict(data_ref.metadata or {})
     if data_ref.metadata_tensors:
-        tensors = {
-            ref.path: await read_tensor(relay, ref.ref)
-            for ref in data_ref.metadata_tensors
-        }
+        tensors = {}
+        for ref in data_ref.metadata_tensors:
+            tensor = await read_tensor(relay, ref.ref)
+            if ref.ref.device is not None:
+                tensor = _restore_tensor_device(tensor, ref.ref.device, local_device)
+            tensors[ref.path] = tensor
         metadata = restore_tensors(metadata, tensors)
     return data, metadata or None
 
@@ -478,6 +576,7 @@ async def send_stream_signal(
     from_stage: str,
     is_done: bool = False,
     error: str | None = None,
+    replica_bindings: dict[str, int] | None = None,
 ) -> None:
     await control_plane.send_to_stage(
         target_stage,
@@ -489,6 +588,7 @@ async def send_stream_signal(
             data_ref=None,
             is_done=is_done,
             error=error,
+            replica_bindings=replica_bindings,
         ),
     )
 
@@ -526,6 +626,7 @@ async def _with_stream_metadata(
         buffer=data_ref.buffer,
         shape=data_ref.shape,
         dtype=data_ref.dtype,
+        device=data_ref.device,
         offset=data_ref.offset,
         metadata=metadata_without_tensors,
         metadata_tensors=tuple(tensor_refs),
@@ -598,10 +699,23 @@ def _torch_dtype(dtype_str: str) -> torch.dtype:
     return dtype
 
 
-def _restore_tensor_device(tensor: torch.Tensor, device: str) -> torch.Tensor:
+def _restore_tensor_device(
+    tensor: torch.Tensor,
+    device: str,
+    local_device: str | None = None,
+) -> torch.Tensor:
+    """Put a received tensor back on the device its consumer expects.
+
+    An accelerator-origin tensor relayed over host shm arrives on the CPU, so it goes
+    to the receiver's own card, never the sender's index. A host-only stage keeps it.
+    """
     if torch.device(device).type == "cpu":
         return tensor.cpu()
-    return tensor
+    if tensor.device.type == torch.device(device).type:
+        return tensor
+    if local_device is None:
+        return tensor
+    return tensor.to(local_device)
 
 
 def _contains_cuda_tensor(obj: Any, seen: set[int] | None = None) -> bool:
