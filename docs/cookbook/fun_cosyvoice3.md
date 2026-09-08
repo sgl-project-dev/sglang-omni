@@ -1,23 +1,21 @@
 # Fun-CosyVoice3
 
-[Fun-CosyVoice3-0.5B](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) is a
-lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
-It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens),
-conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
-speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and
-instruction-based style control. The model produces 24 kHz speech at a
-25 Hz token frame rate through the `preprocessing → tts_engine → vocoder` pipeline and the
-OpenAI-compatible `/v1/audio/speech` endpoint.
+[Fun-CosyVoice3-0.5B](https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512) is a lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
+It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens), conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
+speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and instruction-based style control. The model produces 24 kHz speech at a rate of 25 Hz token frame rate through the `preprocessing → tts_engine → vocoder` pipeline and the OpenAI-compatible `/v1/audio/speech` endpoint.
 
 ## Prerequisites
 
-Install `sglang-omni` by following [Installation](../get_started/installation.md).
+Install `sglang-omni` from source as in [Installation](../get_started/installation.md).
+The `--config examples/configs/fun_cosyvoice3_0_5b.yaml` path later on is relative
+to the repository root.
 
-Fun-CosyVoice3 depends on the `cosyvoice` package:
+Fun-CosyVoice3 needs `sox` and a few extra Python packages. From the repository
+root, install the extra against **this checkout**:
 
 ```bash
 apt-get update && apt-get install -y sox
-uv pip install "sglang-omni[fun-cosyvoice3]"
+uv pip install -e ".[fun-cosyvoice3]"
 ```
 
 Clone the CosyVoice repository with its Matcha-TTS submodule and add both to `PYTHONPATH`:
@@ -34,14 +32,9 @@ git -C ${COSYVOICE_PATH}/third_party/Matcha-TTS checkout ${MATCHA_TTS_COMMIT}
 export PYTHONPATH="${COSYVOICE_PATH}:${COSYVOICE_PATH}/third_party/Matcha-TTS:$PYTHONPATH"
 ```
 
-**Do not** run `pip install -r requirements.txt` from the CosyVoice checkout. That file pins
-`torch`, `torchaudio`, `transformers`, and `diffusers` versions that conflict with the
-`sglang-omni` core pins — only the `fun-cosyvoice3` extra above and the two `PYTHONPATH`
-entries are needed; the CosyVoice Flow and HiFT modules import fine against the
-`sglang-omni` versions of those shared packages.
+**Do not** run `pip install -r requirements.txt` from the CosyVoice checkout. That file pins `torch`, `torchaudio`, `transformers`, and `diffusers` versions that conflict with the `sglang-omni` core pins. Only the `fun-cosyvoice3` extra above and the two `PYTHONPATH` entries are needed; the CosyVoice Flow and HiFT modules import fine against the `sglang-omni` versions of those shared packages.
 
-The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, which use
-the `onnxruntime` already pinned in `sglang-omni`'s core dependencies.
+The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, which use the `onnxruntime` already pinned in `sglang-omni`'s core dependencies.
 
 Download the checkpoint:
 
@@ -51,8 +44,7 @@ hf download FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 
 ## Server Configuration
 
-The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several
-minutes while the `tts_engine` captures CUDA graphs.
+The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes while the `tts_engine` captures CUDA graphs.
 
 ```bash
 sgl-omni serve \
