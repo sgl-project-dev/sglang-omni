@@ -732,3 +732,58 @@ Nari 对标时同时报 TTFB 与可闻 TTFA。
 - **#1997 CI 全绿(2026-09-06 23:55 PT,head 89d5c1ed)**:33 个 check 通过,含 TTS CI 五个 stage、
   ASR 两段、Qwen3-Omni 十一段、XPU、单测。三个 PR 状态:#1907(CI 绿)→ #1997(CI 绿)→
   #1998(CI 绿,能干净合到 main+#1997 之上),均待 review。
+
+## 第十四轮:三个 PR 的 review 回合与 #1754 roadmap 同步(2026-09-07 19:00-20:00 PT)
+
+三个 PR 都收到 review。#1907 与 #1997 的意见上一轮已答复并修好,但**两个 fix commit 推错了
+地方,reviewer 看到的仍是旧代码**:
+
+- `67f7c7a7`(#1907 的 EagerRunner 作用域修复)推到了 `origin`(sgl-project)的同名分支,而
+  #1907 的 head 读的是 fork(luojiaxuan/sglang-omni),PR head 一直停在 `20e81fc0`;
+- `4ecf10a9`(#1998 的能力门修复)只在本地,未推。
+
+两者已推正,PR head 现为 `67f7c7a7` 与 `5256e070`。**教训:PR 的 head repo 未必是 origin,
+推之前先看 `gh api .../pulls/N --jq .head.repo.full_name`。**
+
+### #1998(charliechenye CHANGES_REQUESTED + JiaxinD COMMENTED)
+
+- 阻塞项已修(`4ecf10a9`):`validate_generation_batch_policy` 增加 `allowed_prefill_backends`,
+  默认 `("breakable",)`;`qwen3_omni/stages.py:1063` 与 `:1188` 两个直调点行为不变,仍拒 `full`。
+  能力由 `SGLangGenerationEngineBuilder.allowed_prefill_cuda_graph_backends()` 加宽。
+- 集成契约已跟上(`4aa47993`):`test_qwen3_tts_batch_invariance.py` 的 CustomVoice 臂断言改 `full`,
+  cookbook 的 prefill 一节改写(默认 `full`、三个值都列、顺带修掉"Non-Base 默认 breakable"与
+  "Only CustomVoice takes this default"的自相矛盾),`tests/README.md` 的 policy 描述去掉 breakable 限定。
+- 格式修复(`5256e070`):`4ecf10a9` 有一行 89 字符超 black 88 上限,lint 会挂。已用
+  `uvx black@24.10.0` + `uvx isort@5.13.2` 核过全部改动文件。
+- 上游 experimental 一节写进 PR 正文,依据是实读 sglang 源码:`arg_groups/cuda_graph_hook.py:490`
+  对 `prefill.backend == FULL` 打 experimental 警告,`disable_full_prefill_cudagraph_if_incompatible`
+  (:344)的 `rules = []` 确为空。含义:上游不会为任何 feature 自动关掉 full,我们 policy 里那份
+  不兼容清单是这条路径上唯一的守卫。
+- CI 全绿:lint / build-docs / omni-ci-gate / test-layout / CodeQL 均 pass。
+
+### #1997
+
+无需改动,逐项复核确认上一轮的修复都在:机器人 6 条(`except BaseException`、两处
+`entry = None`、两个无用 import、变长 tuple lambda)全部落实;PR 正文已无 `record_stream`;
+cookbook:407 已是 H100 数字并去掉了不在树里的 benchmark doc 引用。
+
+### #1754 roadmap 同步
+
+上次状态评论停在 2026-09-03 12:29 PT,已落后四天。本轮同步了:
+
+- **更正**:09-03 评论里"follow-up 批每批约 30ms CPU 开销"的归因是错的,本文档
+  「拆解」一节的四段计时(resolve 占 85.4%、CPU 合计 2.3ms)才是实际情况。该更正已写进 issue。
+- 09-03 以来合入的五个 PR(#1852 / #1930 / #1900 / #1928 / #1901)列表与 commit;
+- 三个在途 PR 的合并顺序与 #1998 依赖 #1907 的理由;
+- issue 正文按事实修正:T-PR5 移入 Landed 并改指 #1852(原写 #1847,已关闭)、T-PR8/T-PR9 改指
+  #1997 并注明 #1846/#1855 已并入、T-PR15 补上 #1900/#1907/#1998(原写"no PR yet")、
+  T-PR18 去掉"review is blocked"(#1794 已于 09-02 合入)、T-PR6 补 #1928、T-PR19 的
+  observability 半边注明由 #1997 承担。
+
+### 本轮决策日志
+
+| 问题 | 默认答案 | 理由 | 回滚 | 外审 |
+|---|---|---|---|---|
+| #1998 的 `eager_on_graph` 失效怎么处理 | 声明 #1998 依赖 #1907,不先于它合并;不把 #1907 的 mrope 修复拷进 #1998 | full backend 下 `eager_on_graph` 是 pass-through,QK-norm/RoPE 被捕获后读到绑定的陈旧 `mrope_positions` 槽,正是 seeded 一致率 92%→74% 的来源;#1907 是根治,拷贝会与 #1907 冲突且让它变冗余 | 若 #1907 被拒,改为在 #1998 内单独实现槽刷新 | JiaxinD 在 review 中明确给出"land #1907 first or drop that comment"两选项,本决定取其一,不另发 ChatGPT 外审 |
+| 只发状态评论还是同时改 issue 正文 | 两者都做 | 正文的 Active/Landed 若不改,下一个读者仍会看到"T-PR9 no PR yet";luojiaxuan 此前已多次编辑该正文(Nari 外部验证条目即是) | GitHub 保留编辑历史,可回退 | 不涉及 |
+| #1998 的 parity 数字(92%/74%)是否立刻重测 | 不重测,正文如实标注"measured on main without #1907, needs a rerun on the rebased tree before merge" | 重测需数小时 H100;#1907 仍在 review,定稿前重测有白烧风险 | 本地 `sglang-omni-p1907` 的 `f747d1bb` 就是 merge 后的树,随时可跑 | 不涉及 |
