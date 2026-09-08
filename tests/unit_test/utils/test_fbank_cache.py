@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""The cached-table fbank must stay bit-identical to torchaudio's kaldi.fbank."""
+"""The cached-table fbank must match the local Kaldi compatibility path."""
 
 import numpy as np
 import pytest
@@ -36,7 +36,7 @@ def _wav(seconds, sample_rate, seed=0):
 
 @pytest.mark.parametrize("seconds", [0.3, 1.0, 5.0])
 @pytest.mark.parametrize("sample_rate", [16000, 8000])
-def test_matches_kaldi_fbank_bit_exactly(seconds, sample_rate):
+def test_cached_fbank_matches_compatibility_fbank(seconds, sample_rate):
     wav = _wav(seconds, sample_rate)
     frame_length = min(25.0, seconds * 1000)
     expected = _reference(wav, frame_length, sample_rate)
