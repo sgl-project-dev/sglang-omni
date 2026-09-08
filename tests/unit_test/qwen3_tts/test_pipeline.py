@@ -6325,7 +6325,7 @@ def test_qwen3_tts_engine_reports_the_pool_against_the_admission_bound(
 
     assert caplog.messages == [
         f"Qwen3-TTS KV pool holds {pool_tokens} tokens, "
-        f"{pool_tokens * 2048 / 2**30:.2f} GiB, against an admission bound of "
+        f"{pool_tokens * 2048 / 2**30:.2f} GiB, against a configured maximum demand of "
         f"{max_running_requests * context_length} "
         f"({max_running_requests} running x {context_length} context), "
         "mem_fraction_static 0.875"

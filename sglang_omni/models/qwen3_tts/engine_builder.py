@@ -189,8 +189,8 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         pool = scheduler.tp_worker.model_runner.token_to_kv_pool
         k_bytes, v_bytes = pool.get_kv_size_bytes()
         logger.info(
-            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against an admission "
-            "bound of %d (%d running x %d context), mem_fraction_static %.3f",
+            "Qwen3-TTS KV pool holds %d tokens, %.2f GiB, against a configured "
+            "maximum demand of %d (%d running x %d context), mem_fraction_static %.3f",
             int(scheduler.max_total_num_tokens),
             (int(k_bytes) + int(v_bytes)) / float(1 << 30),
             running * context,
