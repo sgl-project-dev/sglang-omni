@@ -31,7 +31,9 @@ class NemotronTalkerScheduler(OmniScheduler):
 
     def _rollback_decode_prep_after_skip(self, batch) -> None:
         if batch.out_cache_loc is not None:
-            self.token_to_kv_pool_allocator.free(batch.out_cache_loc)
+            allocator = self.token_to_kv_pool_allocator
+            new_pages = (batch.seq_lens - 1) % allocator.page_size == 0
+            allocator.free(batch.out_cache_loc[new_pages])
             batch.out_cache_loc = None
         for req in batch.reqs:
             req.decode_batch_idx -= 1
