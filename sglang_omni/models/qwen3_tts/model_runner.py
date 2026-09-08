@@ -30,10 +30,14 @@ def _ensure_mrope_positions(forward_batch: Any, *, prefill_graph_runner: Any) ->
     selects row ``i`` of each mrope section, so a mirrored ``[3, T]`` collapses
     to exactly the 1-D result. It is not the same kernel though: on CUDA a 1-D
     positions tensor runs ``forward_native`` while a 2-D one runs the fused
-    ``forward_triton``. Mirroring only where a graph will replay keeps every
-    other prefill on the kernel it already used.
+    ``forward_triton``. Mirroring only the batches that replay keeps every
+    other prefill on the kernel it already used: SGLang hands out an
+    ``EagerRunner`` when prefill graphs are off, and a runner that holds graphs
+    still declines batches outside its captured shapes.
     """
-    if prefill_graph_runner is None:
+    if prefill_graph_runner is None or not prefill_graph_runner.can_run_graph(
+        forward_batch
+    ):
         return
     if forward_batch.mrope_positions is None:
         forward_batch.mrope_positions = (

@@ -378,7 +378,9 @@ def test_qwen3_tts_before_prefill_mirrors_positions_into_mrope() -> None:
         positions=torch.arange(7, dtype=torch.int64),
         mrope_positions=None,
     )
-    _ensure_mrope_positions(batch, prefill_graph_runner=object())
+    _ensure_mrope_positions(
+        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+    )
 
     assert batch.mrope_positions.shape == (3, 7)
     assert torch.equal(batch.mrope_positions[0], batch.positions)
@@ -395,13 +397,32 @@ def test_qwen3_tts_mrope_mirror_is_scoped_to_the_graphed_path() -> None:
     """
     from sglang_omni.models.qwen3_tts.model_runner import _ensure_mrope_positions
 
-    batch = SimpleNamespace(
-        positions=torch.arange(7, dtype=torch.int64),
-        mrope_positions=None,
-    )
-    _ensure_mrope_positions(batch, prefill_graph_runner=None)
+    def _batch():
+        return SimpleNamespace(
+            positions=torch.arange(7, dtype=torch.int64),
+            mrope_positions=None,
+        )
 
+    # note (luojiaxuan): SGLang hands out an EagerRunner rather than None when
+    # prefill graphs are disabled, so the runner's own verdict is what scopes
+    # the mirror.
+    batch = _batch()
+    _ensure_mrope_positions(
+        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: False)
+    )
     assert batch.mrope_positions is None
+
+    batch = _batch()
+    _ensure_mrope_positions(batch, prefill_graph_runner=None)
+    assert batch.mrope_positions is None
+
+    batch = _batch()
+    _ensure_mrope_positions(
+        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+    )
+    assert batch.mrope_positions is not None
+    assert batch.mrope_positions.shape == (3, 7)
+    assert torch.equal(batch.mrope_positions[0], batch.positions)
 
 
 def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
@@ -413,7 +434,9 @@ def test_qwen3_tts_mrope_mirror_leaves_real_positions_alone() -> None:
         positions=torch.zeros(7, dtype=torch.int64),
         mrope_positions=supplied,
     )
-    _ensure_mrope_positions(batch, prefill_graph_runner=object())
+    _ensure_mrope_positions(
+        batch, prefill_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+    )
 
     assert batch.mrope_positions is supplied
 
@@ -4743,9 +4766,11 @@ def test_qwen3_tts_prefill_attaches_runner_composed_embeddings_to_sidecar(
     runner.model = SimpleNamespace(
         prepare_decode_buffers=lambda requests: calls.append("prepare")
     )
-    # A prefill graph runner is present, so the MRoPE mirror applies here.
+    # note (luojiaxuan): the runner accepts this batch, so the mirror applies.
     runner.tp_worker = SimpleNamespace(
-        model_runner=SimpleNamespace(prefill_cuda_graph_runner=object())
+        model_runner=SimpleNamespace(
+            prefill_cuda_graph_runner=SimpleNamespace(can_run_graph=lambda _: True)
+        )
     )
     runner._build_prefill_input_embeds = (
         lambda forward_batch, requests: calls.append("embeds") or input_embeds
