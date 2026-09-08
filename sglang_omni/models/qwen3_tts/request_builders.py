@@ -1180,8 +1180,6 @@ def _prepare_qwen3_tts_base_request(
             desc="Qwen3-TTS ad-hoc reference",
         )
     else:
-        # note(ratish): the hook is the one caller of the tokenizer encoder and
-        # the speaker encoder, so an uploaded miss takes the same path as an ad hoc clip.
         hook = _get_qwen3_tts_adhoc_reference_service(model, wrapper).hook
         voice_clone_prompt, ref_text = hook.encode_one(hook.normalize_input(state))
         speaker_cache.put(

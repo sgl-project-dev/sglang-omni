@@ -112,9 +112,9 @@ def create_sglang_infrastructure(
 ):
     """Create SGLang worker, memory pools, and tree cache.
 
-    ``before_memory_pool`` runs with the model worker after the weights are
-    loaded and before the KV pool is sized, for resources the stage keeps for
-    the life of the process.
+    before_memory_pool runs with the model worker after the weights are loaded
+    and before the KV pool is sized, for resources the stage keeps for the life
+    of the process.
     """
     # ModelRunner.__init__ publishes server_args as the process-wide runtime
     # context; publishing again would silently reconfigure whatever already runs
