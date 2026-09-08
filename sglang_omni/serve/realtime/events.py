@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
 
 # Forward compatibility for future event types.
@@ -61,9 +61,7 @@ class TranscriptionSessionConfig(EventBase):
 
     language: str | None = None
     turn_detection: TurnDetection | None = None
-    input_audio_format: Literal["pcm16"] | None = (
-        None  # TODO: in transcription_session_config.py, asssert -> error event
-    )
+    input_audio_format: Literal["pcm16"] | None = None
 
 
 class SessionObject(EventBase):
@@ -137,6 +135,36 @@ class TranscriptionErrorBody(EventBase):
 class TranscriptionError(TranscriptionServerEvent):
     type: Literal["error"] = "error"
     error: TranscriptionErrorBody
+
+
+class TranscriptionSessionObject(EventBase):
+    """session payload echoed in session.created / session.updated."""
+
+    id: str
+    object: Literal["realtime.session"] = "realtime.session"
+    model: str
+    intent: Literal["transcription"] = "transcription"
+    input_audio_format: Literal["pcm16"] = "pcm16"
+    language: str | None = None
+    decode_interval_ms: int
+    turn_detection: TurnDetection | None = None
+
+    @field_serializer("turn_detection")
+    def _serialize_turn_detection(
+        self, value: TurnDetection | None
+    ) -> dict[str, Any] | None:
+        # Only the settings the client actually set are echoed back.
+        return value.model_dump(exclude_none=True) if value is not None else None
+
+
+class TranscriptionSessionCreated(TranscriptionServerEvent):
+    type: Literal["session.created"] = "session.created"
+    session: TranscriptionSessionObject
+
+
+class TranscriptionSessionUpdated(TranscriptionServerEvent):
+    type: Literal["session.updated"] = "session.updated"
+    session: TranscriptionSessionObject
 
 
 # ================================

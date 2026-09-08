@@ -28,12 +28,14 @@ from sglang_omni.serve.realtime.events import (
     TranscriptionErrorBody,
     TranscriptionSegment,
     TranscriptionServerEvent,
+    TranscriptionSessionCreated,
+    TranscriptionSessionObject,
     TranscriptionSessionUpdate,
+    TranscriptionSessionUpdated,
     TranscriptionSpeechStarted,
     TranscriptionSpeechStopped,
     TurnDetection,
     TurnDetectionType,
-    make_event,
     parse_transcription_client_event,
 )
 from sglang_omni.serve.realtime.vad import (
@@ -247,26 +249,17 @@ class RealtimeTranscriptionSession:
         finally:
             await asyncio.gather(task, return_exceptions=True)
 
-    def initial_event(self) -> dict[str, Any]:
-        return make_event("session.created", session=self._session_payload())
+    def initial_event(self) -> TranscriptionSessionCreated:
+        return TranscriptionSessionCreated(session=self._session_object())
 
-    def _session_payload(self) -> dict[str, Any]:
-        turn_detection = self.settings.turn_detection
-        return {
-            "id": self.session_id,
-            "object": "realtime.session",
-            "model": self.model_name,
-            "intent": "transcription",
-            "modalities": ["text"],
-            "input_audio_format": "pcm16",
-            "language": self.settings.language,
-            "decode_interval_ms": self.settings.decode_interval_ms,
-            "turn_detection": (
-                turn_detection.model_dump(exclude_none=True)
-                if turn_detection is not None
-                else None
-            ),
-        }
+    def _session_object(self) -> TranscriptionSessionObject:
+        return TranscriptionSessionObject(
+            id=self.session_id,
+            model=self.model_name,
+            language=self.settings.language,
+            decode_interval_ms=self.settings.decode_interval_ms,
+            turn_detection=self.settings.turn_detection,
+        )
 
     @staticmethod
     def _new_vad(turn_detection: TurnDetection | None) -> StreamingVAD | None:
@@ -311,7 +304,7 @@ class RealtimeTranscriptionSession:
             self.settings.turn_detection = turn_detection
             self.vad = self._new_vad(turn_detection)
             self.vad_origin_samples = self.buffer_origin_samples
-        await self.send(make_event("session.updated", session=self._session_payload()))
+        await self.send(TranscriptionSessionUpdated(session=self._session_object()))
 
     async def handle_audio_append(self, event: InputAudioBufferAppend) -> None:
         if self._input_done:
