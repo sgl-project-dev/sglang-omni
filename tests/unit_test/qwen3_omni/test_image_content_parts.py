@@ -101,7 +101,7 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
     "url",
     ["/tmp/image.png", "https://example.com/image.png", "data:image/png;base64,YQ=="],
 )
-def test_image_urls_and_text_parts_keep_their_order(url):
+def test_extracts_image_url_forms(url):
     messages = [{"role": "user", "content": [_image(url)]}]
     normalized, images = preprocessor_mod._extract_image_content_parts(messages)
     assert normalized == [{"role": "user", "content": [{"type": "image"}]}]

@@ -317,7 +317,6 @@ class Qwen3OmniPreprocessor:
             # Only inject placeholders into the last user message
             if i == len(messages) - 1 and role == "user":
                 content_parts: list[dict[str, Any]] = []
-                # Placeholders come BEFORE text (Qwen3-Omni format)
                 for _ in range(num_images):
                     content_parts.append({"type": "image"})
                 for _ in range(num_videos):
