@@ -270,6 +270,11 @@ class NemotronVoiceChatTalker(nn.Module):
         )
 
     def load_weights(self, weights):
+        # float32 outside the backbone: the head's sample is quantised to its
+        # nearest RVQ entry, and bfloat16 rounding picks neighbouring codes.
+        self.talker.float()
+        self.mog_head.float()
+        self.audio_prompt_latent = self.audio_prompt_latent.float()
         speaker = self.config.nemotron_speech["speaker"]
         prompt_key = f"tts_model.audio_prompt_latents.{speaker}"
         backbone_weights = []
@@ -295,8 +300,3 @@ class NemotronVoiceChatTalker(nn.Module):
         self.llm.load_weights(backbone_weights)
         self.talker.load_state_dict(talker_state, strict=True)
         self.mog_head.load_state_dict(mog_state, strict=True)
-        # float32 outside the backbone: the head's sample is quantised to its
-        # nearest RVQ entry, and bfloat16 rounding picks neighbouring codes.
-        self.talker.float()
-        self.mog_head.float()
-        self.audio_prompt_latent = self.audio_prompt_latent.float()
