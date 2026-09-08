@@ -951,8 +951,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
         )
         self._predictor_graphs: dict[tuple, _PredictorDecodeGraph] = {}
         self._predictor_graph_disabled: set[tuple] = set()
-        # note(ratish): None until the startup capture or the first decode
-        # resolves it, after the bootstrap has built sglang's graphs.
+        # note(ratish): None until the startup capture, which runs before the
+        # KV pool is sized, or the first decode resolves it.
         self._predictor_graph_enabled: bool | None = None
         self._predictor_graph_failure_count = 0
         self._predictor_graph_capacity_fallback_count = 0

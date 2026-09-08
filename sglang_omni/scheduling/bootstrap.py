@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from sglang_omni.utils.gpu_compat import (
@@ -107,8 +108,14 @@ def create_sglang_infrastructure(
     total_gpu_memory_fraction: float | None = None,
     defer_cuda_graph_capture: bool = False,
     enable_prefill_input_embeds: bool = False,
+    before_memory_pool: Callable[[Any], None] | None = None,
 ):
-    """Create SGLang worker, memory pools, and tree cache."""
+    """Create SGLang worker, memory pools, and tree cache.
+
+    ``before_memory_pool`` runs with the model worker after the weights are
+    loaded and before the KV pool is sized, for resources the stage keeps for
+    the life of the process.
+    """
     # ModelRunner.__init__ publishes server_args as the process-wide runtime
     # context; publishing again would silently reconfigure whatever already runs
     # here, so an engine is only built where the context is unpublished. A
@@ -174,6 +181,11 @@ def create_sglang_infrastructure(
             capture_hidden_layers,
             max_tokens=_hidden_capture_max_tokens(server_args),
         )
+
+    if before_memory_pool is not None:
+        # note(ratish): sglang sizes the pool from free memory at this point, so
+        # whatever the stage keeps resident has to exist before the reading.
+        before_memory_pool(model_worker)
 
     # Phase order follows upstream Scheduler.init_model_worker().
     model_runner = model_worker.model_runner

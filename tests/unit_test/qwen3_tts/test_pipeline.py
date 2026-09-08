@@ -6110,6 +6110,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     infrastructure_saw_deferred_capture: list[bool] = []
     init_graph_calls: list[bool] = []
     predictor_captures: list[tuple] = []
+    events: list[str] = []
 
     class FakeModel:
         def load_speech_tokenizer(self, tokenizer) -> None:
@@ -6118,6 +6119,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         def capture_predictor_graphs(
             self, *, do_sample: bool, top_k: int, top_p: float
         ) -> int:
+            events.append("predictor_capture")
             predictor_captures.append((do_sample, top_k, top_p))
             return 6
 
@@ -6129,6 +6131,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         def init_cuda_graphs(self) -> None:
             assert self.server_args.enable_torch_compile is False
             assert self.server_args.torch_compile_max_bs == 64
+            events.append("init_graphs")
             init_graph_calls.append(True)
 
     class FakeWorker:
@@ -6236,8 +6239,11 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         infrastructure_saw_deferred_capture.append(
             bool(kwargs.get("defer_cuda_graph_capture"))
         )
+        worker = FakeWorker(server_args)
+        kwargs["before_memory_pool"](worker)
+        events.append("memory_pool")
         return (
-            FakeWorker(server_args),
+            worker,
             object(),
             object(),
             object(),
@@ -6323,6 +6329,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     assert infrastructure_saw_deferred_capture == [True]
     assert init_graph_calls == [True]
     assert predictor_captures == [(True, 50, 1.0)]
+    assert events == ["predictor_capture", "memory_pool", "init_graphs"]
     assert scheduler.server_args.cuda_graph_bs == expected_cuda_graph_bs
     assert scheduler.server_args.cuda_graph_max_bs == 64
     assert scheduler.server_args.disable_cuda_graph is False

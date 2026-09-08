@@ -175,6 +175,17 @@ class SGLangGenerationEngineBuilder(ABC):
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
+
+        def before_memory_pool(model_worker: Any) -> None:
+            self.before_memory_pool(
+                model_worker=model_worker,
+                checkpoint_dir=checkpoint_dir,
+                device=device,
+                gpu_id=gpu_id,
+                server_args=server_args,
+            )
+
+        infra_kwargs["before_memory_pool"] = before_memory_pool
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
         if (
             prefill_graph_backend != CudaGraphBackend.DISABLED
@@ -299,6 +310,18 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {}
+
+    def before_memory_pool(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        """Attach what the stage keeps resident, before the KV pool is sized."""
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def setup_model(
         self,
