@@ -793,6 +793,11 @@ that happened to contain an older version of the test.
   acoustic state, vocoder batching, and streaming cleanup. CUDA Graph parity in
   `test_tail.py` is marked `accelerator`; the remaining tests run on CPU.
 
+- `unit_test/nemotron_voicechat/`: NemotronLabs VoiceChat request frame-count
+  contract (thinker tokens vs talker steps), streaming code2wav equivalence
+  with whole-utterance decoding, and checkpoint-shim isolation across
+  checkpoint switches. CPU only; no SGLang engine or model weights are loaded.
+
 - `unit_test/llada2_uni/`: LLaDA2-Uni request lowering to the upstream
   diffusion-language-model token-array contract.
 
