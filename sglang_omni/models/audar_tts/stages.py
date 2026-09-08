@@ -39,6 +39,7 @@ REFERENCE_SAMPLE_RATE = 16000
 OUTPUT_SAMPLE_RATE = 24000
 MIN_REFERENCE_SECONDS = 5.0
 MAX_REFERENCE_SECONDS = 15.0
+_NEUCODEC_INIT_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -62,13 +63,17 @@ def _load_codec(model: str, revision: str, device: str) -> Any:
         ckpt_path = path / "pytorch_model.bin"
         w2v_path = path.parent / "facebook_w2v_bert_2_0"
         if not ckpt_path.is_file():
-            raise FileNotFoundError(f"Audar-TTS NeuCodec checkpoint not found: {ckpt_path}")
+            raise FileNotFoundError(
+                f"Audar-TTS NeuCodec checkpoint not found: {ckpt_path}"
+            )
         if not w2v_path.is_dir():
             raise FileNotFoundError(
                 f"Audar-TTS local Wav2Vec2-BERT checkpoint not found: {w2v_path}"
             )
         orig_w2v_from_pretrained = neucodec_model.Wav2Vec2BertModel.from_pretrained
-        orig_feature_from_pretrained = neucodec_model.AutoFeatureExtractor.from_pretrained
+        orig_feature_from_pretrained = (
+            neucodec_model.AutoFeatureExtractor.from_pretrained
+        )
 
         def local_w2v_from_pretrained(name: str, *args: Any, **kwargs: Any) -> Any:
             if name == "facebook/w2v-bert-2.0":
@@ -82,13 +87,22 @@ def _load_codec(model: str, revision: str, device: str) -> Any:
                 kwargs["local_files_only"] = True
             return orig_feature_from_pretrained(name, *args, **kwargs)
 
-        neucodec_model.Wav2Vec2BertModel.from_pretrained = local_w2v_from_pretrained
-        neucodec_model.AutoFeatureExtractor.from_pretrained = local_feature_from_pretrained
-        try:
-            codec = NeuCodec(OUTPUT_SAMPLE_RATE, 480)
-        finally:
-            neucodec_model.Wav2Vec2BertModel.from_pretrained = orig_w2v_from_pretrained
-            neucodec_model.AutoFeatureExtractor.from_pretrained = orig_feature_from_pretrained
+        with _NEUCODEC_INIT_LOCK:
+            neucodec_model.Wav2Vec2BertModel.from_pretrained = (
+                local_w2v_from_pretrained
+            )
+            neucodec_model.AutoFeatureExtractor.from_pretrained = (
+                local_feature_from_pretrained
+            )
+            try:
+                codec = NeuCodec(OUTPUT_SAMPLE_RATE, 480)
+            finally:
+                neucodec_model.Wav2Vec2BertModel.from_pretrained = (
+                    orig_w2v_from_pretrained
+                )
+                neucodec_model.AutoFeatureExtractor.from_pretrained = (
+                    orig_feature_from_pretrained
+                )
         state_dict = torch.load(ckpt_path, map_location="cpu")
         ignore_keys = ("fc_post_s", "SemanticDecoder")
         state_dict = {
