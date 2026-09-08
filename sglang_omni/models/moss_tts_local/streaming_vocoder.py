@@ -326,9 +326,9 @@ class MossTTSLocalStreamingVocoderScheduler(
         max_step_frames: int = 100,
         max_batch_size: int = 8,
         max_batch_wait_ms: int = 2,
-        cuda_graph: bool = True,
-        cuda_graph_frames: list[int] | None = None,
-        cuda_graph_min_free_gb: float = 3.0,
+        vocoder_cuda_graph: bool = True,
+        vocoder_cuda_graph_frames: list[int] | None = None,
+        vocoder_cuda_graph_min_free_gb: float = 3.0,
     ) -> None:
         if stream_slots < 1:
             raise ValueError(f"stream_slots must be >= 1, got {stream_slots}")
@@ -384,18 +384,20 @@ class MossTTSLocalStreamingVocoderScheduler(
         self._max_step_frames = int(max_step_frames)
         self._n_vq = int(n_vq)
         self._session: _CodecStreamSession | None = None
-        self._cuda_graph = bool(cuda_graph)
-        self._cuda_graph_frames = (
-            [int(t) for t in cuda_graph_frames] if cuda_graph_frames else None
+        self._vocoder_cuda_graph = bool(vocoder_cuda_graph)
+        self._vocoder_cuda_graph_frames = (
+            [int(t) for t in vocoder_cuda_graph_frames]
+            if vocoder_cuda_graph_frames
+            else None
         )
-        self._cuda_graph_min_free_gb = float(cuda_graph_min_free_gb)
-        if self._cuda_graph_frames is not None:
+        self._vocoder_cuda_graph_min_free_gb = float(vocoder_cuda_graph_min_free_gb)
+        if self._vocoder_cuda_graph_frames is not None:
             too_large = [
-                t for t in self._cuda_graph_frames if t > self._max_step_frames
+                t for t in self._vocoder_cuda_graph_frames if t > self._max_step_frames
             ]
             if too_large:
                 raise ValueError(
-                    f"cuda_graph_frames exceed max_step_frames={self._max_step_frames}: "
+                    f"vocoder_cuda_graph_frames exceed max_step_frames={self._max_step_frames}: "
                     f"{too_large}"
                 )
         super().__init__(
@@ -621,11 +623,11 @@ class MossTTSLocalStreamingVocoderScheduler(
             )
         return self._session
 
-    def _cuda_graph_capture_frames(self) -> list[int]:
-        """Step lengths T to capture. Config ``cuda_graph_frames`` overrides the default."""
-        if self._cuda_graph_frames:
+    def _vocoder_cuda_graph_capture_frames(self) -> list[int]:
+        """Step lengths T to capture. Config ``vocoder_cuda_graph_frames`` overrides the default."""
+        if self._vocoder_cuda_graph_frames:
             # Validated at config (>= 1) and __init__ (<= max_step_frames); use as configured.
-            return sorted(set(self._cuda_graph_frames))
+            return sorted(set(self._vocoder_cuda_graph_frames))
         # Note (Zhang Yiyang): Capture every emitted remainder length because
         # frame padding advances causal state; explicit frames may narrow it.
         max_frame = min(self._stream_chunk_frames, self._max_step_frames)
@@ -646,14 +648,14 @@ class MossTTSLocalStreamingVocoderScheduler(
         with self._state_lock:
             session = self._ensure_session()
             if (
-                self._cuda_graph
+                self._vocoder_cuda_graph
                 and not session.warmup_attempted
                 and self._codec_on_cuda()
             ):
                 try:
                     session.warmup_cuda_graph(
-                        self._cuda_graph_capture_frames(),
-                        min_free_gb=self._cuda_graph_min_free_gb,
+                        self._vocoder_cuda_graph_capture_frames(),
+                        min_free_gb=self._vocoder_cuda_graph_min_free_gb,
                     )
                 except Exception:
                     logger.exception(
@@ -666,7 +668,7 @@ class MossTTSLocalStreamingVocoderScheduler(
         """Capture the codec-decode graphs at factory-build time: codec loaded, GPU quiescent, and
         before the stage process is marked ready, so the serving loop never races a half-captured
         graph. No-op without a CUDA codec; best-effort, degrades to eager."""
-        if not self._cuda_graph or not self._codec_on_cuda():
+        if not self._vocoder_cuda_graph or not self._codec_on_cuda():
             return
         session = self._ensure_session_graphed()
         if session.has_cuda_graph_runner():

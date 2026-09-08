@@ -1431,23 +1431,32 @@ def _install_fake_capture(monkeypatch, calls: list, *, seal: bool = True) -> Non
 
 
 def test_create_vocoder_executor_threads_cuda_graph_config(monkeypatch) -> None:
-    scheduler = _make_scheduler(monkeypatch, FakeProcessor(), cuda_graph=False)
-    assert scheduler._cuda_graph is False
-    scheduler2 = _make_scheduler(
-        monkeypatch,
-        FakeProcessor(),
-        cuda_graph_frames=[5, 25],
-        cuda_graph_min_free_gb=7.0,
+    from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
+
+    config = MossTTSLocalPipelineConfig(
+        model_path="fake-model", vocoder_cuda_graph=False
     )
-    assert scheduler2._cuda_graph_frames == [5, 25]
-    assert scheduler2._cuda_graph_min_free_gb == 7.0
+    scheduler = _make_scheduler(
+        monkeypatch, FakeProcessor(), **config.stage_factory_kwargs("vocoder")
+    )
+    assert scheduler._vocoder_cuda_graph is False
+    config2 = MossTTSLocalPipelineConfig(
+        model_path="fake-model",
+        vocoder_cuda_graph_frames=[5, 25],
+        vocoder_cuda_graph_min_free_gb=7.0,
+    )
+    scheduler2 = _make_scheduler(
+        monkeypatch, FakeProcessor(), **config2.stage_factory_kwargs("vocoder")
+    )
+    assert scheduler2._vocoder_cuda_graph_frames == [5, 25]
+    assert scheduler2._vocoder_cuda_graph_min_free_gb == 7.0
 
 
 def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> None:
     calls: list[bool | None] = []
 
-    def resolve(cuda_graph: bool | None) -> bool:
-        calls.append(cuda_graph)
+    def resolve(vocoder_cuda_graph: bool | None) -> bool:
+        calls.append(vocoder_cuda_graph)
         raise ValueError("unsafe graph")
 
     monkeypatch.setattr(stages, "resolve_vocoder_cuda_graph", resolve)
@@ -1458,7 +1467,9 @@ def test_vocoder_factory_resolves_graph_policy_before_loading(monkeypatch) -> No
     )
 
     with pytest.raises(ValueError, match="unsafe graph"):
-        stages.create_vocoder_executor("fake-model", device="cpu", cuda_graph=True)
+        stages.create_vocoder_executor(
+            "fake-model", device="cpu", vocoder_cuda_graph=True
+        )
     assert calls == [True]
 
 
@@ -1572,7 +1583,7 @@ def test_create_vocoder_executor_uses_model_config_codec_path(monkeypatch) -> No
     assert loaded_codec_paths == ["codec-from-model-config"]
 
 
-def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
+def test_pipeline_config_injects_vocoder_graph_settings() -> None:
     from sglang_omni.models.moss_tts_local.config import (
         MossTTSLocalPipelineConfig,
         MossTTSLocalSplitPipelineConfig,
@@ -1584,40 +1595,40 @@ def test_pipeline_config_injects_cuda_graph_into_vocoder_factory_args() -> None:
     assert voc.factory.compute_dtype == "bfloat16"
     assert voc.factory.attention_backend == "auto"
     kwargs = cfg.stage_factory_kwargs("vocoder")
-    assert kwargs["cuda_graph"] is True
-    assert kwargs["cuda_graph_frames"] is None
-    assert kwargs["cuda_graph_min_free_gb"] == 3.0
+    assert kwargs["vocoder_cuda_graph"] is True
+    assert kwargs["vocoder_cuda_graph_frames"] is None
+    assert kwargs["vocoder_cuda_graph_min_free_gb"] == 3.0
 
     cfg2 = MossTTSLocalPipelineConfig(
         model_path="x",
-        cuda_graph=False,
-        cuda_graph_frames=[5, 25],
-        cuda_graph_min_free_gb=4.5,
+        vocoder_cuda_graph=False,
+        vocoder_cuda_graph_frames=[5, 25],
+        vocoder_cuda_graph_min_free_gb=4.5,
     )
     kwargs2 = cfg2.stage_factory_kwargs("vocoder")
-    assert kwargs2["cuda_graph"] is False
-    assert kwargs2["cuda_graph_frames"] == [5, 25]
-    assert kwargs2["cuda_graph_min_free_gb"] == 4.5
+    assert kwargs2["vocoder_cuda_graph"] is False
+    assert kwargs2["vocoder_cuda_graph_frames"] == [5, 25]
+    assert kwargs2["vocoder_cuda_graph_min_free_gb"] == 4.5
 
     # The split variant overrides `stages`; the injection must still reach its vocoder.
-    split = MossTTSLocalSplitPipelineConfig(model_path="x", cuda_graph=False)
-    assert split.stage_factory_kwargs("vocoder")["cuda_graph"] is False
+    split = MossTTSLocalSplitPipelineConfig(model_path="x", vocoder_cuda_graph=False)
+    assert split.stage_factory_kwargs("vocoder")["vocoder_cuda_graph"] is False
 
 
-def test_pipeline_config_rejects_invalid_cuda_graph_settings() -> None:
+def test_pipeline_config_rejects_invalid_vocoder_graph_settings() -> None:
     from sglang_omni.models.moss_tts_local.config import MossTTSLocalPipelineConfig
 
-    # [] is ambiguous (cuda_graph: false is the disable switch) -> reject, not "use default".
-    with pytest.raises(ValueError, match="cuda_graph_frames must be non-empty"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[])
+    # note (Zhang Yiyang): Use vocoder_cuda_graph: false to disable graphs.
+    with pytest.raises(ValueError, match="vocoder_cuda_graph_frames must be non-empty"):
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[])
     # Non-positive frame counts must error, not be silently filtered.
     with pytest.raises(ValueError, match="positive ints"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[5, 0])
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[5, 0])
     with pytest.raises(ValueError, match="positive ints"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_frames=[-1])
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_frames=[-1])
     # Negative VRAM headroom is nonsensical (would disable the guard); error.
-    with pytest.raises(ValueError, match="cuda_graph_min_free_gb"):
-        MossTTSLocalPipelineConfig(model_path="x", cuda_graph_min_free_gb=-1.0)
+    with pytest.raises(ValueError, match="vocoder_cuda_graph_min_free_gb"):
+        MossTTSLocalPipelineConfig(model_path="x", vocoder_cuda_graph_min_free_gb=-1.0)
 
 
 def test_scheduler_rejects_frame_above_max_step(monkeypatch) -> None:
@@ -1629,7 +1640,7 @@ def test_scheduler_rejects_frame_above_max_step(monkeypatch) -> None:
             n_vq=N_VQ,
             sample_rate=SAMPLE_RATE,
             max_step_frames=25,
-            cuda_graph_frames=[5, 100],
+            vocoder_cuda_graph_frames=[5, 100],
         )
 
 

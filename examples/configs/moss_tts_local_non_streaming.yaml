@@ -3,4 +3,4 @@ model_path: OpenMOSS-Team/MOSS-TTS-Local-Transformer-v1.5
 
 # note (Zhang Yiyang): Disable streaming vocoder CUDA graphs to leave more
 # GPU memory available for non-streaming decoding.
-cuda_graph: false
+vocoder_cuda_graph: false

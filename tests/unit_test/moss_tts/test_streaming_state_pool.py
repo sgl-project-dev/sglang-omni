@@ -137,7 +137,7 @@ def test_native_scheduler_keeps_offline_decode_out_of_streaming_state(
         attention_backend="sdpa",
         stream_slots=3,
         max_batch_size=4,
-        cuda_graph=False,
+        vocoder_cuda_graph=False,
     )
     rows = [
         torch.arange(2 + i).remainder(8).view(-1, 1) for i in range(offline_batch_size)
