@@ -787,3 +787,22 @@ cookbook:407 已是 H100 数字并去掉了不在树里的 benchmark doc 引用�
 | #1998 的 `eager_on_graph` 失效怎么处理 | 声明 #1998 依赖 #1907,不先于它合并;不把 #1907 的 mrope 修复拷进 #1998 | full backend 下 `eager_on_graph` 是 pass-through,QK-norm/RoPE 被捕获后读到绑定的陈旧 `mrope_positions` 槽,正是 seeded 一致率 92%→74% 的来源;#1907 是根治,拷贝会与 #1907 冲突且让它变冗余 | 若 #1907 被拒,改为在 #1998 内单独实现槽刷新 | JiaxinD 在 review 中明确给出"land #1907 first or drop that comment"两选项,本决定取其一,不另发 ChatGPT 外审 |
 | 只发状态评论还是同时改 issue 正文 | 两者都做 | 正文的 Active/Landed 若不改,下一个读者仍会看到"T-PR9 no PR yet";luojiaxuan 此前已多次编辑该正文(Nari 外部验证条目即是) | GitHub 保留编辑历史,可回退 | 不涉及 |
 | #1998 的 parity 数字(92%/74%)是否立刻重测 | 不重测,正文如实标注"measured on main without #1907, needs a rerun on the rebased tree before merge" | 重测需数小时 H100;#1907 仍在 review,定稿前重测有白烧风险 | 本地 `sglang-omni-p1907` 的 `f747d1bb` 就是 merge 后的树,随时可跑 | 不涉及 |
+
+### 新规则:合并时给 reviewer 加 Co-authored-by(2026-09-07 20:10 PT per luojiaxuan)
+
+已写入全局 CLAUDE.md 的「Git commits」节:合并 PR 时,凡帮忙 review 的人一律加
+`Co-authored-by` 致谢;人类协作者署名,Claude 一律不署;机器人(`*[bot]`)排除;
+邮箱用 GitHub noreply 形式而非对方 commit 里的私人邮箱;squash 必须显式传正文,
+否则 trailer 未必落下。
+
+**#1907 与 #1997 合并早于本规则十几分钟,未带 reviewer 致谢**,且已合并的 commit
+不追补(改它要 force-push 共享分支)。#1997 带了被 squash 抹掉的原作者
+(BruceLoveDecimal、leihehehe),但 reviewer @JiaxinD 未列入。
+
+**#1998 合并时必须带上(名单已核,`gh api .../reviews` + `.../comments`):**
+
+```
+Co-authored-by: charliechenye <32603442+charliechenye@users.noreply.github.com>
+Co-authored-by: JiaxinD <49501057+JiaxinD@users.noreply.github.com>
+```
+
