@@ -62,8 +62,11 @@ def parse_model_targets(tokens):
 
     asr_targets = [token for token in tokens[1:] if token in ASR_MODEL_LABELS]
     if len(set(asr_targets)) > 1:
-        allowed = ", ".join(sorted(ASR_MODEL_LABELS))
-        return None, None, f"Specify only one ASR CI model target: {allowed}."
+        return (
+            None,
+            None,
+            "Specify only one ASR CI model target: fun-asr, qwen3-asr or whisper-asr.",
+        )
     return (
         tts_targets[0] if tts_targets else None,
         asr_targets[0] if asr_targets else None,
