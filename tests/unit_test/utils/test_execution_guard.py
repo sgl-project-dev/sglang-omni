@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
 from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 
 
@@ -39,3 +41,35 @@ def test_fair_device_execution_guard_serves_waiters_in_ticket_order() -> None:
     assert not first.is_alive()
     assert all(not waiter.is_alive() for waiter in waiters)
     assert order == [0, 1, 2]
+
+
+def test_completion_fence_runs_before_the_next_ticket() -> None:
+    order: list[str] = []
+    guard = FairDeviceExecutionGuard(
+        completion_fence=lambda: order.append("fence")
+    )
+
+    with guard.hold():
+        order.append("first")
+    with guard.hold():
+        order.append("second")
+
+    assert order == ["first", "fence", "second", "fence"]
+
+
+def test_completion_fence_failure_does_not_strand_later_tickets() -> None:
+    calls = 0
+
+    def fence() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("device fence failed")
+
+    guard = FairDeviceExecutionGuard(completion_fence=fence)
+
+    with pytest.raises(RuntimeError, match="device fence failed"):
+        with guard.hold():
+            pass
+    with guard.hold() as (ticket, _wait_ns):
+        assert ticket == 1

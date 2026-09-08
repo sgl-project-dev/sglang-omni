@@ -21,6 +21,9 @@ from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
 
+_ENCODER_DIAG_ENV = "SGLANG_OMNI_ENCODER_DIAG"
+_TRUE_ENV_VALUES = frozenset({"1", "true", "yes", "on"})
+
 
 # Active-stage binding used when ``emit(stage=None)`` is called from code
 # that can't plumb the stage name down (preprocessor, encoder callable,
@@ -273,6 +276,40 @@ def emit(
         stage=stage,
         event_name=event_name,
         metadata=metadata,
+        timestamp_ns=timestamp_ns,
+    )
+
+
+def diag_emit(
+    *,
+    request_id: str,
+    stage: str | None,
+    event_name: str,
+    metadata: Mapping[str, Any] | None = None,
+    timestamp_ns: int | None = None,
+) -> None:
+    """Emit one bounded encoder diagnostic event when explicitly enabled.
+
+    The environment gate keeps the additional hot-path bookkeeping disabled in
+    normal serving. The request event recorder must also have been started via
+    the profiling control plane; otherwise this remains a no-op.
+    """
+    enabled = os.environ.get(_ENCODER_DIAG_ENV, "").strip().lower()
+    if enabled not in _TRUE_ENV_VALUES:
+        return
+    details = dict(metadata) if metadata else {}
+    details.update(
+        {
+            "clock": "CLOCK_MONOTONIC",
+            "host_boot_id": _read_host_boot_id(),
+            "monotonic_ns": time.monotonic_ns(),
+        }
+    )
+    emit(
+        request_id=request_id,
+        stage=stage,
+        event_name=event_name,
+        metadata=details,
         timestamp_ns=timestamp_ns,
     )
 

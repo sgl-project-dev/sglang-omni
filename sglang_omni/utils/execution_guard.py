@@ -6,7 +6,7 @@ from __future__ import annotations
 import contextlib
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 
 class FairDeviceExecutionGuard:
@@ -17,10 +17,11 @@ class FairDeviceExecutionGuard:
     encoder batch is already waiting.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, completion_fence: Callable[[], None] | None = None) -> None:
         self._condition = threading.Condition()
         self._next_ticket = 0
         self._serving_ticket = 0
+        self._completion_fence = completion_fence
 
     @contextlib.contextmanager
     def hold(self) -> Iterator[tuple[int, int]]:
@@ -34,6 +35,12 @@ class FairDeviceExecutionGuard:
         try:
             yield ticket, time.monotonic_ns() - wait_started_ns
         finally:
-            with self._condition:
-                self._serving_ticket += 1
-                self._condition.notify_all()
+            try:
+                if self._completion_fence is not None:
+                    self._completion_fence()
+            finally:
+                # Never strand later tickets when a diagnostic fence reports a
+                # device error. The current caller still observes that error.
+                with self._condition:
+                    self._serving_ticket += 1
+                    self._condition.notify_all()

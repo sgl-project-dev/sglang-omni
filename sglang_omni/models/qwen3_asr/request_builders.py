@@ -299,6 +299,9 @@ def make_qwen3_asr_scheduler_adapters(
             feature=features,
             model_specific_data={
                 "feature_attention_mask": feature_attention_mask,
+                # Server-local diagnostic correlation only. The encoder event
+                # recorder is separately env-gated and never serializes audio.
+                "request_id": payload.request_id,
                 # note (luojiaxuan): the pre-LM encoder service reads these to
                 # split batched encoder output and key its embedding cache.
                 "num_audio_tokens": num_audio_tokens,

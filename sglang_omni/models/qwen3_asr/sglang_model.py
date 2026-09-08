@@ -165,6 +165,7 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             buckets=build_buckets(max_batch_size, max_tokens_per_clip),
             max_batch_size=max_batch_size,
         )
+        runner.set_diagnostic_model_root(self)
         runner.capture_all()
         self._encoder_graph_runner = runner
 
@@ -254,6 +255,9 @@ class Qwen3ASRForConditionalGeneration(nn.Module):
             input_features,
             feature_lens=audio_feature_lengths,
         )
+        record_parity = getattr(runner, "record_capture_release_eager_output", None)
+        if callable(record_parity):
+            record_parity(audio_outputs.last_hidden_state)
         return audio_outputs.last_hidden_state
 
     def forward(

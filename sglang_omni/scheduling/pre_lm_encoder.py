@@ -14,11 +14,39 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Any, Generic, TypeVar
 
+from sglang_omni.profiler.event_recorder import diag_emit as _diag_emit
+from sglang_omni.profiler.event_recorder import get_active_stage as _get_active_stage
+
 ItemT = TypeVar("ItemT")
 EncodedT = TypeVar("EncodedT")
 EmbeddingT = TypeVar("EmbeddingT")
 
 logger = logging.getLogger(__name__)
+
+
+def _diagnostic_request_id(item: Any) -> str:
+    request_id = getattr(item, "request_id", None)
+    return "" if request_id is None else str(request_id)
+
+
+def _emit_batch_diagnostic(
+    event_name: str,
+    batch: list[QueueEntry[Any]],
+    **metadata: Any,
+) -> None:
+    request_ids = [_diagnostic_request_id(entry.item) for entry in batch]
+    shared_metadata = {
+        "batch_size": len(batch),
+        "request_ids": request_ids,
+        **metadata,
+    }
+    for request_id in request_ids:
+        _diag_emit(
+            request_id=request_id,
+            stage=_get_active_stage(),
+            event_name=event_name,
+            metadata=shared_metadata,
+        )
 
 
 @dataclass(slots=True)
@@ -73,6 +101,11 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
                 raise RuntimeError(
                     "pre-LM encoder worker has failed"
                 ) from self._worker_error
+        _diag_emit(
+            request_id=_diagnostic_request_id(item),
+            stage=_get_active_stage(),
+            event_name="encoder_enqueue",
+        )
         self._enqueue(item, future)
         with self._worker_state_lock:
             worker_error = self._worker_error
@@ -137,7 +170,21 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
     def _execute_batch(self, items: list[ItemT]) -> list[EmbeddingT]:
         attach_before_synchronize = self.attach_before_synchronize()
         with self._batch_context():
+            encode_call_start = time.perf_counter()
             encoded = self.encode_batch(items)
+            encode_call_elapsed_ms = (time.perf_counter() - encode_call_start) * 1e3
+            request_ids = [_diagnostic_request_id(item) for item in items]
+            for request_id in request_ids:
+                _diag_emit(
+                    request_id=request_id,
+                    stage=_get_active_stage(),
+                    event_name="encoder_encode_return",
+                    metadata={
+                        "batch_size": len(items),
+                        "request_ids": request_ids,
+                        "elapsed_ms": encode_call_elapsed_ms,
+                    },
+                )
             embeddings = self.split_embeddings(items, encoded)
             if len(embeddings) != len(items):
                 raise RuntimeError(
@@ -220,6 +267,7 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
             self._on_batch_start(batch)
         except Exception:
             logger.exception("pre-LM encoder batch-start hook failed")
+        _emit_batch_diagnostic("encoder_batch_start", batch)
 
     def _notify_batch_finished(
         self,
@@ -237,6 +285,13 @@ class PreLMEncoderService(ABC, Generic[ItemT, EncodedT, EmbeddingT]):
             )
         except Exception:
             logger.exception("pre-LM encoder batch-finished hook failed")
+        _emit_batch_diagnostic(
+            "encoder_batch_finish",
+            batch,
+            elapsed_ms=elapsed_s * 1e3,
+            error_class=type(batch_exc).__name__ if batch_exc is not None else None,
+            retry_recovered=retry_recovered,
+        )
 
     def _fail_worker(
         self,

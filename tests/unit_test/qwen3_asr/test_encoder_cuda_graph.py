@@ -5,9 +5,11 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from sglang_omni.models.qwen3_asr import sglang_model
+from sglang_omni.models.qwen3_asr import encoder_cuda_graph, sglang_model
 from sglang_omni.models.qwen3_asr.encoder_cuda_graph import (
     Qwen3ASREncoderLayerStackGraphRunner,
+    _capture_defer_calls_diagnostic_value,
+    _capture_state_delta,
     build_buckets,
     window_lens_from_token_counts,
 )
@@ -60,10 +62,15 @@ def test_get_audio_feature_routing(monkeypatch):
     )
     assert torch.equal(get(model, [item]), torch.ones(1, 65, 8))
 
+    recorded = []
     model._encoder_graph_runner = SimpleNamespace(
-        tokens_per_window=104, run=lambda h, w: None
+        tokens_per_window=104,
+        run=lambda h, w: None,
+        record_capture_release_eager_output=lambda output: recorded.append(output),
     )
     assert torch.equal(get(model, [item]), torch.full((1, 65, 8), 7.0))
+    assert len(recorded) == 1
+    assert torch.equal(recorded[0], torch.full((1, 65, 8), 7.0))
 
 
 def test_layer_stack_forwards_precomputed_attention_metadata():
@@ -181,6 +188,275 @@ def test_npu_replay_admits_multiple_signatures_with_global_bound():
     assert runner._eager_fallback_reasons == {"npu_signature_capacity": 1}
 
 
+def test_npu_capture_only_diagnostic_captures_without_replay(monkeypatch):
+    replayed = []
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._max_seqlen = 8
+    runner._failed = set()
+    runner._graphs = {}
+    runner._npu_signature_capacity = 2
+    runner._npu_signature_capacity_reported = False
+    runner._reported_replays = set()
+    runner._replay_count = 0
+    runner._replay_buckets = Counter()
+    runner._eager_fallback_reasons = Counter()
+    runner._plan = lambda total, windows: (8, [8 - total])
+    runner._capture = lambda *args, **kwargs: SimpleNamespace(
+        hidden_states=torch.zeros(8, 2),
+        cu_seqlens=torch.tensor([0, 4, 8], dtype=torch.int32),
+        attention_metadata=None,
+        graph=SimpleNamespace(replay=lambda: replayed.append(True)),
+        output=torch.zeros(8, 2),
+    )
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_CAPTURE_ONLY", "1")
+
+    assert runner.run(torch.ones(4, 2), [4]) is None
+    assert len(runner._graphs) == 1
+    assert replayed == []
+    assert runner._eager_fallback_reasons == {"diagnostic_capture_only": 1}
+
+
+def test_npu_capture_defer_diagnostic_keeps_first_signature_eager(monkeypatch):
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._max_seqlen = 8
+    runner._failed = set()
+    runner._graphs = {}
+    runner._npu_signature_capacity = 2
+    runner._npu_signature_capacity_reported = False
+    runner._reported_replays = set()
+    runner._replay_count = 0
+    runner._replay_buckets = Counter()
+    runner._eager_fallback_reasons = Counter()
+    runner._diagnostic_capture_defer_remaining = 1
+    runner._diagnostic_capture_defer_configured = 1
+    runner._diagnostic_capture_deferred_count = 0
+    runner._diagnostic_run_count = 0
+    runner._diagnostic_first_capture = None
+    runner._plan = lambda total, windows: (8, [8 - total])
+    captures = []
+    runner._capture = lambda *args, **kwargs: captures.append((args, kwargs)) or SimpleNamespace(
+        hidden_states=torch.zeros(8, 2),
+        cu_seqlens=torch.tensor([0, 4, 8], dtype=torch.int32),
+        attention_metadata=None,
+        graph=SimpleNamespace(replay=lambda: None),
+        output=torch.zeros(8, 2),
+    )
+
+    assert runner.run(torch.ones(4, 2), [4]) is None
+    assert captures == []
+    assert runner._diagnostic_capture_deferred_count == 1
+    assert runner._diagnostic_capture_defer_remaining == 0
+    assert runner._diagnostic_run_count == 1
+    assert runner._eager_fallback_reasons == {}
+
+    assert runner.run(torch.ones(4, 2), [4]) is not None
+    assert len(captures) == 1
+    assert runner._diagnostic_first_capture == {
+        "run_index": 2,
+        "bucket_size": 8,
+        "window_count": 2,
+    }
+
+
+def test_npu_capture_defer_diagnostic_env_validation(monkeypatch):
+    monkeypatch.delenv("SGLANG_OMNI_ENCODER_GRAPH_DEFER_CAPTURES", raising=False)
+    assert _capture_defer_calls_diagnostic_value() == 0
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_DEFER_CAPTURES", "2")
+    assert _capture_defer_calls_diagnostic_value() == 2
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_DEFER_CAPTURES", "-1")
+    with pytest.raises(ValueError, match="non-negative integer"):
+        _capture_defer_calls_diagnostic_value()
+
+
+def test_npu_capture_release_diagnostic_drops_live_graph(monkeypatch):
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._device = torch.device("meta")
+    runner._max_seqlen = 8
+    runner._failed = set()
+    runner._graphs = {}
+    runner._npu_signature_capacity = 8
+    runner._npu_signature_capacity_reported = False
+    runner._reported_replays = set()
+    runner._replay_count = 0
+    runner._replay_buckets = Counter()
+    runner._eager_fallback_reasons = Counter()
+    runner._diagnostic_capture_release_count = 0
+    runner._diagnostic_released_keys = set()
+    runner._plan = lambda total, windows: (8, [8 - total])
+    graph = object()
+    capture_calls = []
+
+    def capture(bucket, window_lens=None):
+        capture_calls.append((bucket, window_lens))
+        return SimpleNamespace(
+            graph=graph,
+            hidden_states=None,
+            cu_seqlens=None,
+            attention_metadata=None,
+            output=None,
+        )
+
+    runner._capture = capture
+    synchronize_calls = []
+    monkeypatch.setattr(
+        encoder_cuda_graph.torch.cuda,
+        "synchronize",
+        lambda device=None: synchronize_calls.append(device),
+    )
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_CAPTURE_RELEASE", "1")
+
+    result = runner.run(torch.empty(7, 4), [7])
+
+    assert result is None
+    assert runner._graphs == {}
+    assert runner._diagnostic_capture_release_count == 1
+    assert runner._eager_fallback_reasons == {"diagnostic_capture_released": 1}
+    assert synchronize_calls == [runner._device, runner._device]
+
+    assert runner.run(torch.empty(7, 4), [7]) is None
+    assert len(capture_calls) == 1
+    assert runner._diagnostic_capture_release_count == 1
+    assert runner._eager_fallback_reasons == {"diagnostic_capture_released": 2}
+
+
+def test_capture_release_parity_records_match_and_mismatch():
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._diagnostic_pending_reference = torch.tensor([[1.0, 2.0]])
+    runner._diagnostic_parity_count = 0
+    runner._diagnostic_parity_match_count = 0
+    runner._diagnostic_parity_mismatch_count = 0
+    runner._diagnostic_last_parity = None
+
+    runner.record_capture_release_eager_output(torch.tensor([[[1.0, 2.01]]]))
+
+    assert runner._diagnostic_pending_reference is None
+    assert runner._diagnostic_parity_count == 1
+    assert runner._diagnostic_parity_match_count == 1
+    assert runner._diagnostic_parity_mismatch_count == 0
+    assert runner._diagnostic_last_parity["shape_match"] is True
+    assert runner._diagnostic_last_parity["allclose"] is True
+    assert runner._diagnostic_last_parity["reference_nonfinite"] == 0
+    assert runner._diagnostic_last_parity["actual_nonfinite"] == 0
+
+    runner._diagnostic_pending_reference = torch.tensor([[1.0, 2.0]])
+    runner.record_capture_release_eager_output(torch.tensor([[[1.0, 3.0]]]))
+
+    assert runner._diagnostic_parity_count == 2
+    assert runner._diagnostic_parity_match_count == 1
+    assert runner._diagnostic_parity_mismatch_count == 1
+    assert runner._diagnostic_last_parity["allclose"] is False
+    assert runner._diagnostic_last_parity["max_abs"] == 1.0
+
+
+def test_capture_release_parity_passes_real_hidden_state_to_capture(monkeypatch):
+    runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
+    runner._is_npu = True
+    runner._device = torch.device("meta")
+    runner._max_seqlen = 8
+    runner._failed = set()
+    runner._graphs = {}
+    runner._npu_signature_capacity = 8
+    runner._npu_signature_capacity_reported = False
+    runner._reported_replays = set()
+    runner._replay_count = 0
+    runner._replay_buckets = Counter()
+    runner._eager_fallback_reasons = Counter()
+    runner._diagnostic_capture_release_count = 0
+    runner._diagnostic_released_keys = set()
+    runner._plan = lambda total, windows: (8, [8 - total])
+    captured = {}
+
+    def capture(bucket, **kwargs):
+        captured.update(bucket=bucket, **kwargs)
+        return SimpleNamespace(
+            graph=object(),
+            hidden_states=None,
+            cu_seqlens=None,
+            attention_metadata=None,
+            output=None,
+        )
+
+    runner._capture = capture
+    monkeypatch.setattr(encoder_cuda_graph.torch.cuda, "synchronize", lambda *_: None)
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_CAPTURE_RELEASE", "1")
+    monkeypatch.setenv("SGLANG_OMNI_ENCODER_GRAPH_CAPTURE_RELEASE_PARITY", "1")
+    hidden_states = torch.ones(7, 4)
+
+    assert runner.run(hidden_states, [7]) is None
+    assert captured["bucket"] == 8
+    assert captured["window_lens"] == (7, 1)
+    assert captured["diagnostic_hidden_states"] is hidden_states
+    assert captured["diagnostic_total"] == 7
+
+
+def test_npu_runner_captures_into_private_graph_pool(monkeypatch):
+    pool = object()
+    monkeypatch.setattr(
+        encoder_cuda_graph.torch.cuda, "graph_pool_handle", lambda: pool
+    )
+    monkeypatch.setattr(
+        encoder_cuda_graph.current_platform, "is_npu", lambda: True
+    )
+    tower = SimpleNamespace(
+        parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
+        config=SimpleNamespace(n_window=4, n_window_infer=8),
+    )
+
+    runner = Qwen3ASREncoderLayerStackGraphRunner(
+        tower, buckets=(128,), max_batch_size=1
+    )
+
+    assert runner._graph_pool is pool
+
+
+def test_non_npu_runner_uses_default_graph_pool(monkeypatch):
+    monkeypatch.setattr(
+        encoder_cuda_graph.current_platform, "is_npu", lambda: False
+    )
+    tower = SimpleNamespace(
+        parameters=lambda: iter([torch.nn.Parameter(torch.zeros(1))]),
+        config=SimpleNamespace(n_window=4, n_window_infer=8),
+    )
+
+    runner = Qwen3ASREncoderLayerStackGraphRunner(
+        tower, buckets=(128,), max_batch_size=1
+    )
+
+    assert runner._graph_pool is None
+
+
+def test_capture_state_delta_is_stable_and_bounded():
+    before = {
+        "fused_ops": {"decoder.norm": {"forward": "native"}},
+        "tensor_metadata": {"parameter:weight": {"version": 0}},
+        "module_training": {"<root>": False},
+        "runtime": {"memory_allocated": 1},
+    }
+    after = {
+        "fused_ops": {"decoder.norm": {"forward": "native"}},
+        "tensor_metadata": {"parameter:weight": {"version": 1}},
+        "module_training": {"<root>": False},
+        "runtime": {"memory_allocated": 2},
+    }
+
+    delta = _capture_state_delta(before, after)
+
+    assert len(delta["before_digest"]) == 64
+    assert len(delta["after_digest"]) == 64
+    assert delta["sections"]["fused_ops"] == {"count": 0, "first_keys": []}
+    assert delta["sections"]["tensor_metadata"] == {
+        "count": 1,
+        "first_keys": ["parameter:weight"],
+    }
+    assert delta["sections"]["runtime"] == {
+        "count": 1,
+        "first_keys": ["memory_allocated"],
+    }
+
+
 def test_encoder_graph_model_info_reports_replay_and_fallbacks():
     runner = object.__new__(Qwen3ASREncoderLayerStackGraphRunner)
     runner._is_npu = True
@@ -201,6 +477,21 @@ def test_encoder_graph_model_info_reports_replay_and_fallbacks():
         "captured_graph_count": 1,
         "captured_buckets": {"128": 1},
         "capture_failure_count": 1,
+        "diagnostic_capture_release_count": 0,
+        "diagnostic_capture_release_parity": {
+            "count": 0,
+            "match_count": 0,
+            "mismatch_count": 0,
+            "last": None,
+        },
+        "diagnostic_capture_release_state": {"count": 0, "last": None},
+        "diagnostic_capture_defer": {
+            "configured": 0,
+            "deferred_count": 0,
+            "remaining": 0,
+            "run_count": 0,
+            "first_capture": None,
+        },
         "replay_count": 3,
         "replay_buckets": {"128": 3},
         "eager_fallback_count": 2,

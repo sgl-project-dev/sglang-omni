@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Callable
+
+import torch
 
 from sglang.srt.managers.mm_utils import init_mm_embedding_cache
 from sglang.srt.utils import get_hip_version, is_gfx95_supported
@@ -32,6 +35,31 @@ from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
 logger = logging.getLogger(__name__)
+
+_NPU_GUARD_COMPLETION_FENCE_ENV = "SGLANG_OMNI_NPU_GUARD_COMPLETION_FENCE"
+
+
+def _env_enabled(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _npu_guard_completion_fence(reference: torch.Tensor) -> Callable[[], None] | None:
+    """Build the diagnostic NPU completion fence when explicitly requested."""
+    if reference.device.type != "npu" or not _env_enabled(
+        _NPU_GUARD_COMPLETION_FENCE_ENV
+    ):
+        return None
+    device_module = torch.get_device_module(reference.device)
+
+    def synchronize() -> None:
+        with device_module.device(reference.device):
+            device_module.synchronize()
+
+    logger.warning(
+        "Qwen3-ASR NPU guard completion fence enabled; device work is "
+        "synchronized before every guard handoff (diagnostic only)"
+    )
+    return synchronize
 
 
 class Qwen3ASREngineBuilder(AsrEngineBuilder):
@@ -220,7 +248,9 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         audio_tower = getattr(model, "audio_tower", None)
         reference = next(audio_tower.parameters()) if audio_tower is not None else None
         self._device_execution_guard = (
-            FairDeviceExecutionGuard()
+            FairDeviceExecutionGuard(
+                completion_fence=_npu_guard_completion_fence(reference)
+            )
             if (
                 reference is not None
                 and reference.device.type == "npu"

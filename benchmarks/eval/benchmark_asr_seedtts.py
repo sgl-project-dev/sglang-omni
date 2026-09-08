@@ -94,7 +94,11 @@ import time
 import requests
 
 from benchmarks.dataset.prepare import DATASETS, SEEDTTS_DATASET_REVISION
-from benchmarks.dataset.seedtts import SampleInput, load_seedtts_samples
+from benchmarks.dataset.seedtts import (
+    SampleInput,
+    load_seedtts_samples,
+    select_unique_audio_samples,
+)
 from benchmarks.eval.asr_profiling import (
     UtilizationSampler,
     collect_environment_fingerprint,
@@ -668,7 +672,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--meta",
         default=DATASETS["seedtts"],
-        help="SeedTTS source (HF repo id or local meta.lst).",
+        help="SeedTTS source (HF repo id, local snapshot root, or local meta.lst).",
     )
     parser.add_argument("--lang", default="en", choices=["en", "zh"])
     parser.add_argument(
@@ -676,6 +680,14 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Limit samples (0 = full SeedTTS set; 1088 for EN).",
+    )
+    parser.add_argument(
+        "--unique-audio",
+        action="store_true",
+        help=(
+            "Select the first samples with distinct audio bytes before applying "
+            "--max-samples (useful for cold-cache concurrency measurements)."
+        ),
     )
     add_common_args(parser, default_output="asr_seedtts_results.json")
     return finalize_args(parser.parse_args())
@@ -753,7 +765,11 @@ def main() -> None:
     concurrencies = args.concurrencies
     max_samples = args.max_samples if args.max_samples > 0 else None
     model_revision = args.model_revision
-    is_local_source = os.path.isfile(args.meta) or args.meta.endswith(".lst")
+    is_local_source = (
+        os.path.isfile(args.meta)
+        or os.path.isdir(args.meta)
+        or args.meta.endswith(".lst")
+    )
     if is_local_source:
         dataset_revision = None
     elif args.dataset_revision is not None:
@@ -765,10 +781,12 @@ def main() -> None:
 
     samples = load_seedtts_samples(
         args.meta,
-        max_samples=max_samples,
+        max_samples=None if args.unique_audio else max_samples,
         split=args.lang,
         revision=dataset_revision,
     )
+    if args.unique_audio:
+        samples = select_unique_audio_samples(samples, max_samples)
     if not samples:
         raise RuntimeError(f"No SeedTTS samples loaded from {args.meta!r}")
     evaluation_input_sha256 = _evaluation_input_sha256(samples)
@@ -811,6 +829,7 @@ def main() -> None:
             "declared_model_revision": model_revision,
             "dataset_revision": dataset_revision,
             "num_samples": len(samples),
+            "unique_audio": args.unique_audio,
             "concurrencies": concurrencies,
             "repeats": args.repeats,
             "warmup": args.warmup,

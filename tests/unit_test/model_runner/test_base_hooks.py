@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
+import sglang_omni.model_runner.base as base_module
 from sglang_omni.model_runner.base import ModelRunner
 from sglang_omni.model_runner.prefill_inputs import (
     OmniPrefillInputs,
@@ -295,6 +296,41 @@ def test_standard_forward_holds_configured_device_execution_guard(
 
     assert calls.index("guard_enter") < calls.index("standard_forward")
     assert calls.index("standard_forward") < calls.index("guard_exit")
+
+
+@pytest.mark.parametrize(
+    ("is_prefill", "phase"),
+    [(True, "prefill"), (False, "decode")],
+)
+def test_standard_forward_emits_request_correlated_device_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+    is_prefill: bool,
+    phase: str,
+) -> None:
+    _install_fake_forward_batch_module(monkeypatch)
+    events: list[dict] = []
+    monkeypatch.setattr(
+        base_module,
+        "_diag_emit",
+        lambda **event: events.append(event),
+    )
+
+    _runner([], custom_result=None).execute(
+        _scheduler_output(is_prefill=is_prefill)
+    )
+
+    assert [event["event_name"] for event in events] == [
+        "generation_forward_start",
+        "generation_forward_return",
+    ]
+    assert {event["request_id"] for event in events} == {"req-1"}
+    assert [event["metadata"]["phase"] for event in events] == [phase, phase]
+    assert isinstance(events[0]["metadata"]["forward_id"], int)
+    assert events[0]["metadata"]["forward_id"] == events[1]["metadata"]["forward_id"]
+    assert [event["metadata"]["batch_size"] for event in events] == [1, 1]
+    assert events[0]["metadata"]["can_run_graph"] is None
+    assert events[1]["metadata"]["can_run_graph"] is False
+    assert events[1]["metadata"]["error_class"] is None
 
 
 def _prefill_forward_batch() -> SimpleNamespace:

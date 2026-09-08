@@ -41,6 +41,7 @@ from sglang.srt.runtime_context import get_model, get_serving
 from sglang.srt.utils import broadcast_pyobj
 
 from sglang_omni.admission import QueueFullError
+from sglang_omni.profiler.event_recorder import diag_emit as _diag_emit
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.profiler.event_recorder import (
     emit_model_path_end as _emit_model_path_end,
@@ -894,6 +895,15 @@ class OmniScheduler:
                         self._request_build_max_pending_observed,
                         len(self._pending_request_builds),
                     )
+                    _diag_emit(
+                        request_id=req_id,
+                        stage=active_stage,
+                        event_name="scheduler_request_build_queue",
+                        metadata={
+                            "pending_builds": len(self._pending_request_builds),
+                            "backlog": len(self._backlogged_request_build_payloads),
+                        },
+                    )
                 continue
             try:
                 req_data = self._run_request_builder(payload, active_stage)
@@ -1118,6 +1128,7 @@ class OmniScheduler:
                 pending_stream_done,
                 result.value,
                 request_admission_lock_held=True,
+                deferred=True,
             )
 
         if request_admission_lock_held:
@@ -1152,6 +1163,7 @@ class OmniScheduler:
         req_data: Any,
         *,
         request_admission_lock_held: bool = False,
+        deferred: bool = False,
     ) -> None:
         req_id = payload.request_id
         self._deferred_request_payloads.pop(req_id, None)
@@ -1194,6 +1206,17 @@ class OmniScheduler:
                 )
                 return
             self._apply_prompt_cache_epoch(req)
+            _diag_emit(
+                request_id=req_id,
+                stage=_get_active_stage(),
+                event_name="scheduler_request_admit",
+                metadata={
+                    "pending_admissions": len(self._pending_request_admissions),
+                    "pending_builds": len(self._pending_request_builds),
+                    "backlog": len(self._backlogged_request_build_payloads),
+                    "deferred": deferred,
+                },
+            )
             _emit_event(
                 request_id=req_id,
                 stage=None,

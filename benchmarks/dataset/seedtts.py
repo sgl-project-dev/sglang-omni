@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""SeedTTS dataset loader for local meta.lst and HuggingFace Arrow/Parquet repos.
+"""SeedTTS dataset loader for local sources and HuggingFace Arrow/Parquet repos.
 
 Audio bytes are staged to a process-scoped temporary directory so downstream
 consumers (which expect filesystem paths) work unchanged for Arrow/Parquet
@@ -9,6 +9,7 @@ sources. Local meta.lst files already point at local audio paths.
 from __future__ import annotations
 
 import atexit
+import hashlib
 import logging
 import os
 import shutil
@@ -86,17 +87,48 @@ def load_seedtts_samples(
 ) -> list[SampleInput]:
     """Load SeedTTS evaluation samples.
 
-    *source* may be either a local ``meta.lst`` file in seed-tts-eval format or
-    a HuggingFace dataset repo id (e.g.
-    ``zhaochenyang20/seed-tts-eval-50-arrow``). Arrow/Parquet datasets are
-    fetched via ``datasets.load_dataset`` and audio bytes are staged to a
-    temporary directory.
+    *source* may be a local ``meta.lst`` file in seed-tts-eval format, a local
+    dataset snapshot containing ``data/<split>-*.parquet``, or a HuggingFace
+    dataset repo id (e.g. ``zhaochenyang20/seed-tts-eval-50-arrow``).
+    Arrow/Parquet audio bytes are staged to a temporary directory.
     """
     if os.path.isfile(source) or source.endswith(".lst"):
         return _load_from_meta_lst(source, max_samples)
+    if os.path.isdir(source):
+        return _load_from_local_parquet(source, split, max_samples)
     if revision is None and source == SEEDTTS_DATASET_ID:
         revision = SEEDTTS_DATASET_REVISION
     return _load_from_arrow(source, split, revision, max_samples)
+
+
+def select_unique_audio_samples(
+    samples: list[SampleInput], max_samples: int | None
+) -> list[SampleInput]:
+    """Keep the first sample for each distinct audio byte sequence."""
+    if max_samples is not None and max_samples <= 0:
+        return []
+
+    selected: list[SampleInput] = []
+    seen: set[str] = set()
+    for sample in samples:
+        digest = hashlib.sha256()
+        with open(sample.ref_audio, "rb") as audio:
+            while chunk := audio.read(1024 * 1024):
+                digest.update(chunk)
+        audio_sha256 = digest.hexdigest()
+        if audio_sha256 in seen:
+            continue
+        seen.add(audio_sha256)
+        selected.append(sample)
+        if max_samples is not None and len(selected) >= max_samples:
+            break
+
+    if max_samples is not None and len(selected) < max_samples:
+        raise RuntimeError(
+            f"Requested {max_samples} unique SeedTTS audio inputs, but only "
+            f"{len(selected)} were available"
+        )
+    return selected
 
 
 def _load_from_meta_lst(path: str, max_samples: int | None) -> list[SampleInput]:
@@ -143,7 +175,7 @@ def _load_from_arrow(
     if cache_key in _STAGED_CACHE:
         return list(_STAGED_CACHE[cache_key])
 
-    from datasets import Audio, load_dataset
+    from datasets import load_dataset
 
     logger.info(
         "Loading %s split=%s revision=%s from HuggingFace ...",
@@ -154,11 +186,64 @@ def _load_from_arrow(
     load_kwargs = {"revision": revision} if revision else {}
     ds = load_dataset(repo_id, split=split, **load_kwargs)
 
+    return _stage_arrow_dataset(ds, repo_id, split, revision, max_samples)
+
+
+def _load_from_local_parquet(
+    snapshot_root: str,
+    split: str,
+    max_samples: int | None,
+) -> list[SampleInput]:
+    """Load an offline snapshot containing ``data/<split>-*.parquet``."""
+    root = Path(snapshot_root).resolve()
+    parquet_files = sorted((root / "data").glob(f"{split}-*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(
+            f"No SeedTTS {split!r} Parquet files found under {root / 'data'}"
+        )
+
+    source_id = f"local-parquet:{root}"
+    full_cache_key = (source_id, split, None, None)
+    if full_cache_key in _STAGED_CACHE:
+        samples = _STAGED_CACHE[full_cache_key]
+        return samples[:max_samples] if max_samples is not None else list(samples)
+
+    cache_key = (source_id, split, None, max_samples)
+    if cache_key in _STAGED_CACHE:
+        return list(_STAGED_CACHE[cache_key])
+
+    from datasets import load_dataset
+
+    logger.info(
+        "Loading local SeedTTS split=%s from %d Parquet file(s) under %s",
+        split,
+        len(parquet_files),
+        root,
+    )
+    ds = load_dataset(
+        "parquet",
+        data_files={split: [str(path) for path in parquet_files]},
+        split=split,
+    )
+    return _stage_arrow_dataset(ds, source_id, split, None, max_samples)
+
+
+def _stage_arrow_dataset(
+    ds,
+    source_id: str,
+    split: str,
+    revision: str | None,
+    max_samples: int | None,
+) -> list[SampleInput]:
+    """Validate and stage one loaded Arrow/Parquet dataset."""
+    cache_key = (source_id, split, revision, max_samples)
     missing = _REQUIRED_COLUMNS - set(ds.column_names)
     if missing:
         raise ValueError(
-            f"Dataset {repo_id} split={split} is missing columns: {missing}"
+            f"Dataset {source_id} split={split} is missing columns: {missing}"
         )
+
+    from datasets import Audio
 
     ds = ds.cast_column("ref_audio", Audio(decode=False))
     if max_samples is not None:
@@ -177,7 +262,7 @@ def _load_from_arrow(
         wav_path = _resolve_staged_audio_path(
             staging_root,
             rel,
-            repo_id=repo_id,
+            repo_id=source_id,
             split=split,
             sample_id=row["sample_id"],
         )
@@ -185,7 +270,7 @@ def _load_from_arrow(
         audio_bytes = audio.get("bytes")
         if not audio_bytes:
             raise ValueError(
-                f"Empty audio bytes for {repo_id}/{split}/{row['sample_id']}"
+                f"Empty audio bytes for {source_id}/{split}/{row['sample_id']}"
             )
 
         rel_key = wav_path.relative_to(staging_root).as_posix()
@@ -208,7 +293,7 @@ def _load_from_arrow(
         "Loaded %d samples (%d unique audio files) from %s/%s",
         len(samples),
         len(written),
-        repo_id,
+        source_id,
         split,
     )
     return list(samples)

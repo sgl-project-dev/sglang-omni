@@ -125,6 +125,96 @@ def test_load_seedtts_samples_accepts_local_meta_lst(tmp_path: Path) -> None:
     assert samples[0].target_text == "target one"
 
 
+def test_load_seedtts_samples_accepts_local_parquet_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    seedtts._STAGED_CACHE.clear()
+    snapshot = tmp_path / "seedtts"
+    data_dir = snapshot / "data"
+    data_dir.mkdir(parents=True)
+    parquet_path = data_dir / "en-00000-of-00001.parquet"
+    parquet_path.write_bytes(b"PAR1")
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    observed: dict = {}
+    dataset = _FakeDataset(
+        [
+            {
+                "sample_id": "sample-1",
+                "ref_text": "reference",
+                "ref_audio_path": "audio/ref.wav",
+                "target_text": "target",
+                "ref_audio": {"bytes": b"audio"},
+            }
+        ]
+    )
+
+    def fake_load_dataset(builder: str, **kwargs):
+        observed["builder"] = builder
+        observed.update(kwargs)
+        return dataset
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        types.SimpleNamespace(
+            Audio=lambda **kwargs: ("Audio", kwargs),
+            load_dataset=fake_load_dataset,
+        ),
+    )
+    monkeypatch.setattr(seedtts.tempfile, "mkdtemp", lambda prefix: str(stage_dir))
+    monkeypatch.setattr(seedtts.atexit, "register", lambda *args, **kwargs: None)
+
+    samples = seedtts.load_seedtts_samples(str(snapshot), split="en")
+
+    assert observed == {
+        "builder": "parquet",
+        "data_files": {"en": [str(parquet_path)]},
+        "split": "en",
+    }
+    assert [sample.sample_id for sample in samples] == ["sample-1"]
+    assert Path(samples[0].ref_audio).read_bytes() == b"audio"
+    seedtts._STAGED_CACHE.clear()
+
+
+def test_load_seedtts_samples_rejects_missing_local_parquet_split(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "data").mkdir()
+
+    with pytest.raises(FileNotFoundError, match="No SeedTTS 'en' Parquet files"):
+        seedtts.load_seedtts_samples(str(tmp_path), split="en")
+
+
+def test_select_unique_audio_samples_uses_audio_content(tmp_path: Path) -> None:
+    paths = [tmp_path / f"{idx}.wav" for idx in range(3)]
+    paths[0].write_bytes(b"same")
+    paths[1].write_bytes(b"same")
+    paths[2].write_bytes(b"different")
+    samples = [
+        seedtts.SampleInput(str(idx), "ref", str(path), "target")
+        for idx, path in enumerate(paths)
+    ]
+
+    selected = seedtts.select_unique_audio_samples(samples, 2)
+
+    assert [sample.sample_id for sample in selected] == ["0", "2"]
+
+
+def test_select_unique_audio_samples_rejects_insufficient_inputs(
+    tmp_path: Path,
+) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"same")
+    samples = [
+        seedtts.SampleInput("one", "ref", str(audio), "target"),
+        seedtts.SampleInput("two", "ref", str(audio), "target"),
+    ]
+
+    with pytest.raises(RuntimeError, match="Requested 2 unique.*only 1"):
+        seedtts.select_unique_audio_samples(samples, 2)
+
+
 def test_local_seedtts_source_does_not_claim_huggingface_revision(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

@@ -216,6 +216,13 @@ input-audio seconds per wall-clock second) alongside the existing RTF. Use it
 to measure how ASR concurrency affects capacity, latency, and WER for a given
 workload.
 
+The `--meta` source may also be a local SeedTTS snapshot root containing
+`data/<lang>-*.parquet`; this path is loaded directly with the Parquet builder
+and does not contact the Hugging Face Hub. For cold-cache measurements, add
+`--unique-audio`: samples are selected in dataset order by distinct audio-file
+content before `--max-samples` is applied, and the command fails if it cannot
+satisfy the requested count.
+
 Add `--stream` to exercise the transcription SSE path and report text TTFT and
 inter-chunk latency while retaining the terminal transcript for WER:
 
