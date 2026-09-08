@@ -343,7 +343,7 @@ def test_vocoder_autocast_uses_the_flow_device(monkeypatch) -> None:
 
     asyncio.run(vocoder.decode_batch([(_state(), torch.tensor([1, 2]))]))
 
-    assert observed == [("cpu", torch.float16, True)]
+    assert observed == [("cpu", torch.float16, True), ("mps", None, False)]
 
 
 def _state(
@@ -929,7 +929,6 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
     )
 
     assert vocoder_stage.factory.model_dump(exclude_none=True) == {
-        "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 8000,
         "max_batch_size": 16,
