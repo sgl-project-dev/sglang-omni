@@ -510,6 +510,7 @@
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hint">Language Hint</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-defaults">Codec decoding defaults</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#first-audio-chunk-ramp">First-audio chunk ramp</a></li>
 </ul>
 </li>
@@ -911,6 +912,27 @@ single AR step while the playback cushion is rebuilt within four chunks. Pass an
 explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk’s generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.</p>
+<section id="codec-decoding-defaults">
+<h4>Codec decoding defaults<a class="headerlink" href="#codec-decoding-defaults" title="Link to this heading">#</a></h4>
+<p>Streaming decodes run on the stateful incremental codec by default: each
+follow-up chunk decodes only its fresh frames against per-stream state held in
+a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
+is <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code>d, and the follow-up workers collect for 4 ms. Startup spends
+about a minute compiling the steady shapes. The left-context decoder remains
+available as a rollback:</p>
+<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
+<span class="w">      </span><span class="nt">enable_stateful_codec_decoder</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">incremental_codec_cuda_graph</span></code>, <code class="docutils literal notranslate"><span class="pre">incremental_codec_compile</span></code> and
+<code class="docutils literal notranslate"><span class="pre">followup_batch_wait_ms</span></code> are the individual switches. Measured on one H100
+80GB at 20 requests per second, three client seeds of roughly 1200 requests
+each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
+for the left-context decoder, with first playable audio at 55 to 58 ms
+against 82 to 89 ms.</p>
+</section>
 <section id="first-audio-chunk-ramp">
 <h4>First-audio chunk ramp<a class="headerlink" href="#first-audio-chunk-ramp" title="Link to this heading">#</a></h4>
 <p>For latency-sensitive deployments the whole early chunk schedule can be
@@ -1292,6 +1314,7 @@ checkpoint is less prone.</p></li>
 </li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#language-hint">Language Hint</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#codec-decoding-defaults">Codec decoding defaults</a></li>
 <li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#first-audio-chunk-ramp">First-audio chunk ramp</a></li>
 </ul>
 </li>
