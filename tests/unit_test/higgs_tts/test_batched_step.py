@@ -13,6 +13,7 @@ import torch
 
 from sglang_omni.models.higgs_tts.sampler import (
     K_MAX,
+    NO_SEED,
     STOP_CODE,
     HiggsBatchedSamplerState,
     batched_step,
@@ -68,6 +69,44 @@ def _assert_pools_equal(a: dict, b: dict) -> None:
         assert torch.equal(
             a[key], b[key]
         ), f"mismatch on {key}\n a={a[key]}\n b={b[key]}"
+
+
+def _fill_sampler_pool(pool: HiggsBatchedSamplerState) -> None:
+    pool.delay_count.fill_(7)
+    pool.eoc_countdown.fill_(5)
+    pool.generation_done.fill_(True)
+    pool.last_codes.copy_(
+        torch.arange(
+            pool.max_batch_size * pool.num_codebooks,
+            device=pool.device,
+        ).view(pool.max_batch_size, pool.num_codebooks)
+    )
+    pool.seeds.fill_(1234)
+    pool.step_count.fill_(99)
+
+
+@pytest.mark.parametrize("row", [0, 4, 8])
+def test_reset_row_clears_selected_row_only(row: int) -> None:
+    pool = HiggsBatchedSamplerState(9, N, device=DEVICE)
+    _fill_sampler_pool(pool)
+    neighbors = {
+        name: tensor.clone()
+        for name, tensor in vars(pool).items()
+        if isinstance(tensor, torch.Tensor)
+    }
+
+    pool.reset_row(row)
+
+    assert pool.delay_count[row].item() == 0
+    assert pool.eoc_countdown[row].item() == -1
+    assert not pool.generation_done[row].item()
+    assert torch.equal(pool.last_codes[row], torch.zeros_like(pool.last_codes[row]))
+    assert pool.seeds[row].item() == NO_SEED
+    assert pool.step_count[row].item() == 0
+    for name, before in neighbors.items():
+        actual = getattr(pool, name)
+        assert torch.equal(actual[:row], before[:row])
+        assert torch.equal(actual[row + 1 :], before[row + 1 :])
 
 
 # ---------------------------------------------------------------------------

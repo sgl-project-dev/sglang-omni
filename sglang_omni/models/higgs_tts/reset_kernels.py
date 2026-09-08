@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Optional CUDA kernels for Higgs TTS sampler state."""
+
+from __future__ import annotations
+
+import torch
+
+try:
+    import triton
+    import triton.language as tl
+except ImportError:  # pragma: no cover - depends on runtime image
+    triton = None
+    tl = None
+
+
+if triton is not None:
+
+    @triton.jit
+    def _reset_sampler_row_kernel(
+        delay_count,
+        eoc_countdown,
+        generation_done,
+        last_codes,
+        seeds,
+        step_count,
+        row,
+        no_seed,
+        num_codebooks: tl.constexpr,
+        block_size: tl.constexpr,
+    ):
+        offsets = tl.arange(0, block_size)
+        tl.store(delay_count + row, 0)
+        tl.store(eoc_countdown + row, -1)
+        tl.store(generation_done + row, 0)
+        tl.store(seeds + row, no_seed)
+        tl.store(step_count + row, 0)
+        tl.store(
+            last_codes + row * num_codebooks + offsets,
+            0,
+            mask=offsets < num_codebooks,
+        )
+
+else:
+    _reset_sampler_row_kernel = None
+
+
+def reset_sampler_row(
+    delay_count: torch.Tensor,
+    eoc_countdown: torch.Tensor,
+    generation_done: torch.Tensor,
+    last_codes: torch.Tensor,
+    seeds: torch.Tensor,
+    step_count: torch.Tensor,
+    row: int,
+    no_seed: int,
+) -> bool:
+    """Reset one CUDA state row in one launch, or return ``False``."""
+    if _reset_sampler_row_kernel is None or not delay_count.is_cuda:
+        return False
+
+    num_codebooks = last_codes.shape[1]
+    block_size = triton.next_power_of_2(num_codebooks)
+    _reset_sampler_row_kernel[(1,)](
+        delay_count,
+        eoc_countdown,
+        generation_done,
+        last_codes,
+        seeds,
+        step_count,
+        row,
+        no_seed,
+        num_codebooks,
+        block_size,
+        num_warps=1,
+    )
+    return True
+
+
+__all__ = ["reset_sampler_row"]
