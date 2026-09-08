@@ -59,7 +59,7 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             "enable_torch_compile": False,
             "max_running_requests": self.max_running_requests,
             "chunked_prefill_size": 0,
-            "mem_fraction_static": 0.20,
+            "mem_fraction_static": 0.85,
             "dtype": dtype,
             "trust_remote_code": False,
         }
