@@ -5,7 +5,20 @@ import os
 from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
-from sglang.srt.platforms.cuda import CudaDeviceMixin
+try:
+    from sglang.srt.platforms.cuda import CudaDeviceMixin
+except ModuleNotFoundError:
+    # Some MUSA distributions expose the CUDA-like torch API without shipping
+    # SGLang's optional CUDA platform module. The MUSA subclass supplies the
+    # device-specific methods; this base keeps the shared Omni class importable.
+    from sglang.srt.platforms.device_mixin import DeviceMixin, PlatformEnum
+
+    class CudaDeviceMixin(DeviceMixin):
+        """Minimal CUDA-like base for SGLang builds without cuda.py."""
+
+        _enum = PlatformEnum.CUDA
+        device_name = "cuda"
+        device_type = "cuda"
 
 from sglang_omni.platforms.interface import OmniPlatform
 from sglang_omni.quantization import resolve_quant_config
