@@ -48,6 +48,7 @@ from sglang.srt.managers.schedule_batch import MultimodalInputFormat
 
 from sglang_omni.scheduling.pre_lm_encoder import PreLMEncoderService, QueueEntry
 from sglang_omni.scheduling.stage_cache import StageOutputCache
+from sglang_omni.utils import device_graph
 
 logger = logging.getLogger(__name__)
 
@@ -142,8 +143,8 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
         self._dtype = reference.dtype
         self._hidden_size = _text_hidden_size(model)
         self._stream = (
-            torch.cuda.Stream(device=self._device)
-            if self._device.type == "cuda"
+            device_graph.new_stream(self._device)
+            if self._device.type in ("cuda", "musa")
             else None
         )
         self._cache = StageOutputCache(
@@ -392,12 +393,12 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
 
     def attach_embedding(self, item: Any, embedding: torch.Tensor) -> None:
         embedding = embedding.to(self._device, non_blocking=True)
-        if self._stream is not None and embedding.is_cuda:
+        if self._stream is not None and embedding.device.type in ("cuda", "musa"):
             # the batch path allocates on the private stream while the LM
             # consumes on the default stream; register the consumer so the
             # allocator cannot recycle the block for a later batch while LM
             # reads are still queued.
-            embedding.record_stream(torch.cuda.default_stream(self._device))
+            embedding.record_stream(device_graph.current_stream(self._device))
         item.precomputed_embeddings = embedding
         item.feature = None
         item.format = MultimodalInputFormat.PRECOMPUTED_EMBEDDING
@@ -440,7 +441,7 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
             if self._stream is None:
                 yield
             else:
-                with torch.cuda.stream(self._stream):
+                with device_graph.stream(self._stream):
                     yield
 
     def encode_batch(self, items: list[Any]) -> torch.Tensor:
@@ -561,8 +562,9 @@ class ArkasrPreLMEncoderService(PreLMEncoderService[Any, torch.Tensor, torch.Ten
                     exc_info=True,
                 )
         try:
-            with torch.cuda.device(self._device):
-                torch.cuda.empty_cache()
+            with device_graph.device_context(self._device):
+                backend = torch.cuda if self._device.type == "cuda" else torch.musa
+                backend.empty_cache()
         except Exception:
             logger.warning("ARK-ASR CUDA cache cleanup failed after OOM", exc_info=True)
 
