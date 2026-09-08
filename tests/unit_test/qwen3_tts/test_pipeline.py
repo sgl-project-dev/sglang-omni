@@ -324,10 +324,13 @@ def test_qwen3_tts_speech_tokenizer_is_loaded_once_per_process_key(
     other_attention = qwen3_stages._load_qwen3_tts_tokenizer(
         "/ckpt", device="cuda:0", dtype="bfloat16", attn_implementation="sdpa"
     )
+    other_checkpoint = qwen3_stages._load_qwen3_tts_tokenizer(
+        "/other", device="cuda:0", dtype="bfloat16", attn_implementation=None
+    )
 
     assert engine_copy is vocoder_copy
-    assert other_device is not vocoder_copy
-    assert other_attention is not vocoder_copy
+    assert len({id(vocoder_copy), id(other_device), id(other_attention)}) == 3
+    assert other_checkpoint is not vocoder_copy
     assert loads == [
         ("/ckpt/speech_tokenizer", {"device_map": "cuda:0", "dtype": torch.bfloat16}),
         ("/ckpt/speech_tokenizer", {"device_map": "cuda:1", "dtype": torch.bfloat16}),
@@ -339,7 +342,108 @@ def test_qwen3_tts_speech_tokenizer_is_loaded_once_per_process_key(
                 "attn_implementation": "sdpa",
             },
         ),
+        ("/other/speech_tokenizer", {"device_map": "cuda:0", "dtype": torch.bfloat16}),
     ]
+
+
+@pytest.mark.parametrize("disable_cuda_graph", [False, True])
+def test_qwen3_tts_engine_attaches_the_vocoder_speech_tokenizer_before_the_pool(
+    monkeypatch: pytest.MonkeyPatch, disable_cuda_graph: bool
+) -> None:
+    from transformers import AutoProcessor
+
+    from sglang_omni.models.qwen3_tts.engine_builder import Qwen3TtsEngineBuilder
+
+    loads: list[str] = []
+    predictor_captures: list[tuple] = []
+
+    class FakeQwen3TTSTokenizer:
+        feature_extractor = SimpleNamespace(sampling_rate=24000)
+
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            del kwargs
+            loads.append(path)
+            return cls()
+
+        def get_encode_downsample_rate(self):
+            return 1920
+
+    class FakeQwen3TTSModel:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def _merge_generate_kwargs(self, **kwargs):
+            return {**self.kwargs["generate_defaults"], **kwargs}
+
+    class FakeScheduler:
+        def __init__(self, tokenizer, **kwargs) -> None:
+            del kwargs
+            self.tokenizer = tokenizer
+
+        def warmup_now(self) -> None:
+            pass
+
+    class FakeTalker:
+        device = torch.device("cpu")
+        speech_tokenizer = None
+
+        def load_speech_tokenizer(self, tokenizer) -> None:
+            self.speech_tokenizer = tokenizer
+
+        def capture_predictor_graphs(
+            self, *, do_sample: bool, top_k: int, top_p: float
+        ) -> int:
+            predictor_captures.append((do_sample, top_k, top_p))
+            return 6
+
+    qwen_tts_module = types.ModuleType("qwen_tts")
+    qwen_tts_module.Qwen3TTSTokenizer = FakeQwen3TTSTokenizer
+    qwen_tts_module.Qwen3TTSModel = FakeQwen3TTSModel
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
+    monkeypatch.setattr(
+        qwen3_stages, "apply_qwen_tts_transformers_compatibility_patches", lambda: None
+    )
+    monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(
+        qwen3_stages, "_load_qwen3_tts_generate_defaults", lambda path: {}
+    )
+    monkeypatch.setattr(qwen3_stages, "_SPEECH_TOKENIZERS", {})
+    monkeypatch.setattr(
+        qwen3_stages, "Qwen3TTSStreamingVocoderScheduler", FakeScheduler
+    )
+    monkeypatch.setattr(
+        AutoProcessor,
+        "from_pretrained",
+        staticmethod(lambda *args, **kwargs: object()),
+    )
+    qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    vocoder = qwen3_stages.create_vocoder_executor("/ckpt", device="cpu")
+    talker = FakeTalker()
+    builder = Qwen3TtsEngineBuilder()
+    builder.dtype = "bfloat16"
+    try:
+        builder.before_memory_pool(
+            model_worker=SimpleNamespace(model_runner=SimpleNamespace(model=talker)),
+            checkpoint_dir="/ckpt",
+            device="cpu",
+            gpu_id=0,
+            server_args=SimpleNamespace(
+                context_length=8192, disable_cuda_graph=disable_cuda_graph
+            ),
+        )
+    finally:
+        qwen3_request_builders.clear_qwen3_tts_preprocessing_context()
+
+    assert talker.speech_tokenizer is vocoder.tokenizer
+    assert loads == ["/ckpt/speech_tokenizer"]
+    expected = qwen3_request_builders.resolve_subtalker_sampling({})
+    assert predictor_captures == (
+        []
+        if disable_cuda_graph
+        else [(expected.do_sample, expected.top_k, expected.top_p)]
+    )
 
 
 def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
@@ -1254,11 +1358,16 @@ def test_qwen3_tts_reference_code_overlaps_speaker_embedding() -> None:
 
 
 @pytest.mark.parametrize(
-    "samples, frames, refused",
-    [(126_720, 99, False), (126_721, 100, True)],
+    "samples, sample_rate, frames, refused",
+    [
+        (126_720, 16000, 99, False),
+        (126_721, 16000, 100, True),
+        (190_080, 24000, 99, False),
+        (190_081, 24000, 100, True),
+    ],
 )
 def test_qwen3_tts_icl_reference_is_refused_at_the_context_before_encoding(
-    samples: int, frames: int, refused: bool
+    samples: int, sample_rate: int, frames: int, refused: bool
 ) -> None:
     encoded_lengths: list[int] = []
 
@@ -1269,6 +1378,7 @@ def test_qwen3_tts_icl_reference_is_refused_at_the_context_before_encoding(
             return 1920
 
         def encode(self, waveforms, *, sr):
+            assert sr == sample_rate
             encoded_lengths.append(len(waveforms[0]))
             return SimpleNamespace(
                 audio_codes=[torch.ones((frames, 2), dtype=torch.long)]
@@ -1276,12 +1386,12 @@ def test_qwen3_tts_icl_reference_is_refused_at_the_context_before_encoding(
 
     class FakeWrapper:
         def _normalize_audio_inputs(self, ref_audio):
-            return [(np.zeros(samples, dtype=np.float32), 16000)]
+            return [(np.zeros(samples, dtype=np.float32), sample_rate)]
 
     class FakeModel:
         device = torch.device("cpu")
         speech_tokenizer = FakeSpeechTokenizer()
-        speaker_encoder_sample_rate = 16000
+        speaker_encoder_sample_rate = sample_rate
 
         def extract_speaker_embedding(self, *, audio, sr):
             return torch.ones(4)
