@@ -43,7 +43,7 @@ class _SolvableFlow(torch.nn.Module):
 
 
 class _FakeHiFT(torch.nn.Module):
-    # cosyvoice3.yaml: upsample_rates [8, 5, 3], istft_params.hop_len 4.
+    # note (db-ol): cosyvoice3.yaml has upsample_rates [8, 5, 3] and hop_len 4.
     upsample_rates: ClassVar[list[int]] = [8, 5, 3]
     istft_params: ClassVar[dict[str, int]] = {"n_fft": 16, "hop_len": 4}
 
@@ -63,7 +63,7 @@ def _decode_and_collect(flow: torch.nn.Module, caplog) -> list[str]:
 
 
 def test_decode_batch_logs_one_line_per_solve(caplog) -> None:
-    # Both requests share one frame bucket, so one solve and one line.
+    # note (db-ol): both requests share one frame bucket, one solve, one line.
     [message] = _decode_and_collect(_SolvableFlow(), caplog)
     assert "batch_items=2" in message
     assert float(message.rsplit("solve_elapsed_ms=", 1)[1]) > 0.0

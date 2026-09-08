@@ -629,7 +629,8 @@ def _import_modelscope_preserving_root_handlers() -> None:
     try:
         importlib.import_module("modelscope")
     except ImportError:
-        # cosyvoice imports modelscope itself and raises a clearer error below.
+        # note (db-ol): cosyvoice imports modelscope itself and raises a
+        # clearer error below.
         pass
     for handler, level in saved:
         if handler.level != level:

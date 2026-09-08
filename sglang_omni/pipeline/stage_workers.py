@@ -140,8 +140,8 @@ class StageWorkerProcessSpec:
 
     process_name: str
     stage_specs: list[StageLaunchConfig]
-    # Root logger level for the spawned process. The launcher passes its own
-    # root level so ``--log-level`` reaches every stage, not just the CLI.
+    # note (Dayuxiaoshui): root logger level for the spawned process. The
+    # launcher passes its own root level so --log-level reaches every stage.
     log_level: int = logging.INFO
 
 

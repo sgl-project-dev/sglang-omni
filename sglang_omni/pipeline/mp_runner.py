@@ -97,7 +97,7 @@ def _build_stage_groups(
     """
     if ctx is None:
         ctx = multiprocessing.get_context("spawn")
-    # Stage processes log at the level the CLI configured on this root logger.
+    # note (Dayuxiaoshui): stage processes log at the level the CLI set here.
     log_level = logging.getLogger().getEffectiveLevel()
     if replica_topology is None:
         replica_topology = ReplicaTopology()
