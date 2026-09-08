@@ -1002,15 +1002,17 @@ def _prepare_vocoder_item(
 ) -> tuple[FunCosyVoice3State, torch.Tensor]:
     state = load_state(payload)
     if state.audio_codes is None:
-        raise RuntimeError("Fun-CosyVoice3 vocoder requires audio_codes from tts_engine")
+        raise RuntimeError(
+            "Fun-CosyVoice3 vocoder requires audio_codes from tts_engine"
+        )
     return state, torch.as_tensor(state.audio_codes, dtype=torch.long).reshape(-1)
 
 
-def _make_flow_input(
-    state: FunCosyVoice3State, codes: torch.Tensor
-) -> FlowBatchInput:
+def _make_flow_input(state: FunCosyVoice3State, codes: torch.Tensor) -> FlowBatchInput:
     prompt_token = (
-        torch.as_tensor(state.flow_prompt_speech_token, dtype=torch.int32).reshape(1, -1)
+        torch.as_tensor(state.flow_prompt_speech_token, dtype=torch.int32).reshape(
+            1, -1
+        )
         if state.flow_prompt_speech_token is not None
         else torch.zeros(1, 0, dtype=torch.int32)
     )
@@ -1398,7 +1400,10 @@ class _CosyVoice3MlxVocoderAdapter(BatchVocoderBase):
                     flow_input.prompt_token.detach().cpu().numpy(), dtype=mx.int32
                 ),
                 prompt_feat=mx.array(
-                    flow_input.prompt_feat.detach().to(dtype=torch.float32).cpu().numpy(),
+                    flow_input.prompt_feat.detach()
+                    .to(dtype=torch.float32)
+                    .cpu()
+                    .numpy(),
                     dtype=mx.float32,
                 ),
                 embedding=mx.array(
@@ -1462,11 +1467,17 @@ def create_vocoder_executor(
         if not current_platform.is_mps():
             raise RuntimeError("Fun-CosyVoice3 native MLX vocoder requires Apple Metal")
         if mlx_model_path is None:
-            raise ValueError("Fun-CosyVoice3 native MLX vocoder requires mlx_model_path")
+            raise ValueError(
+                "Fun-CosyVoice3 native MLX vocoder requires mlx_model_path"
+            )
         if max_batch_size not in (None, 1):
-            raise ValueError("Fun-CosyVoice3 native MLX vocoder requires max_batch_size=1")
+            raise ValueError(
+                "Fun-CosyVoice3 native MLX vocoder requires max_batch_size=1"
+            )
         if enable_dit_torch_compile:
-            raise ValueError("enable_dit_torch_compile is unavailable on the native MLX vocoder")
+            raise ValueError(
+                "enable_dit_torch_compile is unavailable on the native MLX vocoder"
+            )
         vocoder = _CosyVoice3MlxVocoderAdapter(
             _load_cosyvoice3_mlx_vocoder(
                 mlx_model_path, revision=mlx_model_revision, expected_dtype=dtype
