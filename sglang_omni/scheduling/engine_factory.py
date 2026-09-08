@@ -62,6 +62,17 @@ class SGLangGenerationEngineBuilder(ABC):
     supports_breakable_prefill_cuda_graph: bool = False
     supports_full_prefill_cuda_graph: bool = False
 
+    def allowed_prefill_cuda_graph_backends(self) -> tuple[str, ...]:
+        """Prefill graph backends the policy may accept for this model.
+
+        The breakable backend stays in the set for every builder because
+        ``build`` refuses it separately with a message naming the contract;
+        the full backend is only valid where the model declares it.
+        """
+        if self.supports_full_prefill_cuda_graph:
+            return (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL)
+        return (CudaGraphBackend.BREAKABLE,)
+
     def build(
         self,
         model_path: str,
@@ -443,6 +454,7 @@ class AsrEngineBuilder(SGLangGenerationEngineBuilder):
         validate_generation_batch_policy(
             model_name=self.model_name,
             server_args=server_args,
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
@@ -481,6 +493,7 @@ class TtsEngineBuilder(SGLangGenerationEngineBuilder):
             model_name=self.model_name,
             server_args=server_args,
             model_buffer_bs=self.get_model_buffer_bs(model),
+            allowed_prefill_backends=self.allowed_prefill_cuda_graph_backends(),
         )
 
     def make_scheduler(

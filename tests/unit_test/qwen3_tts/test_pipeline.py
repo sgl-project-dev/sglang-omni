@@ -6175,7 +6175,7 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
     validation_state: dict[str, object] = {}
 
     def record_generation_batch_validation(
-        *, model_name, server_args, model_buffer_bs=None
+        *, model_name, server_args, model_buffer_bs=None, allowed_prefill_backends=()
     ):
         decode_config = server_args.cuda_graph_config.decode
         validation_state.update(
@@ -6186,12 +6186,14 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
                 "cuda_graph_bs": list(decode_config.bs),
                 "torch_compile_max_bs": server_args.torch_compile_max_bs,
                 "enable_torch_compile": server_args.enable_torch_compile,
+                "allowed_prefill_backends": tuple(allowed_prefill_backends),
             }
         )
         return validate_generation_batch_policy_impl(
             model_name=model_name,
             server_args=server_args,
             model_buffer_bs=model_buffer_bs,
+            allowed_prefill_backends=allowed_prefill_backends,
         )
 
     monkeypatch.setattr(
@@ -6310,6 +6312,8 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         "cuda_graph_bs": expected_cuda_graph_bs,
         "torch_compile_max_bs": 64,
         "enable_torch_compile": False,
+        # note (luojiaxuan): the builder widens the policy from the capability.
+        "allowed_prefill_backends": ("breakable", "full"),
     }
 
     def target():

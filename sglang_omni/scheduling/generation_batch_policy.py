@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from numbers import Integral
 from typing import Any
 
@@ -222,6 +222,7 @@ def validate_generation_batch_policy(
     model_name: str,
     server_args: Any,
     model_buffer_bs: int | None = None,
+    allowed_prefill_backends: Sequence[str] = (CudaGraphBackend.BREAKABLE,),
 ) -> None:
     errors: list[str] = []
 
@@ -266,7 +267,9 @@ def validate_generation_batch_policy(
                 f"({cuda_graph_max_bs} < {max_running_requests})"
             )
 
-    _validate_prefill_graph_policy(server_args, cuda_graph_enabled, errors)
+    _validate_prefill_graph_policy(
+        server_args, cuda_graph_enabled, errors, allowed_prefill_backends
+    )
 
     torch_compile_enabled = bool(server_args.enable_torch_compile)
     torch_compile_max_bs = _validate_positive_int(
@@ -299,10 +302,12 @@ def _validate_prefill_graph_policy(
     server_args: Any,
     cuda_graph_enabled: bool,
     errors: list[str],
+    allowed_prefill_backends: Sequence[str],
 ) -> None:
-    """Validate the resolved prefill CUDA graph policy: breakable or full
-    backend, with the bucket list checked against the chunked prefill ceiling.
-    Which of the two a model may run is the engine builder's call."""
+    """Validate the resolved prefill CUDA graph policy against the backends
+    this model has adopted, with the bucket list checked against the chunked
+    prefill ceiling. Stages that build their own server args get the breakable
+    backend only; an engine builder widens the set from the model capability."""
     backend = get_prefill_cuda_graph_backend(server_args)
     if backend == CudaGraphBackend.DISABLED:
         return
@@ -313,10 +318,12 @@ def _validate_prefill_graph_policy(
             f"(backend={backend!r} with disable_cuda_graph)"
         )
         return
-    if backend not in (CudaGraphBackend.BREAKABLE, CudaGraphBackend.FULL):
+    if backend not in allowed_prefill_backends:
+        allowed = ", ".join(
+            repr(str(candidate)) for candidate in (*allowed_prefill_backends, "disabled")
+        )
         errors.append(
-            "prefill CUDA graph backend must be 'breakable', 'full' or "
-            f"'disabled', got {backend!r}"
+            f"prefill CUDA graph backend must be one of {allowed}, got {backend!r}"
         )
         return
 
@@ -329,14 +336,14 @@ def _validate_prefill_graph_policy(
     for feature, is_active in incompatibilities:
         if is_active:
             errors.append(
-                f"breakable prefill CUDA graphs are incompatible with {feature}; "
+                f"prefill CUDA graphs are incompatible with {feature}; "
                 "set cuda_graph_backend_prefill='disabled'"
             )
 
     prefill_cfg = server_args.cuda_graph_config.prefill
     if not prefill_cfg.bs:
         logger.warning(
-            "breakable prefill CUDA graphs require a positive prefill graph cap: "
+            "prefill CUDA graphs require a positive prefill graph cap: "
             f"chunked_prefill_size={server_args.chunked_prefill_size}, "
             f"cuda_graph_max_bs_prefill={prefill_cfg.max_bs}, so SGLang captures "
             "no prefill graphs"
