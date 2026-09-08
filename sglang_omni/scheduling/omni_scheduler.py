@@ -72,6 +72,7 @@ _ABORTED_REQUEST_ID_RETAINED = 5000
 _COMPLETED_REQUEST_ID_LIMIT = 10000
 _PENDING_STREAM_REQUEST_LIMIT = 10000
 _PENDING_STREAM_REQUEST_RETAINED = 5000
+_IDLE_WAIT_S = 0.02
 
 
 class _PendingStreamIngress:
@@ -461,12 +462,7 @@ class OmniScheduler:
         self.soft_watchdog = None
         self.recv_skipper = None
         self.idle_sleeper = None
-        # Set when _sleep_during_idle wakes on a message; _drain_local_inbox
-        # returns it before draining the rest so nothing is lost or reordered.
         self._idle_wait_message: IncomingMessage | None = None
-        self._idle_wait_s: float = float(
-            os.environ.get("SGLANG_OMNI_IDLE_WAIT_S", "0.02")
-        )
         self._init_upstream_compat_flags(server_args)
         self.grammar_manager = _NoOpGrammarManager()
         self.grammar_queue = []
@@ -976,23 +972,15 @@ class OmniScheduler:
                 self._pending_request_builds or self._pending_request_admissions
             )
         if request_admission_pending:
-            # Builds are in flight on other threads; stay hot for them.
             time.sleep(0.0001)
             return
         if self.tp_size > 1 and not self.is_entry_rank:
-            # Note (Audrey): followers receive through broadcast_pyobj, never
-            # through their inbox; blocking here would add the timeout to every
-            # TP rendezvous after idle. Keep the original poll until a
-            # group-aware idle protocol exists.
+            # TP followers receive through broadcast_pyobj, not their inbox.
+            # Keep polling so they can join the entry rank's broadcast promptly.
             time.sleep(0.001)
             return
-        # Nothing is queued and nothing is building, so the next thing to happen
-        # is a message arriving. Block on the inbox instead of polling it: the
-        # wait ends the moment a message lands, which is never later than the
-        # poll it replaces, and the loop stops waking a thousand times a second
-        # against empty queues while the engine sits idle.
         try:
-            self._idle_wait_message = self.inbox.get(timeout=self._idle_wait_s)
+            self._idle_wait_message = self.inbox.get(timeout=_IDLE_WAIT_S)
         except _queue_mod.Empty:
             self._idle_wait_message = None
 
