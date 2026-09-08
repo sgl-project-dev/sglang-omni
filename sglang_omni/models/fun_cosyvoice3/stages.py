@@ -297,6 +297,44 @@ def _solve_flow_euler(
     return x.float()
 
 
+class _FlowSolveTimer:
+    """Elapsed time of one Euler solve, read back without waiting on the device.
+
+    On an accelerator two stream events bracket the solve and the elapsed time
+    is only available once the end event has completed. On CPU the ops run
+    synchronously, so perf_counter around the call is already exact.
+    """
+
+    def __init__(self, device: torch.device) -> None:
+        self._on_device = device.type != "cpu"
+        if self._on_device:
+            self._stream = torch.accelerator.current_stream(device)
+            self._start = torch.Event(device=device, enable_timing=True)
+            self._end = torch.Event(device=device, enable_timing=True)
+        else:
+            self._start = self._end = 0.0
+
+    def start(self) -> None:
+        if self._on_device:
+            self._start.record(self._stream)
+        else:
+            self._start = time.perf_counter()
+
+    def stop(self) -> None:
+        if self._on_device:
+            self._end.record(self._stream)
+        else:
+            self._end = time.perf_counter()
+
+    def elapsed_ms(self) -> float | None:
+        """Return the solve time, or None while the end event is still pending."""
+        if not self._on_device:
+            return (self._end - self._start) * 1000.0
+        if not self._end.query():
+            return None
+        return self._start.elapsed_time(self._end)
+
+
 @torch.inference_mode()
 def _generate_flow(
     flow: Any,
@@ -304,7 +342,8 @@ def _generate_flow(
     *,
     streaming: bool = False,
     finalize: bool = True,
-) -> tuple[torch.Tensor, Any, Any]:
+    timer: _FlowSolveTimer | None = None,
+) -> torch.Tensor:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
     token_embedding = token_embedding * packed.token_mask.to(token_embedding.dtype)
@@ -359,24 +398,14 @@ def _generate_flow(
     t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
     if decoder.t_scheduler == "cosine":
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-    # note (db-ol): the solve is timed only while the debug record can be seen,
-    # with stream events on CUDA and perf_counter on CPU.
-    timed = logger.isEnabledFor(logging.DEBUG)
-    start = end = stream = None
-    if timed and mu.device.type == "cuda":
-        stream = torch.cuda.current_stream(mu.device)
-        start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
-        start.record(stream)
-    elif timed:
-        start = time.perf_counter()
+    if timer is not None:
+        timer.start()
     mel = _solve_flow_euler(
         decoder, z, t_span, mu, mask, embedding, cond, streaming=streaming
     )
-    if stream is not None:
-        end.record(stream)
-    elif timed:
-        end = time.perf_counter()
-    return mel, start, end
+    if timer is not None:
+        timer.stop()
+    return mel
 
 
 def _split_generated_mels(
@@ -428,7 +457,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
-        self._last_solve: tuple[int, Any, Any] | None = None
+        self._last_solve: tuple[int, _FlowSolveTimer] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -449,15 +478,10 @@ class FunCosyVoice3Flow:
         # the host. A still pending end event is skipped, never waited for.
         if self._last_solve is None:
             return
-        items, start, end = self._last_solve
+        items, timer = self._last_solve
         self._last_solve = None
-        if end is None:
-            return
-        if isinstance(end, float):
-            elapsed_ms = (end - start) * 1000.0
-        elif end.query():
-            elapsed_ms = start.elapsed_time(end)
-        else:
+        elapsed_ms = timer.elapsed_ms()
+        if elapsed_ms is None:
             return
         logger.debug(
             "Fun-CosyVoice3 flow solve: batch_items=%d solve_elapsed_ms=%.1f",
@@ -468,8 +492,13 @@ class FunCosyVoice3Flow:
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated, start, end = _generate_flow(self._flow, packed)
-        self._last_solve = (len(inputs), start, end)
+        # note (db-ol): the solve is timed only while the debug record can be
+        # seen, so the default INFO path runs it untouched.
+        timer = None
+        if logger.isEnabledFor(logging.DEBUG):
+            timer = _FlowSolveTimer(packed.token.device)
+            self._last_solve = (len(inputs), timer)
+        generated = _generate_flow(self._flow, packed, timer=timer)
         return _split_generated_mels(
             self._flow,
             packed,
@@ -485,9 +514,7 @@ class FunCosyVoice3Flow:
         # mixed prompt lengths can share one DiT call. streaming=True
         # keeps the chunk mask aligned with CosyVoice3Model hops.
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated, _, _ = _generate_flow(
-            self._flow, packed, streaming=True, finalize=False
-        )
+        generated = _generate_flow(self._flow, packed, streaming=True, finalize=False)
         lookahead = _flow_lookahead(self._flow)
         target_token_lengths = tuple(
             max(length - lookahead, 0) for length in packed.target_token_lengths

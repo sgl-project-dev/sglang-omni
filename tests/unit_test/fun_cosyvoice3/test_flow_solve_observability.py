@@ -87,18 +87,34 @@ def test_flow_solve_is_timed_only_when_debug_is_enabled(caplog, monkeypatch) -> 
     assert clock_calls == [1, 1]
 
 
+class _PendingEvent:
+    def query(self) -> bool:
+        return False
+
+    def synchronize(self) -> None:
+        raise AssertionError("must not wait on the device")
+
+    def elapsed_time(self, end) -> float:
+        raise AssertionError("must not read a pending event")
+
+
+def _timer_with_pending_end() -> stages._FlowSolveTimer:
+    timer = stages._FlowSolveTimer(torch.device("cpu"))
+    timer._on_device = True
+    timer._start = timer._end = _PendingEvent()
+    return timer
+
+
+def test_pending_solve_timer_reports_no_elapsed_time() -> None:
+    assert _timer_with_pending_end().elapsed_ms() is None
+
+
 def test_pending_solve_events_are_skipped_not_awaited(caplog) -> None:
-    class _PendingEvent:
-        def query(self) -> bool:
-            return False
-
-        def synchronize(self) -> None:
-            raise AssertionError("must not wait on the device")
-
     flow = stages.FunCosyVoice3Flow(_SolvableFlow())
-    flow._last_solve = (1, _PendingEvent(), _PendingEvent())
+    flow._last_solve = (1, _timer_with_pending_end())
     with caplog.at_level(logging.DEBUG, logger=stages.logger.name):
         flow.log_last_solve()
+    assert flow._last_solve is None
     assert not [r for r in caplog.records if "flow solve:" in r.getMessage()]
 
 
