@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -302,7 +303,7 @@ def _generate_flow(
     *,
     streaming: bool = False,
     finalize: bool = True,
-) -> torch.Tensor:
+) -> tuple[torch.Tensor, Any, Any]:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
     token_embedding = token_embedding * packed.token_mask.to(token_embedding.dtype)
@@ -357,9 +358,24 @@ def _generate_flow(
     t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
     if decoder.t_scheduler == "cosine":
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-    return _solve_flow_euler(
+    # note (db-ol): the solve is timed only while the debug record can be seen,
+    # with stream events on CUDA and perf_counter on CPU.
+    timed = logger.isEnabledFor(logging.DEBUG)
+    start = end = stream = None
+    if timed and mu.device.type == "cuda":
+        stream = torch.cuda.current_stream(mu.device)
+        start, end = (torch.cuda.Event(enable_timing=True) for _ in range(2))
+        start.record(stream)
+    elif timed:
+        start = time.perf_counter()
+    mel = _solve_flow_euler(
         decoder, z, t_span, mu, mask, embedding, cond, streaming=streaming
     )
+    if stream is not None:
+        end.record(stream)
+    elif timed:
+        end = time.perf_counter()
+    return mel, start, end
 
 
 def _split_generated_mels(
@@ -411,6 +427,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
+        self._last_solve: tuple[int, Any, Any] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -426,10 +443,32 @@ class FunCosyVoice3Flow:
         self._flow.eval()
         return self
 
+    def log_last_solve(self) -> None:
+        # note (db-ol): the vocoder calls this after the bucket's audio reached
+        # the host. A still pending end event is skipped, never waited for.
+        if self._last_solve is None:
+            return
+        items, start, end = self._last_solve
+        self._last_solve = None
+        if end is None:
+            return
+        if isinstance(end, float):
+            elapsed_ms = (end - start) * 1000.0
+        elif end.query():
+            elapsed_ms = start.elapsed_time(end)
+        else:
+            return
+        logger.debug(
+            "Fun-CosyVoice3 flow solve: batch_items=%d solve_elapsed_ms=%.1f",
+            items,
+            elapsed_ms,
+        )
+
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed)
+        generated, start, end = _generate_flow(self._flow, packed)
+        self._last_solve = (len(inputs), start, end)
         return _split_generated_mels(
             self._flow,
             packed,
@@ -445,7 +484,9 @@ class FunCosyVoice3Flow:
         # mixed prompt lengths can share one DiT call. streaming=True
         # keeps the chunk mask aligned with CosyVoice3Model hops.
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed, streaming=True, finalize=False)
+        generated, _, _ = _generate_flow(
+            self._flow, packed, streaming=True, finalize=False
+        )
         lookahead = _flow_lookahead(self._flow)
         target_token_lengths = tuple(
             max(length - lookahead, 0) for length in packed.target_token_lengths
@@ -846,6 +887,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                     wavs = self._mel2wav_batch([mel for _, mel in group])
                     for (request, _), wav in zip(group, wavs, strict=True):
                         results[request.index] = (wav, request.sample_rate)
+            self._flow.log_last_solve()
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
