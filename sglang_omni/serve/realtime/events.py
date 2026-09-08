@@ -43,7 +43,7 @@ class TurnDetection(EventBase):
 
 
 class SessionConfig(EventBase):
-    """``session.update`` payload. All fields optional — only set fields are applied."""
+    """session.update payload. All fields optional — only set fields are applied."""
 
     modalities: list[str] | None = None
     instructions: str | None = None
@@ -52,7 +52,18 @@ class SessionConfig(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
+
+
+class TranscriptionSessionConfig(EventBase):
+    """session.update payload for transcription sessions."""
+
+    model_config = ConfigDict(extra="forbid")
+
     language: str | None = None
+    turn_detection: TurnDetection | None = None
+    input_audio_format: Literal["pcm16"] | None = (
+        None  # TODO: in transcription_session_config.py, asssert -> error event
+    )
 
 
 class SessionObject(EventBase):
@@ -77,6 +88,11 @@ class ClientEvent(EventBase):
 class SessionUpdate(ClientEvent):
     type: Literal["session.update"]
     session: SessionConfig
+
+
+class TranscriptionSessionUpdate(ClientEvent):
+    type: Literal["session.update"]
+    session: TranscriptionSessionConfig
 
 
 class InputAudioBufferAppend(ClientEvent):
@@ -118,30 +134,40 @@ def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
     return payload
 
 
-CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
+_CONVERSATION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
     "session.update": SessionUpdate,
     "input_audio_buffer.append": InputAudioBufferAppend,
-    "input_audio_buffer.commit": InputAudioBufferCommit,
     "input_audio_buffer.clear": InputAudioBufferClear,
-    "transcription.done": TranscriptionDone,
     "response.cancel": ResponseCancel,
     "conversation.item.truncate": ConversationItemTruncate,
 }
 
+_TRANSCRIPTION_CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
+    "session.update": TranscriptionSessionUpdate,
+    "input_audio_buffer.append": InputAudioBufferAppend,
+    "input_audio_buffer.commit": InputAudioBufferCommit,
+    "input_audio_buffer.clear": InputAudioBufferClear,
+    "transcription.done": TranscriptionDone,
+}
 
-def parse_client_event(raw: dict[str, Any]) -> ClientEvent | None:
-    """Dispatch a raw client event dict to a typed model.
 
-    Returns ``None`` when the ``type`` is unrecognized. A malformed
-    payload that fails pydantic validation raises
-    :class:`pydantic.ValidationError` — callers don't catch it.
-    """
+def _parse(
+    raw: dict[str, Any], table: dict[str, type[ClientEvent]]
+) -> ClientEvent | None:
     event_type = raw.get("type")
     if not isinstance(event_type, str):
         return None
-
-    cls = CLIENT_EVENT_TYPES.get(event_type)
+    cls = table.get(event_type)
     if cls is None:
         return None
-
     return cls.model_validate(raw)
+
+
+def parse_conversation_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+    """Parse one client event of a conversation session, return None if not part of its protocol."""
+    return _parse(raw, _CONVERSATION_CLIENT_EVENT_TYPES)
+
+
+def parse_transcription_client_event(raw: dict[str, Any]) -> ClientEvent | None:
+    """Parse one client event of a transcription session, return None if not part of its protocol."""
+    return _parse(raw, _TRANSCRIPTION_CLIENT_EVENT_TYPES)

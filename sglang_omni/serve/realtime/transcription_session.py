@@ -20,12 +20,12 @@ from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
     InputAudioBufferCommit,
-    SessionUpdate,
     TranscriptionDone,
+    TranscriptionSessionUpdate,
     TurnDetection,
     TurnDetectionType,
     make_event,
-    parse_client_event,
+    parse_transcription_client_event,
 )
 from sglang_omni.serve.realtime.vad import (
     VAD_FRAME_SAMPLES,
@@ -103,7 +103,7 @@ class CommittedTranscriptionSegment:
 
 class RealtimeTranscriptionSession:
     handlers = {
-        SessionUpdate: "handle_session_update",
+        TranscriptionSessionUpdate: "handle_session_update",
         InputAudioBufferAppend: "handle_audio_append",
         InputAudioBufferClear: "handle_audio_clear",
         InputAudioBufferCommit: "handle_audio_commit",
@@ -180,7 +180,7 @@ class RealtimeTranscriptionSession:
 
     async def dispatch(self, payload: dict[str, Any]) -> None:
         try:
-            event = parse_client_event(payload)
+            event = parse_transcription_client_event(payload)
         except ValueError as exc:
             await self.send_error("invalid_request_error", "invalid_event", str(exc))
             return
@@ -268,22 +268,8 @@ class RealtimeTranscriptionSession:
         )
         return StreamingVAD(VADConfig(**settings))
 
-    async def handle_session_update(self, event: SessionUpdate) -> None:
+    async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
         update = event.session.model_dump(exclude_unset=True)
-        if update.get("modalities") not in (None, ["text"]):
-            await self.send_error(
-                "invalid_request_error",
-                "unsupported_modality",
-                "Transcription sessions support only the text modality.",
-            )
-            return
-        if update.get("input_audio_format") not in (None, "pcm16"):
-            await self.send_error(
-                "invalid_request_error",
-                "unsupported_audio_format",
-                "Realtime transcription supports only PCM16 input audio.",
-            )
-            return
         if not self.audio_buffer.is_empty() and any(
             key in update for key in ("language", "turn_detection")
         ):
