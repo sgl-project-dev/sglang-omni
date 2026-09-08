@@ -268,22 +268,78 @@ def test_qwen3_tts_config_and_registry_contracts() -> None:
     config = Qwen3TTSPipelineConfig(model_path="model")
     assert [stage.name for stage in config.stages] == [
         "preprocessing",
-        "tts_engine",
         "vocoder",
+        "tts_engine",
     ]
-    assert config.stages[1].factory_path.endswith("create_sglang_tts_engine_executor")
+    stages = {stage.name: stage for stage in config.stages}
+    assert config.resolved_entry_stage == "preprocessing"
+    assert stages["preprocessing"].next == "tts_engine"
+    assert stages["tts_engine"].next == "vocoder"
+    assert stages["tts_engine"].factory_path.endswith(
+        "create_sglang_tts_engine_executor"
+    )
     assert config.terminal_stages == ["vocoder"]
     assert config.gpu_placement == {"tts_engine": 0, "vocoder": 0}
-    assert config.stages[1].factory.device is None
-    assert config.stages[2].factory.device is None
+    assert stages["tts_engine"].factory.device is None
+    assert stages["vocoder"].factory.device is None
     assert {stage.process for stage in config.stages} == {"pipeline"}
-    assert config.stages[1].stream_to == ["vocoder"]
-    assert config.stages[2].can_accept_stream_before_payload is True
+    assert stages["tts_engine"].stream_to == ["vocoder"]
+    assert stages["vocoder"].can_accept_stream_before_payload is True
     assert Qwen3TTSPipelineConfig.stage_config_cls("tts_engine").engine_stage
     assert (
         PIPELINE_CONFIG_REGISTRY.get_config("Qwen3TTSForConditionalGeneration")
         is Qwen3TTSPipelineConfig
     )
+
+
+def test_qwen3_tts_speech_tokenizer_is_loaded_once_per_process_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loads: list[tuple[str, dict[str, object]]] = []
+
+    class FakeQwen3TTSTokenizer:
+        @classmethod
+        def from_pretrained(cls, path, **kwargs):
+            loads.append((path, kwargs))
+            return cls()
+
+    qwen_tts_module = types.ModuleType("qwen_tts")
+    qwen_tts_module.Qwen3TTSTokenizer = FakeQwen3TTSTokenizer
+    monkeypatch.setitem(sys.modules, "qwen_tts", qwen_tts_module)
+    monkeypatch.setattr(
+        qwen3_stages, "apply_qwen_tts_transformers_compatibility_patches", lambda: None
+    )
+    monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda path: path)
+    monkeypatch.setattr(qwen3_stages, "_SPEECH_TOKENIZERS", {})
+
+    vocoder_copy = qwen3_stages._load_qwen3_tts_tokenizer(
+        "/ckpt", device="cuda:0", dtype="bfloat16", attn_implementation=None
+    )
+    engine_copy = qwen3_stages._load_qwen3_tts_tokenizer(
+        "/ckpt", device="cuda:0", dtype="bfloat16", attn_implementation=None
+    )
+    other_device = qwen3_stages._load_qwen3_tts_tokenizer(
+        "/ckpt", device="cuda:1", dtype="bfloat16", attn_implementation=None
+    )
+    other_attention = qwen3_stages._load_qwen3_tts_tokenizer(
+        "/ckpt", device="cuda:0", dtype="bfloat16", attn_implementation="sdpa"
+    )
+
+    assert engine_copy is vocoder_copy
+    assert other_device is not vocoder_copy
+    assert other_attention is not vocoder_copy
+    assert loads == [
+        ("/ckpt/speech_tokenizer", {"device_map": "cuda:0", "dtype": torch.bfloat16}),
+        ("/ckpt/speech_tokenizer", {"device_map": "cuda:1", "dtype": torch.bfloat16}),
+        (
+            "/ckpt/speech_tokenizer",
+            {
+                "device_map": "cuda:0",
+                "dtype": torch.bfloat16,
+                "attn_implementation": "sdpa",
+            },
+        ),
+    ]
 
 
 def test_qwen3_tts_deterministic_inference_configures_pipeline() -> None:
@@ -6822,11 +6878,12 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process() -> None:
 
     split = config.model_copy(deep=True)
     # A split frontend declares its own gpu, the way the documented recipe does.
-    split.stages[0] = split.stages[0].model_copy(
-        update={"process": "tts_frontend", "gpu": 0, "gpu_memory_fraction": 0.05}
-    )
-    split.stages[1] = split.stages[1].model_copy(update={"gpu_memory_fraction": 0.75})
-    split.stages[2] = split.stages[2].model_copy(update={"gpu_memory_fraction": 0.12})
+    fractions = {"preprocessing": 0.05, "tts_engine": 0.75, "vocoder": 0.12}
+    for index, stage in enumerate(split.stages):
+        update = {"gpu_memory_fraction": fractions[stage.name]}
+        if stage.name == "preprocessing":
+            update.update({"process": "tts_frontend", "gpu": 0})
+        split.stages[index] = stage.model_copy(update=update)
     assert split.preprocessing_in_own_process() is True
     assert split.stage_factory_kwargs("preprocessing") == {"load_frontend": True}
     assert split.stage_factory_kwargs("tts_engine") == {}
@@ -6859,7 +6916,14 @@ def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None
 
     config = Qwen3TTSPipelineConfig(model_path="model")
     shared = config.model_copy(deep=True)
-    shared.stages[2] = shared.stages[2].model_copy(update={"process": "vocoder"})
+    shared.stages = [
+        (
+            stage.model_copy(update={"process": "vocoder"})
+            if stage.name == "vocoder"
+            else stage
+        )
+        for stage in shared.stages
+    ]
 
     placement = build_stage_placement_plan(shared)
     assert placement.gpus[0].missing_fraction_stage_names == ("tts_engine", "vocoder")
