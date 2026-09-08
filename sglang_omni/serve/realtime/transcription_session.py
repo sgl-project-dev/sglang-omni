@@ -14,7 +14,7 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest
-from sglang_omni.config import AudioChunkingConfig, RealtimeTranscriptionConfig
+from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime.audio_buffer import BufferOverflow, RealtimeAudioBuffer
 from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
@@ -52,6 +52,9 @@ from sglang_omni.serve.transcription_chunking import (
 )
 
 _SILENT_PCM16_PEAK = round(SILENT_CHUNK_PEAK_THRESHOLD * 32768)
+# Memory guard for models that never split a segment on length. This bounds
+# the PCM held per session
+_UNBOUNDED_BUFFER_S = 600.0
 
 
 class StreamingASRStrategy(Protocol):
@@ -127,8 +130,7 @@ class RealtimeTranscriptionSession:
         *,
         client: Client,
         model_name: str,
-        capability: RealtimeTranscriptionConfig,
-        audio_chunking: AudioChunkingConfig,
+        transcription_config: RealtimeTranscriptionConfig,
         strategy: StreamingASRStrategy,
         session_id: str | None = None,
     ) -> None:
@@ -139,13 +141,15 @@ class RealtimeTranscriptionSession:
         self.closed = False
         self.event_index = 0
         self._send_lock = asyncio.Lock()
-        self.capability = capability
-        self.audio_chunking = audio_chunking
+        self.transcription_config = transcription_config
         self.strategy = strategy
         self.settings = TranscriptionSessionSettings(
-            decode_interval_ms=capability.decode_interval_ms
+            decode_interval_ms=transcription_config.decode_interval_ms
         )
-        max_buffer_seconds = audio_chunking.max_audio_clip_s + 4
+        max_segment_s = transcription_config.max_segment_s
+        max_buffer_seconds = (
+            max_segment_s + 4 if max_segment_s is not None else _UNBOUNDED_BUFFER_S
+        )
         max_buffer_bytes = int(max_buffer_seconds * VAD_SAMPLE_RATE * 2)
         self.audio_buffer = RealtimeAudioBuffer(
             source_sr=VAD_SAMPLE_RATE,
@@ -398,8 +402,16 @@ class RealtimeTranscriptionSession:
         self.active_segment = segment
         return segment
 
+    def _max_segment_samples(self) -> int | None:
+        max_segment_s = self.transcription_config.max_segment_s
+        if max_segment_s is None:
+            return None
+        return int(max_segment_s * VAD_SAMPLE_RATE)
+
     async def _enforce_hard_limit(self) -> None:
-        max_samples = int(self.audio_chunking.max_audio_clip_s * VAD_SAMPLE_RATE)
+        max_samples = self._max_segment_samples()
+        if max_samples is None:
+            return
         end_sample = self._absolute_buffer_end()
         while (
             self.active_segment is not None
@@ -434,8 +446,11 @@ class RealtimeTranscriptionSession:
         if self.active_segment is None:
             return
         end_sample = min(end_sample, self._absolute_buffer_end())
-        max_samples = int(self.audio_chunking.max_audio_clip_s * VAD_SAMPLE_RATE)
-        while end_sample - self.active_segment.start_sample > max_samples:
+        max_samples = self._max_segment_samples()
+        while (
+            max_samples is not None
+            and end_sample - self.active_segment.start_sample > max_samples
+        ):
             cut = self.active_segment.start_sample + max_samples
             await self._queue_final(cut)
             self._start_segment(cut)

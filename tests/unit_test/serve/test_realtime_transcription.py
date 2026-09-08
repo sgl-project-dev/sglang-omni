@@ -10,7 +10,7 @@ import pytest
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import CompletionResult, GenerateRequest
-from sglang_omni.config import AudioChunkingConfig, RealtimeTranscriptionConfig
+from sglang_omni.config import RealtimeTranscriptionConfig
 from sglang_omni.serve.realtime import transcription_session as session_module
 from sglang_omni.serve.realtime.transcription_session import (
     RealtimeTranscriptionSession,
@@ -152,7 +152,7 @@ async def _session(
     monkeypatch: pytest.MonkeyPatch,
     *,
     outputs: list[str] | None = None,
-    max_audio_clip_s: float = 60.0,
+    max_segment_s: float | None = 60.0,
 ) -> tuple[RealtimeTranscriptionSession, RecordingWebSocket, FakeClient]:
     monkeypatch.setattr(session_module, "StreamingVAD", lambda _config: FakeVAD())
     websocket = RecordingWebSocket()
@@ -161,11 +161,11 @@ async def _session(
         websocket,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            max_segment_s=max_segment_s,
         ),
-        audio_chunking=AudioChunkingConfig(max_audio_clip_s=max_audio_clip_s),
         strategy=FakeStrategy(),
         session_id="sess-test",
     )
@@ -260,11 +260,11 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
         websocket,  # type: ignore[arg-type]
         client=client,  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            max_segment_s=30.0,
         ),
-        audio_chunking=AudioChunkingConfig(),
         strategy=strategy,
         session_id="sess-clear",
     )
@@ -334,7 +334,7 @@ async def test_silent_final_does_not_reach_the_model(
 async def test_hard_limit_finalizes_in_audio_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session, websocket, _client = await _session(monkeypatch, max_audio_clip_s=1.0)
+    session, websocket, _client = await _session(monkeypatch, max_segment_s=1.0)
     await session.dispatch(_audio_event(_pcm(2.25)))
     await session.dispatch({"type": "transcription.done"})
 
@@ -358,17 +358,17 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
         websocket,  # type: ignore[arg-type]
         client=FakeClient([]),  # type: ignore[arg-type]
         model_name="qwen3-asr",
-        capability=RealtimeTranscriptionConfig(
+        transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            max_segment_s=1.0,
         ),
-        audio_chunking=AudioChunkingConfig(max_audio_clip_s=1.0),
         strategy=FakeStrategy(),
         session_id="sess-idle",
     )
 
     # Server VAD never reports speech, so no segment starts and _queue_final
-    # never drains the buffer. Streaming past max_audio_clip_s + 4s of audio
+    # never drains the buffer. Streaming past max_segment_s + 4s of audio
     # must still not raise BufferOverflow.
     for _ in range(8):
         await session.dispatch(_audio_event(_pcm(1.0, amplitude=0)))
