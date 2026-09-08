@@ -6,7 +6,7 @@ import binascii
 import json
 import uuid
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Protocol
 
 import numpy as np
@@ -86,9 +86,9 @@ def _new_id(prefix: str) -> str:
 class TranscriptionSessionSettings:
     language: str | None = None
     decode_interval_ms: int = 2000
-    turn_detection: TurnDetection | None = field(
-        default_factory=lambda: TurnDetection(type=TurnDetectionType.SERVER_VAD)
-    )
+    # the session seeds this from the model's server_vad declaration,
+    # and the client may change it via session.update.
+    turn_detection: TurnDetection | None = None
 
 
 @dataclass(slots=True)
@@ -144,7 +144,12 @@ class RealtimeTranscriptionSession:
         self.transcription_config = transcription_config
         self.strategy = strategy
         self.settings = TranscriptionSessionSettings(
-            decode_interval_ms=transcription_config.decode_interval_ms
+            decode_interval_ms=transcription_config.decode_interval_ms,
+            turn_detection=(
+                TurnDetection(type=TurnDetectionType.SERVER_VAD)
+                if transcription_config.server_vad
+                else None
+            ),
         )
         max_segment_s = transcription_config.max_segment_s
         max_buffer_seconds = (
@@ -301,6 +306,13 @@ class RealtimeTranscriptionSession:
                     "invalid_request_error",
                     "unsupported_turn_detection",
                     "Realtime transcription supports only server_vad or null.",
+                )
+                return
+            if turn_detection is not None and not self.transcription_config.server_vad:
+                await self.send_error(
+                    "invalid_request_error",
+                    "unsupported_turn_detection",
+                    "This model does not support server-side turn detection.",
                 )
                 return
             if self.vad is not None:

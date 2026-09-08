@@ -263,6 +263,7 @@ async def test_clear_aborts_active_segment_and_session_remains_usable(
         transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            server_vad=True,
             max_segment_s=30.0,
         ),
         strategy=strategy,
@@ -361,6 +362,7 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
         transcription_config=RealtimeTranscriptionConfig(
             strategy_cls=FakeStrategy,
             decode_interval_ms=2000,
+            server_vad=True,
             max_segment_s=1.0,
         ),
         strategy=FakeStrategy(),
@@ -376,4 +378,48 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
     assert session.active_segment is None
     assert not [event for event in websocket.events if event["type"] == "error"]
     assert session.audio_buffer.num_bytes < session.audio_buffer.max_bytes
+    await session.teardown()
+
+
+def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
+    websocket = RecordingWebSocket()
+    session = RealtimeTranscriptionSession(
+        websocket,  # type: ignore[arg-type]
+        client=FakeClient([]),  # type: ignore[arg-type]
+        model_name="no-vad-asr",
+        transcription_config=RealtimeTranscriptionConfig(
+            strategy_cls=FakeStrategy,
+            server_vad=False,
+        ),
+        strategy=FakeStrategy(),
+        session_id="sess-no-vad",
+    )
+    return session, websocket
+
+
+@pytest.mark.asyncio
+async def test_model_without_server_vad_starts_in_manual_mode() -> None:
+    session, websocket = _no_vad_session()
+    await session.send(session.initial_event())
+
+    assert websocket.events[-1]["session"]["turn_detection"] is None
+    assert session.vad is None
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    assert session.active_segment is not None
+    await session.teardown()
+
+
+@pytest.mark.asyncio
+async def test_model_without_server_vad_rejects_turn_detection() -> None:
+    session, websocket = _no_vad_session()
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {"turn_detection": {"type": "server_vad"}},
+        }
+    )
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "unsupported_turn_detection"
+    assert session.vad is None
     await session.teardown()
