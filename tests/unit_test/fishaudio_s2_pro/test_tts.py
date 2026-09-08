@@ -718,3 +718,19 @@ def test_fish_tts_stream_output_builder_gates_and_clears_chunks() -> None:
         latest_stream_code_chunk=torch.full((11, 1), 8, dtype=torch.long),
     )
     assert stream_output_builder("non-stream", non_stream_data, None) == []
+
+
+def test_lookahead_is_never_eligible_for_fish():
+    """The in-model sampler reads semantic history, so lookahead must stay off
+    even though the SamplingParams the base gate inspects are history-free."""
+    runner = object.__new__(FishS2ProModelRunner)
+    req = SimpleNamespace(
+        sampling_params=SimpleNamespace(
+            repetition_penalty=1.0,
+            frequency_penalty=0.0,
+            presence_penalty=0.0,
+            min_new_tokens=0,
+        ),
+        custom_logit_processor=None,
+    )
+    assert runner.lookahead_eligible(SimpleNamespace(reqs=[req])) is False
