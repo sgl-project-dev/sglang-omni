@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import torch.nn as nn
+from huggingface_hub import hf_hub_download
 from transformers import AutoConfig
 
 try:
@@ -19,10 +20,6 @@ except ImportError:
 
 from transformers.utils.hub import cached_file
 
-# ---------------------------------------------------------------------------
-# Architecture resolution helpers
-# ---------------------------------------------------------------------------
-
 _CONFIG_MODEL_TYPE_TO_ARCH = {
     "fish_qwen3_omni": "FishQwen3OmniForCausalLM",
     "moss_tts_delay": "MossTTSDelayModel",
@@ -31,13 +28,15 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "dots_tts": "DotsTTSForConditionalGeneration",
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
-    # ZONOS2 ships params.json (model_type "zonos2") with no config.json.
     "zonos2": "Zonos2ForCausalLM",
 }
 
+_COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
+_COSYVOICE3_ARCHITECTURE = "FunCosyVoice3SGLangModel"
+
 
 def architecture_from_hf_config(hf_config: Any) -> str | None:
-    """Prefer HF ``architectures``; fall back to ``architecture``/``model_type``."""
+    """Prefer HF architectures; fall back to architecture/model_type."""
     archs = getattr(hf_config, "architectures", None)
     if archs:
         for a in archs:
@@ -53,20 +52,14 @@ def architecture_from_hf_config(hf_config: Any) -> str | None:
 
 
 def load_mistral_params_json(model_path: str) -> dict | None:
-    """Load Mistral-format ``params.json`` from a local dir or Hugging Face hub id.
-    Official Voxtral TTS checkpoints ship without ``config.json``; architecture is
-    only indicated by ``model_type`` inside ``params.json`` (see Hub repo files).
-    """
+    """Load Mistral-format params.json from a local dir or Hugging Face hub id."""
     params_path = os.path.join(model_path, "params.json")
     if os.path.isfile(params_path):
         with open(params_path) as f:
             return json.load(f)
-    # Local directory without params — do not treat as hub repo id
     if os.path.isdir(model_path):
         return None
     try:
-        from huggingface_hub import hf_hub_download
-
         cached = hf_hub_download(repo_id=model_path, filename="params.json")
         with open(cached) as f:
             return json.load(f)
@@ -84,25 +77,15 @@ def try_resolve_arch_from_mistral_config(model_path: str) -> str | None:
 
 
 def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
-    """Resolve architecture by reading raw ``config.json`` as plain JSON.
-
-    This is useful when ``AutoConfig.from_pretrained`` fails (e.g. because the
-    model requires ``trust_remote_code=True`` and the custom Python config
-    module is unavailable).  We parse the JSON directly to extract
-    ``architectures`` or map ``model_type``.
-    """
+    """Resolve architecture by reading raw config.json as plain JSON."""
     raw: dict | None = None
 
-    # Try local path first
     local_config = os.path.join(model_path, "config.json")
     if os.path.isfile(local_config):
         with open(local_config) as f:
             raw = json.load(f)
     elif not os.path.isdir(model_path):
-        # Treat as a Hub repo id — download config.json
         try:
-            from huggingface_hub import hf_hub_download
-
             cached = hf_hub_download(repo_id=model_path, filename="config.json")
             with open(cached) as f:
                 raw = json.load(f)
@@ -112,7 +95,6 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     if raw is None:
         return None
 
-    # Prefer architectures list
     archs = raw.get("architectures")
     if archs:
         for a in archs:
@@ -122,7 +104,6 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     if arch:
         return arch
 
-    # Fall back to model_type mapping
     mt = raw.get("model_type")
     if mt and mt in _CONFIG_MODEL_TYPE_TO_ARCH:
         return _CONFIG_MODEL_TYPE_TO_ARCH[mt]
@@ -130,9 +111,18 @@ def try_resolve_arch_from_raw_config(model_path: str) -> str | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# HF config loading
-# ---------------------------------------------------------------------------
+def try_resolve_arch_from_cosyvoice3_layout(model_path: str) -> str | None:
+    """Resolve Fun-CosyVoice3 from the official checkpoint layout."""
+    marker_path = os.path.join(model_path, _COSYVOICE3_LAYOUT_MARKER)
+    if os.path.isfile(marker_path):
+        return _COSYVOICE3_ARCHITECTURE
+    if os.path.isdir(model_path):
+        return None
+    try:
+        hf_hub_download(repo_id=model_path, filename=_COSYVOICE3_LAYOUT_MARKER)
+    except Exception:
+        return None
+    return _COSYVOICE3_ARCHITECTURE
 
 
 @lru_cache(maxsize=8)
