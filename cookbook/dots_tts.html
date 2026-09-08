@@ -571,15 +571,18 @@
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
 <p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then download and launch the server:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>dots-studio/dots.tts-mf
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>dots-studio/dots.tts-mf<span class="w"> </span>--revision<span class="w"> </span>c28105adc8228143392b4e346994ff613ee48a06
 
 sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>dots-studio/dots.tts-mf<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--config<span class="w"> </span>examples/configs/dots_tts.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-local-media-path<span class="w"> </span>docs/_static/audio<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p><code class="docutils literal notranslate"><span class="pre">examples/configs/dots_tts.yaml</span></code> pins the checkpoint to the snapshot it was
+validated against, so the launch above takes <code class="docutils literal notranslate"><span class="pre">model_path</span></code> from the config.
+<code class="docutils literal notranslate"><span class="pre">--model-path</span></code> overrides that pin, pass it only to serve a different checkpoint
+or revision.</p>
 <p>To serve SOAR instead, swap both the checkpoint and the config:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>dots-studio/dots.tts-soar
 
