@@ -8,6 +8,7 @@ from typing import Any
 import torch
 
 from sglang_omni.model_runner.base import ModelRunner
+from sglang_omni.models.fishaudio_s2_pro.prefill import build_prefill_input_embeds
 from sglang_omni.models.fishaudio_s2_pro.sglang_model import _NO_SEED
 from sglang_omni.sampling.seed import resolve_row_seed
 
@@ -302,60 +303,7 @@ class FishS2ProModelRunner(ModelRunner):
         forward_batch: Any,
         requests: list,
     ) -> torch.Tensor:
-        input_ids = forward_batch.input_ids
-        if not isinstance(input_ids, torch.Tensor):
-            raise TypeError("Fish prefill expects tensor input_ids")
-
-        device = input_ids.device
-        text_embeds = self.model.get_embed_tokens()(input_ids)
-        offset = 0
-
-        for sched_req in requests:
-            data = sched_req.data
-            req = data.req
-            req_len = int(req.extend_range.length)
-
-            if (
-                data.vq_mask_tokens is None
-                or data.vq_parts is None
-                or len(data.vq_parts) == 0
-            ):
-                offset += req_len
-                continue
-
-            vq_mask = data.vq_mask_tokens.to(device=device)
-            if vq_mask.dim() == 2:
-                vq_mask = vq_mask.squeeze(0)
-
-            prefix_len = len(req.prefix_indices)
-            mask_slice = vq_mask[prefix_len : prefix_len + req_len]
-            if not bool(mask_slice.any()):
-                offset += req_len
-                continue
-
-            parts = [
-                part.to(device=device).T for part in data.vq_parts if part.dim() == 2
-            ]
-            vq_parts_flat = torch.cat(parts, dim=0) if parts else None
-            if vq_parts_flat is None:
-                offset += req_len
-                continue
-
-            vq_before = int(vq_mask[:prefix_len].sum().item()) if prefix_len > 0 else 0
-            num_vq_in_slice = int(mask_slice.sum().item())
-            vq_slice = vq_parts_flat[vq_before : vq_before + num_vq_in_slice]
-
-            req_embeds = text_embeds[offset : offset + req_len]
-            vq_embeds = self.model._audio_decoder.embed_text_dim(
-                req_embeds.unsqueeze(0),
-                vq_slice,
-                mask_slice.unsqueeze(0),
-            )
-            mask_indices = mask_slice.nonzero(as_tuple=True)[0] + offset
-            text_embeds[mask_indices] = vq_embeds.to(text_embeds.dtype)
-            offset += req_len
-
-        return text_embeds
+        return build_prefill_input_embeds(self, forward_batch, requests)
 
     def _collect_step_outputs(self, result: Any, requests: list) -> None:
         collect_s2pro_step_outputs(
