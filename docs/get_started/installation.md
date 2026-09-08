@@ -11,6 +11,8 @@ source installer below.
 > **Intel CPU?** Also not this page. See [Installation — Intel CPU](./installation_cpu.md), which uses [`pyproject_cpu.toml`](../../pyproject_cpu.toml) + the PyTorch CPU wheel index.
 
 > **Ascend NPU?** See [Installation — Ascend NPU](./installation_npu.md) for the supported software stack, prerequisites, and installation helper.
+>
+> **Moore Threads MUSA cloud image?** See [Installation - Moore Threads MUSA (Cloud, no SDK)](./installation_musa_cloud.md) for a public-package-only setup that keeps the MUSA SDK out of the install step.
 
 ## 🐳 Option A: Docker (recommended)
 

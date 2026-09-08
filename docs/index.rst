@@ -31,6 +31,98 @@ Supported Models
 See the :doc:`model and accelerator support matrices <supported_models>` for
 tasks, endpoints, streaming behavior, status, and cookbook links.
 
+MUSA Support Matrix
+-------------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 28 10 10 10 10 10 10
+
+   * - Model
+     - CUDA
+     - XPU
+     - NPU
+     - ROCm
+     - MUSA
+     - CPU
+   * - Audar-TTS V1 Turbo
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - 🟡
+   * - dots.tts
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - 🟡
+   * - Fish Audio S2-Pro
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - Fun-CosyVoice3
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - Higgs Audio v3 TTS
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - Ming-Omni-TTS
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - MOSS-TTS
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - MOSS-TTS Local
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - Qwen3-TTS
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - Voxtral TTS
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+   * - ZONOS2
+     - ✅
+     - 🟡
+     - 🟡
+     - 🟡
+     - ✅
+     - ❌
+
 
 .. toctree::
    :maxdepth: 1
@@ -40,6 +132,8 @@ tasks, endpoints, streaming behavior, status, and cookbook links.
    get_started/installation_npu.md
    get_started/installation_xpu.md
    get_started/installation_cpu.md
+   get_started/installation_musa_cloud.md
+   get_started/musa_support_matrix.md
 
 
 .. toctree::
