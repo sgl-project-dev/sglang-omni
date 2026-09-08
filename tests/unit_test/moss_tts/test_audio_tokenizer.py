@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import math
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -17,6 +18,8 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioTokenizerProjectedTransformer,
     MossAudioTokenizerTransformerLayer,
     MossAudioTokenizerVocoderDecoder,
+    _ResidualLFQ,
+    _RotaryEmbedding,
 )
 
 
@@ -56,6 +59,10 @@ class _ReferenceAttention(_FakeAttention):
             batch_size, max_seqlen, 3, self.num_heads, self.head_dim
         )
         q, k, v = projected.permute(2, 0, 3, 1, 4)
+        if self.rope is not None:
+            q, k = self.rope(
+                q, k, torch.zeros(batch_size, dtype=torch.long, device=x.device)
+            )
         positions = torch.arange(max_seqlen, device=x.device, dtype=torch.long)
         valid_k = positions.view(1, 1, max_seqlen) < input_lengths.view(-1, 1, 1)
         delta = positions.view(1, max_seqlen, 1) - positions.view(1, 1, max_seqlen)
@@ -1223,6 +1230,101 @@ def test_exact_packed_rope_matches_reference_cuda(dtype: torch.dtype) -> None:
 
     assert torch.equal(actual_q.cpu(), reference_q)
     assert torch.equal(actual_k.cpu(), reference_k)
+
+
+@pytest.mark.parametrize(
+    "device,max_positions",
+    [("cpu", 20_022), ("cuda", 20_022), ("cuda", 30 * 60 * 400)],
+)
+def test_cached_streaming_rope_matches_reference(
+    device: str, max_positions: int
+) -> None:
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    torch.manual_seed(11)
+    torch_device = torch.device(device)
+    dtype = torch.bfloat16 if device == "cuda" else torch.float32
+    q = torch.randn(2, 3, 5, 64, device=torch_device, dtype=dtype)
+    k = torch.randn_like(q)
+    offsets = torch.tensor(
+        [3, max_positions - 5], device=torch_device, dtype=torch.long
+    )
+
+    reference_q, reference_k = _RotaryEmbedding(10000.0)(q, k, offsets)
+    actual_q, actual_k = attention_impl._apply_cached_streaming_rope(
+        q,
+        k,
+        offsets,
+        cache=attention_impl.MossPackedRopeCache(
+            max_period=10000.0,
+            streaming_max_positions=max_positions,
+        ),
+    )
+
+    assert torch.equal(actual_q, reference_q)
+    assert torch.equal(actual_k, reference_k)
+
+
+@pytest.mark.parametrize("output_dim", [4, 6])
+@pytest.mark.parametrize("num_quantizers", [1, 3])
+def test_residual_lfq_decode_cache_is_bit_identical(
+    monkeypatch, output_dim: int, num_quantizers: int
+) -> None:
+    torch.manual_seed(23)
+    quantizer = _ResidualLFQ(
+        {
+            "input_dim": 4,
+            "rvq_dim": 4,
+            "output_dim": output_dim,
+            "num_quantizers": 3,
+            "codebook_size": 7,
+            "codebook_dim": 2,
+        },
+        device="cpu",
+    )
+    codes = torch.randint(0, 7, (num_quantizers, 2, 5), dtype=torch.long)
+
+    reference = quantizer.decode_codes(codes)
+    quantizer.build_decode_cache()
+    cache = quantizer._decode_cache
+    assert cache is not None
+    decode_cached = Mock(wraps=cache.decode_codes)
+    monkeypatch.setattr(cache, "decode_codes", decode_cached)
+    cached = quantizer.decode_codes(codes)
+
+    decode_cached.assert_called_once_with(codes)
+    assert quantizer._decode_cache is cache
+    assert torch.equal(cached, reference)
+    quantizer.clear_decode_cache()
+    assert quantizer._decode_cache is None
+    assert torch.equal(quantizer.decode_codes(codes), reference)
+    decode_cached.assert_called_once_with(codes)
+
+
+def test_streaming_attention_matches_dense_reference() -> None:
+    torch.manual_seed(19)
+    reference = _ReferenceAttention(8)
+    reference.rope = _RotaryEmbedding(10000.0)
+    attention = MossAudioTokenizerAttention.from_module(
+        reference,
+        attention_backend="sdpa",
+        packed_rope_cache=attention_impl.MossPackedRopeCache(
+            max_period=10000.0, streaming_max_positions=64
+        ),
+    )
+    history = []
+    with attention.streaming(2), torch.no_grad():
+        for length in [2, 5, 1, 7, 3]:
+            chunk = torch.randn(2, length, 8)
+            history.append(chunk)
+            full_input = torch.cat(history, dim=1)
+            # note (Zhang Yiyang): Recompute dense causal attention over the
+            # full input; the reference never uses streaming KV/state helpers.
+            expected = reference(
+                full_input,
+                input_lengths=torch.full((2,), full_input.shape[1]),
+            )[:, -length:]
+            torch.testing.assert_close(attention(chunk), expected, rtol=1e-5, atol=1e-6)
 
 
 def test_transformer_layer_uses_source_modules_for_primitive_ops() -> None:

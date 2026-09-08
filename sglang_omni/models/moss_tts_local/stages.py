@@ -15,17 +15,17 @@ from typing import Any, TypeAlias
 
 import torch
 
-from sglang_omni.models.moss_tts.audio_tokenizer import resolve_moss_audio_dtype
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
+    load_moss_audio_encoder,
+    load_moss_audio_vocoder,
+    resolve_moss_audio_dtype,
+)
 from sglang_omni.models.moss_tts.hf_loading import (
     load_moss_processor_class,
     moss_transformers_processor_compat,
 )
 from sglang_omni.models.moss_tts.request_builders import _DATA_URI_RE
-from sglang_omni.models.moss_tts_local.audio_tokenizer import (
-    DEFAULT_MOSS_TTS_LOCAL_AUDIO_TOKENIZER,
-    load_moss_tts_local_audio_tokenizer,
-    load_moss_tts_local_audio_vocoder,
-)
 from sglang_omni.models.moss_tts_local.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts_local.payload_types import (
     moss_tts_local_special_token_defaults,
@@ -577,7 +577,7 @@ def create_preprocessing_executor(
         name="compute_dtype",
         allow_none=True,
     )
-    audio_tokenizer = load_moss_tts_local_audio_tokenizer(
+    audio_tokenizer = load_moss_audio_encoder(
         _resolve_audio_tokenizer_model_path(processor, codec_model_path),
         device=device,
         compute_dtype=resolved_compute_dtype,
@@ -683,8 +683,11 @@ def create_vocoder_executor(
         name="compute_dtype",
         allow_none=True,
     )
-    audio_vocoder = load_moss_tts_local_audio_vocoder(
-        _resolve_audio_tokenizer_model_path(processor, codec_model_path),
+    resolved_codec_path = _resolve_audio_tokenizer_model_path(
+        processor, codec_model_path
+    )
+    audio_vocoder = load_moss_audio_vocoder(
+        resolved_codec_path,
         device=device,
         decoder_dtype=decoder_dtype,
         compute_dtype=resolved_compute_dtype,
