@@ -149,6 +149,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             model=model,
             wrapper=self.wrapper,
             device=torch.device(device),
+            context_length=int(server_args.context_length),
         )
         if bool(server_args.disable_cuda_graph):
             return

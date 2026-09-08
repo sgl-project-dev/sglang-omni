@@ -186,12 +186,15 @@ def set_qwen3_tts_preprocessing_context(
     wrapper: Any,
     standalone: bool = False,
     device: torch.device | None = None,
+    context_length: int | None = None,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
+        _get_qwen3_tts_adhoc_reference_service_locked(
+            model, wrapper, context_length=context_length
+        )
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
@@ -910,9 +913,21 @@ class _Qwen3TTSAdhocReferenceHook(
     encoder_id = "qwen3_tts_voice_clone_prompt"
     artifact_kind = "qwen3_tts_voice_clone_prompt_adhoc"
 
-    def __init__(self, *, model: Any, wrapper: Any) -> None:
+    def __init__(
+        self, *, model: Any, wrapper: Any, context_length: int | None = None
+    ) -> None:
         self._model = model
         self._wrapper = wrapper
+        # note(ratish): the engine's context bounds the ICL prompt. A standalone
+        # preprocessing process has no engine and leaves the check to it.
+        self._icl_frame_rule: tuple[int, int, int] | None = None
+        if context_length is not None:
+            tokenizer = model.speech_tokenizer
+            self._icl_frame_rule = (
+                int(context_length),
+                int(tokenizer.feature_extractor.sampling_rate),
+                int(tokenizer.get_encode_downsample_rate()),
+            )
         # note (luojiaxuan): the engine builder loads the speech tokenizer on
         # the same device as the talker model, so model.device selects the
         # dedicated reference-code encode stream for that device.
@@ -962,7 +977,12 @@ class _Qwen3TTSAdhocReferenceHook(
             if len(normalized) != 1:
                 raise ValueError("Qwen3-TTS expects exactly one reference audio")
             waveform, sample_rate = normalized[0]
-            ref_code_future = self._ref_code_batcher.submit(waveform, sample_rate)
+            # note(ratish): the codes are only consumed in ICL mode, so x vector
+            # mode runs the speaker encoder alone.
+            ref_code_future = None
+            if not item.x_vector_only_mode:
+                self._check_icl_reference_fits(waveform, sample_rate)
+                ref_code_future = self._ref_code_batcher.submit(waveform, sample_rate)
             speaker_waveform = waveform
             speaker_sample_rate = self._model.speaker_encoder_sample_rate
             if sample_rate != speaker_sample_rate:
@@ -977,16 +997,39 @@ class _Qwen3TTSAdhocReferenceHook(
                 audio=speaker_waveform,
                 sr=speaker_sample_rate,
             )
-            ref_code = _record_ref_code_consumer_stream(
-                ref_code_future.result(timeout=130.0)
+            ref_code = (
+                _record_ref_code_consumer_stream(ref_code_future.result(timeout=130.0))
+                if ref_code_future is not None
+                else None
             )
         voice_clone_prompt = {
-            "ref_code": [None if item.x_vector_only_mode else ref_code],
+            "ref_code": [ref_code],
             "ref_spk_embedding": [speaker_embedding],
             "x_vector_only_mode": [item.x_vector_only_mode],
             "icl_mode": [not item.x_vector_only_mode],
         }
         return voice_clone_prompt, item.ref_text
+
+    def _check_icl_reference_fits(self, waveform: Any, sample_rate: int) -> None:
+        """Refuse an ICL reference the engine cannot admit before it is encoded.
+
+        The tokenizer resamples the clip to its feature extractor rate and
+        keeps one frame per encode_downsample_rate samples, rounded up. The
+        prompt carries one position per frame plus the text, and the engine
+        refuses any input at or above its context, so a clip whose frames alone
+        reach the context is refused here, before any device work.
+        """
+        if self._icl_frame_rule is None:
+            return
+        context_length, tokenizer_rate, downsample_rate = self._icl_frame_rule
+        samples = -(-len(waveform) * tokenizer_rate // int(sample_rate))
+        frames = -(-samples // downsample_rate)
+        if frames >= context_length:
+            raise ValueError(
+                f"Qwen3-TTS ICL reference holds {frames} codec frames, the engine "
+                f"context holds {context_length}; use a shorter reference or "
+                "x_vector_only_mode"
+            )
 
     def store_artifact(self, artifact: tuple[dict[str, Any], str | None]) -> dict:
         voice_clone_prompt, ref_text = artifact
@@ -1048,6 +1091,8 @@ def _qwen3_tts_encoder_config_hash(model: Any, wrapper: Any) -> str:
 def _get_qwen3_tts_adhoc_reference_service_locked(
     model: Any,
     wrapper: Any,
+    *,
+    context_length: int | None = None,
 ) -> ReferenceEncodeService:
     global _ADHOC_REFERENCE_SERVICE_ENTRY
     owner = (id(model), id(wrapper))
@@ -1056,7 +1101,9 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
         if entry is not None:
             entry[1].close()
         service = ReferenceEncodeService(
-            _Qwen3TTSAdhocReferenceHook(model=model, wrapper=wrapper),
+            _Qwen3TTSAdhocReferenceHook(
+                model=model, wrapper=wrapper, context_length=context_length
+            ),
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
@@ -1133,16 +1180,10 @@ def _prepare_qwen3_tts_base_request(
             desc="Qwen3-TTS ad-hoc reference",
         )
     else:
-        with torch.no_grad():
-            prompt_items = wrapper.create_voice_clone_prompt(
-                ref_audio=state.ref_audio,
-                ref_text=state.ref_text,
-                x_vector_only_mode=state.x_vector_only_mode,
-            )
-        if len(prompt_items) != 1:
-            raise ValueError("Qwen3-TTS expects exactly one voice-clone prompt")
-        voice_clone_prompt = wrapper._prompt_items_to_voice_clone_prompt(prompt_items)
-        ref_text = prompt_items[0].ref_text
+        # note(ratish): the hook is the one caller of the tokenizer encoder and
+        # the speaker encoder, so an uploaded miss takes the same path as an ad hoc clip.
+        hook = _get_qwen3_tts_adhoc_reference_service(model, wrapper).hook
+        voice_clone_prompt, ref_text = hook.encode_one(hook.normalize_input(state))
         speaker_cache.put(
             cache_key,
             _cacheable_qwen3_tts_voice_prompt(
