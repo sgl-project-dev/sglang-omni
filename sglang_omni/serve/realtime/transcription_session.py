@@ -20,8 +20,17 @@ from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
     InputAudioBufferCommit,
+    TranscriptionCleared,
+    TranscriptionCommitted,
+    TranscriptionCompleted,
     TranscriptionDone,
+    TranscriptionError,
+    TranscriptionErrorBody,
+    TranscriptionSegment,
+    TranscriptionServerEvent,
     TranscriptionSessionUpdate,
+    TranscriptionSpeechStarted,
+    TranscriptionSpeechStopped,
     TurnDetection,
     TurnDetectionType,
     make_event,
@@ -193,11 +202,13 @@ class RealtimeTranscriptionSession:
             return
         await getattr(self, self.handlers[type(event)])(event)
 
-    async def send(self, event: dict[str, Any]) -> None:
+    async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
         if self.closed:
             return
         if self.websocket.application_state != WebSocketState.CONNECTED:
             return
+        if isinstance(event, TranscriptionServerEvent):
+            event = event.model_dump(exclude={"event_id", "event_index"})
         async with self._send_lock:
             self.event_index += 1
             event.setdefault("event_id", _new_id("evt"))
@@ -206,9 +217,8 @@ class RealtimeTranscriptionSession:
 
     async def send_error(self, type_: str, code: str, message: str) -> None:
         await self.send(
-            make_event(
-                "error",
-                error={"type": type_, "code": code, "message": message},
+            TranscriptionError(
+                error=TranscriptionErrorBody(type=type_, code=code, message=message)
             )
         )
 
@@ -217,7 +227,7 @@ class RealtimeTranscriptionSession:
     ) -> None:
         """Cancel the decode worker, abort its engine request, and absorb the result.
 
-        Gathering with ``return_exceptions=True`` prevents a normal cancellation
+        Gathering with return_exceptions=True prevents a normal cancellation
         from surfacing as a WebSocket handler failure.
         """
         if task is None or task.done():
@@ -357,8 +367,7 @@ class RealtimeTranscriptionSession:
             if self.active_segment is None:
                 self._start_segment(absolute_sample)
             await self.send(
-                make_event(
-                    "input_audio_buffer.speech_started",
+                TranscriptionSpeechStarted(
                     audio_start_ms=offsets_to_ms(absolute_sample),
                     segment_id=self.active_segment.segment_id,
                 )
@@ -371,8 +380,7 @@ class RealtimeTranscriptionSession:
                 else None
             )
             await self.send(
-                make_event(
-                    "input_audio_buffer.speech_stopped",
+                TranscriptionSpeechStopped(
                     audio_end_ms=offsets_to_ms(absolute_sample),
                     segment_id=segment_id,
                 )
@@ -415,7 +423,7 @@ class RealtimeTranscriptionSession:
         and that :meth:`_queue_final` never drains. Retaining only the VAD
         prefix padding (plus a frame of slack for audio the VAD has not
         consumed yet) keeps a long silent stretch from growing the buffer
-        into ``BufferOverflow``.
+        into BufferOverflow.
         """
         if self.vad is None or self.active_segment is not None:
             return
@@ -471,8 +479,7 @@ class RealtimeTranscriptionSession:
         self.active_segment = None
         self._decode_event.set()
         await self.send(
-            make_event(
-                "input_audio_buffer.committed",
+            TranscriptionCommitted(
                 segment_id=segment.segment_id,
             )
         )
@@ -581,8 +588,7 @@ class RealtimeTranscriptionSession:
     ) -> None:
         segment.last_text = text
         await self.send(
-            make_event(
-                "transcription.segment",
+            TranscriptionSegment(
                 segment_id=segment.segment_id,
                 text=text,
                 is_final=is_final,
@@ -623,7 +629,7 @@ class RealtimeTranscriptionSession:
         self.vad_origin_samples = self.buffer_origin_samples
 
         self._decode_worker_task = asyncio.create_task(self._decode_worker())
-        await self.send(make_event("input_audio_buffer.cleared"))
+        await self.send(TranscriptionCleared())
 
     async def _commit_buffer(self, reason: str) -> None:
         end_sample = self._absolute_buffer_end()
@@ -658,8 +664,7 @@ class RealtimeTranscriptionSession:
         await self._cancel_and_abort(self._decode_worker_task, None)
         ordered = sorted(self.committed_segments, key=lambda item: item.segment_id)
         await self.send(
-            make_event(
-                "transcription.completed",
+            TranscriptionCompleted(
                 text=join_transcript_parts(item.text for item in ordered),
             )
         )

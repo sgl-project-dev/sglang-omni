@@ -80,6 +80,70 @@ class SessionObject(EventBase):
     max_response_output_tokens: int | str = "inf"
 
 
+# ================================
+# Server Events for Transcription Sessions
+# ================================
+
+
+class TranscriptionServerEvent(EventBase):
+    event_id: str | None = None
+    event_index: int | None = None
+    type: str
+
+
+class TranscriptionSegment(TranscriptionServerEvent):
+    type: Literal["transcription.segment"] = "transcription.segment"
+    segment_id: int
+    text: str
+    is_final: bool
+
+
+class TranscriptionCompleted(TranscriptionServerEvent):
+    type: Literal["transcription.completed"] = "transcription.completed"
+    text: str
+
+
+class TranscriptionSpeechStarted(TranscriptionServerEvent):
+    type: Literal["input_audio_buffer.speech_started"] = (
+        "input_audio_buffer.speech_started"
+    )
+    audio_start_ms: int
+    segment_id: int
+
+
+class TranscriptionSpeechStopped(TranscriptionServerEvent):
+    type: Literal["input_audio_buffer.speech_stopped"] = (
+        "input_audio_buffer.speech_stopped"
+    )
+    audio_end_ms: int
+    segment_id: int | None
+
+
+class TranscriptionCommitted(TranscriptionServerEvent):
+    type: Literal["input_audio_buffer.committed"] = "input_audio_buffer.committed"
+    segment_id: int
+
+
+class TranscriptionCleared(TranscriptionServerEvent):
+    type: Literal["input_audio_buffer.cleared"] = "input_audio_buffer.cleared"
+
+
+class TranscriptionErrorBody(EventBase):
+    type: Literal["invalid_request_error", "server_error"]
+    code: str
+    message: str
+
+
+class TranscriptionError(TranscriptionServerEvent):
+    type: Literal["error"] = "error"
+    error: TranscriptionErrorBody
+
+
+# ================================
+# Client Events
+# ================================
+
+
 class ClientEvent(EventBase):
     event_id: str | None = None
     type: str
@@ -124,7 +188,7 @@ class ConversationItemTruncate(ClientEvent):
 
 
 def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
-    """Construct a server event dict. ``event_id`` is filled in by the
+    """Construct a server event dict. event_id is filled in by the
     session loop so handlers don't have to."""
     payload: dict[str, Any] = {"type": event_type}
     for k, v in fields.items():
