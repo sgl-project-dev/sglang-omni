@@ -187,6 +187,9 @@ def test_fish_s2pro_before_decode_uses_gpu_history_buffer() -> None:
         _ras_top_p=torch.zeros(1),
         _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
         _prev_token_count=torch.zeros(1, dtype=torch.long),
+        _prev_token_cursor=torch.zeros(1, dtype=torch.long),
+        _generation_done=torch.zeros(1, dtype=torch.bool),
+        _decode_active=torch.ones(1, dtype=torch.bool),
         _vq_codes=torch.zeros(1, 2, dtype=torch.long),
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([SEMANTIC_TOKEN_ID]))
@@ -257,6 +260,9 @@ def test_fish_s2pro_before_prefill_syncs_decode_state() -> None:
         _ras_top_p=torch.zeros(2),
         _prev_tokens=torch.full((2, 4), 999, dtype=torch.long),
         _prev_token_count=torch.full((2,), 99, dtype=torch.long),
+        _prev_token_cursor=torch.zeros(2, dtype=torch.long),
+        _generation_done=torch.zeros(2, dtype=torch.bool),
+        _decode_active=torch.ones(2, dtype=torch.bool),
     )
     forward_batch = SimpleNamespace(input_ids=torch.tensor([10, 11]))
 
@@ -377,6 +383,9 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
     model = SimpleNamespace(
         _semantic_bias=torch.full((40,), -float("inf")),
         _prev_token_count=torch.zeros(1, dtype=torch.long),
+        _prev_token_cursor=torch.zeros(1, dtype=torch.long),
+        _generation_done=torch.zeros(1, dtype=torch.bool),
+        _decode_active=torch.ones(1, dtype=torch.bool),
         _ras_range=torch.arange(4, 0, -1),
         _prev_tokens=torch.zeros(1, 4, dtype=torch.long),
         _ras_temperature=torch.ones(1),
@@ -396,6 +405,8 @@ def test_fish_s2pro_decode_codebooks_keeps_eos_out_of_audio_embedding(
         _codebook_size=8,
         _num_codebooks=2,
         _output_codes=torch.zeros(1, 3, dtype=torch.long),
+        _vq_codes=torch.zeros(1, 2, dtype=torch.long),
+        _rep_history_len=4,
         _output_semantic_ids=torch.zeros(1, dtype=torch.long),
     )
     model._semantic_bias[10:18] = 0.0
@@ -456,6 +467,11 @@ def test_fish_s2pro_seeded_sampler_preserves_probability_distribution() -> None:
     model = SimpleNamespace(
         _semantic_bias=semantic_bias,
         _prev_token_count=torch.zeros(batch, dtype=torch.long, device=device),
+        _prev_token_cursor=torch.zeros(batch, dtype=torch.long, device=device),
+        _generation_done=torch.zeros(batch, dtype=torch.bool, device=device),
+        _decode_active=torch.ones(batch, dtype=torch.bool, device=device),
+        _vq_codes=torch.zeros(batch, 1, dtype=torch.long, device=device),
+        _rep_history_len=4,
         _ras_range=torch.arange(4, 0, -1, device=device),
         _prev_tokens=torch.zeros(batch, 4, dtype=torch.long, device=device),
         _ras_temperature=torch.ones(batch, device=device),
@@ -720,17 +736,26 @@ def test_fish_tts_stream_output_builder_gates_and_clears_chunks() -> None:
     assert stream_output_builder("non-stream", non_stream_data, None) == []
 
 
-def test_lookahead_is_never_eligible_for_fish():
-    """The in-model sampler reads semantic history, so lookahead must stay off
-    even though the SamplingParams the base gate inspects are history-free."""
+@pytest.mark.parametrize(
+    "chunked,over_graph_cap,logprob,expected",
+    [
+        (False, False, False, True),
+        (True, False, False, False),
+        (False, True, False, False),
+        (False, False, True, False),
+    ],
+)
+def test_lookahead_is_conditionally_eligible_for_fish(
+    chunked, over_graph_cap, logprob, expected
+):
     runner = object.__new__(FishS2ProModelRunner)
-    req = SimpleNamespace(
-        sampling_params=SimpleNamespace(
-            repetition_penalty=1.0,
-            frequency_penalty=0.0,
-            presence_penalty=0.0,
-            min_new_tokens=0,
-        ),
-        custom_logit_processor=None,
+    runner._decode_graph_max_bs = 2
+    req = SimpleNamespace(inflight_middle_chunks=int(chunked), return_logprob=False)
+    if logprob:
+        req._omni_data = SimpleNamespace(return_omni_rollout=True, return_logprob=True)
+    assert (
+        runner.lookahead_eligible(
+            SimpleNamespace(reqs=[req] * (3 if over_graph_cap else 1))
+        )
+        is expected
     )
-    assert runner.lookahead_eligible(SimpleNamespace(reqs=[req])) is False

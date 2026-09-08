@@ -267,7 +267,7 @@ class S2ProSGLangTextModel(nn.Module):
         self._vq_codebook_offsets = audio_decoder.codebook_offsets.to(device)
         self._vq_scale = 1.0 / math.sqrt(num_codebooks + 1)
 
-        # Input buffers: VQ codes from previous step (updated by ModelRunner)
+        # note (Junnan Li): seeded by the runner, advanced inside the decode stream.
         self._vq_codes = torch.zeros(
             max_batch_size, num_codebooks, dtype=torch.long, device=device
         )
@@ -315,6 +315,15 @@ class S2ProSGLangTextModel(nn.Module):
         )
         self._prev_token_count = torch.zeros(
             max_batch_size, dtype=torch.long, device=device
+        )
+        self._prev_token_cursor = torch.zeros(
+            max_batch_size, dtype=torch.long, device=device
+        )
+        self._decode_active = torch.ones(
+            max_batch_size, dtype=torch.bool, device=device
+        )
+        self._generation_done = torch.zeros(
+            max_batch_size, dtype=torch.bool, device=device
         )
         self._rep_history_len = rep_history_len
         self._rep_positions = torch.arange(rep_history_len, device=device)
@@ -400,9 +409,16 @@ class S2ProSGLangTextModel(nn.Module):
         biased_logits = biased_logits.to(torch.bfloat16).to(torch.float32)
 
         count = self._prev_token_count[:bs]
+        cursor = self._prev_token_cursor[:bs]
+        # note (Junnan Li): storage is circular, the window is chronological
+        # (zero-padded until full), so RAS and the penalty see the same inputs.
+        history_indices = (
+            cursor.unsqueeze(1) - count.unsqueeze(1) + self._rep_positions.unsqueeze(0)
+        ) % self._rep_history_len
+        prev = self._prev_tokens[:bs].gather(1, history_indices)
         idx_base = count.unsqueeze(1) - self._ras_range.unsqueeze(0)
         idx_base = idx_base.clamp(min=0)
-        last4 = torch.gather(self._prev_tokens[:bs], 1, idx_base)
+        last4 = torch.gather(prev, 1, idx_base)
         sorted_last4 = torch.sort(last4, dim=-1).values
         has_dup = (sorted_last4[:, 1:] == sorted_last4[:, :-1]).any(dim=-1)
         use_ras = has_dup & (count >= 4)
@@ -414,7 +430,6 @@ class S2ProSGLangTextModel(nn.Module):
             use_ras, self._ras_top_p[:bs], self._sampling_top_p[:bs]
         ).unsqueeze(1)
 
-        prev = self._prev_tokens[:bs]
         scores = torch.gather(biased_logits, dim=-1, index=prev)
         rep_penalty = self._sampling_rep_penalty[:bs].unsqueeze(1)
         penalized = torch.where(scores < 0, scores * rep_penalty, scores / rep_penalty)
@@ -451,6 +466,10 @@ class S2ProSGLangTextModel(nn.Module):
         )
         choice = torch.where((seeds >= 0).unsqueeze(-1), seeded_choice, unseeded_choice)
         semantic_token = top_k_indices.gather(-1, choice).squeeze(-1)
+        active = self._decode_active[:bs] & ~self._generation_done[:bs]
+        semantic_token = torch.where(
+            self._generation_done[:bs], self._im_end_token_id, semantic_token
+        )
 
         # Batched codebook loop
         self._audio_decoder.reset_caches()
@@ -479,6 +498,25 @@ class S2ProSGLangTextModel(nn.Module):
             self._output_codes[:bs, cb_idx + 1] = cb_token
 
         self._output_semantic_ids[:bs] = semantic_token
+
+        # note (Junnan Li): in-place so step N+1 sees step N without a host
+        # resolve; chunked, finished and EOS rows do not advance.
+        advance = active & ~is_eos
+        write_index = cursor.unsqueeze(1)
+        old_token = self._prev_tokens[:bs].gather(1, write_index)
+        write_token = torch.where(
+            advance.unsqueeze(1), semantic_token.unsqueeze(1), old_token
+        )
+        self._prev_tokens[:bs].scatter_(1, write_index, write_token)
+        cursor.copy_((cursor + advance.long()) % self._rep_history_len)
+        count.copy_((count + advance.long()).clamp(max=self._rep_history_len))
+        self._vq_codes[:bs].copy_(
+            torch.where(
+                advance.unsqueeze(1), self._output_codes[:bs, 1:], self._vq_codes[:bs]
+            )
+        )
+        self._step_count[:bs].add_(advance.long())
+        self._generation_done[:bs].logical_or_(active & is_eos)
 
     def get_embed_tokens(self):
         return self.embed_tokens

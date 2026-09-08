@@ -20,35 +20,45 @@ def collect_s2pro_step_outputs(
     output_semantic_ids: torch.Tensor,
     im_end_token_id: int,
     rep_history_len: int | None = None,
+    skip_rows: tuple[bool, ...] | None = None,
+    clone_codes: bool = True,
 ) -> None:
     batch_size = len(requests)
     if batch_size == 0:
         return
 
     result.next_token_ids = output_semantic_ids[:batch_size].clone()
+    # note (Junnan Li): host bookkeeping only; decode state advances inside the graph.
     semantic_tokens = output_semantic_ids[:batch_size].tolist()
 
     for row_idx, sched_req in enumerate(requests):
         data = sched_req.data
-        if data.req.inflight_middle_chunks > 0:
+        if (skip_rows is not None and skip_rows[row_idx]) or _skip_request(data.req):
             continue
 
         semantic_token = semantic_tokens[row_idx]
         if semantic_token == im_end_token_id:
             continue
 
-        codes = output_codes[row_idx].unsqueeze(-1).clone()
-        data.last_codebook_values = codes[1:, 0].clone()
+        codes = output_codes[row_idx].unsqueeze(-1)
+        if clone_codes:
+            codes = codes.clone()
+        last_codes = codes[1:, 0]
+        data.last_codebook_values = last_codes.clone() if clone_codes else last_codes
         data.previous_semantic_tokens.append(semantic_token)
         if rep_history_len is not None:
             _append_semantic_history(
-                data, output_semantic_ids[row_idx], rep_history_len
+                data,
+                torch.tensor(semantic_token, dtype=torch.long, device="cpu"),
+                rep_history_len,
             )
         data.output_codes.append(codes)
         data.latest_stream_code_chunk = codes
 
 
 def _append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -> None:
+    """Keep the chronological CPU checkpoint used only when rebuilding rows."""
+    token = token.cpu()
     history = data.semantic_history_tokens
     if (
         history is None
@@ -68,6 +78,26 @@ def _append_semantic_history(data: Any, token: torch.Tensor, history_len: int) -
     data.semantic_history_count = count + 1
 
 
+def _skip_request(req: Any) -> bool:
+    finished = getattr(req, "finished", None)
+    return bool(
+        req.inflight_middle_chunks > 0
+        or (finished is not None and finished())
+        or getattr(req, "is_retracted", False)
+    )
+
+
+class _StepSnapshot:
+    """Own device codes and a pinned ID slot with launch-time row identities."""
+
+    def __init__(self, host, codes, requests):
+        self.host = host
+        self.codes = codes
+        self.requests = tuple(requests)
+        self.skip_rows = tuple(_skip_request(r.data.req) for r in requests)
+        self.consumed = False
+
+
 class FishS2ProModelRunner(ModelRunner):
     """Fish TTS runner with unified forward-owned decode and persistent buffers."""
 
@@ -76,12 +106,24 @@ class FishS2ProModelRunner(ModelRunner):
         self._semantic_begin_id = int(self.model._semantic_begin_id)
         self._semantic_end_id = int(self.model._semantic_end_id)
         self._im_end_token_id = int(self.model._im_end_token_id)
+        graph = getattr(tp_worker.model_runner, "decode_cuda_graph_runner", None)
+        self._decode_graph_max_bs = max(
+            getattr(graph, "capture_bs", ()) or (), default=0
+        )
+        self._decode_rows: tuple = ()
 
     def lookahead_eligible(self, batch: Any) -> bool:
-        # note (Junnan Li): not supported yet; semantic_history_tokens is
-        # appended at resolve, one step late under lookahead.
-        del batch
-        return False
+        # note (Junnan Li): safe because everything the sampler reads advances inside the graph.
+        reqs = batch.reqs
+        if not reqs or len(reqs) > self._decode_graph_max_bs:
+            return False
+        for req in reqs:
+            data = getattr(req, "_omni_data", None)
+            if req.inflight_middle_chunks > 0 or getattr(req, "return_logprob", False):
+                return False
+            if getattr(data, "return_logprob", False):
+                return False
+        return True
 
     def before_prefill(self, forward_batch, schedule_batch, requests):
         del schedule_batch
@@ -98,28 +140,75 @@ class FishS2ProModelRunner(ModelRunner):
         *,
         is_lookahead: bool = False,
     ):
-        del is_lookahead
         del schedule_batch
+        self._prepare_decode_rows(requests)
         input_ids = forward_batch.input_ids
         batch_size = input_ids.shape[0]
         is_semantic = (input_ids >= self._semantic_begin_id) & (
             input_ids <= self._semantic_end_id
         )
+        if is_lookahead:
+            # note (Junnan Li): an EOS from the previous launch may not have reached host collect yet.
+            is_semantic = is_semantic & ~self.model._generation_done[:batch_size]
         self.model._vq_mask[:batch_size].copy_(is_semantic)
+        self._set_decode_active(requests)
 
-        for row_idx, sched_req in enumerate(requests):
-            data = sched_req.data
-            self._sync_decode_row_state(row_idx, data)
-
-            last_codes = data.last_codebook_values
-            if last_codes is None:
-                continue
-            self.model._vq_codes[row_idx].copy_(
-                last_codes.to(
-                    device=self.model._vq_codes.device,
-                    dtype=self.model._vq_codes.dtype,
-                )
+    def _set_decode_active(self, requests):
+        statuses = tuple(not _skip_request(r.data.req) for r in requests)
+        if statuses == getattr(self, "_decode_active_key", None):
+            return
+        self._decode_active_key = None
+        active = self.model._decode_active
+        # note (Junnan Li): whole buffer, so graph-padding rows past len(requests) stay inactive.
+        active.zero_()
+        active[: len(requests)].copy_(
+            torch.tensor(
+                statuses,
+                dtype=torch.bool,
+                device=active.device,
             )
+        )
+        # note (Junnan Li): nothing else writes this mask, so an unchanged key needs no H2D.
+        self._decode_active_key = statuses
+
+    def _prepare_decode_rows(self, requests):
+        # note (Junnan Li): key by data object, not rid; a surviving row is a step
+        # ahead of its host checkpoint, so remap its device state instead of reseeding.
+        rows = tuple(r.data for r in requests)
+        previous = getattr(self, "_decode_rows", ())
+        if len(rows) == len(previous) and all(a is b for a, b in zip(rows, previous)):
+            return
+        old_indices = {id(data): i for i, data in enumerate(previous)}
+        retained = [
+            (i, old_indices[id(data)])
+            for i, data in enumerate(rows)
+            if id(data) in old_indices
+        ]
+        if retained:
+            device = self.model._prev_tokens.device
+            dest = torch.tensor([i for i, _ in retained], device=device)
+            src = torch.tensor([i for _, i in retained], device=device)
+            for name in (
+                "_prev_tokens",
+                "_prev_token_count",
+                "_prev_token_cursor",
+                "_step_count",
+                "_generation_done",
+                "_vq_codes",
+                "_sampling_temperature",
+                "_sampling_top_p",
+                "_sampling_top_k",
+                "_sampling_rep_penalty",
+                "_ras_temperature",
+                "_ras_top_p",
+                "_sampling_seeds",
+            ):
+                buffer = getattr(self.model, name)
+                buffer.index_copy_(0, dest, buffer.index_select(0, src))
+        for i, data in enumerate(rows):
+            if id(data) not in old_indices:
+                self._sync_decode_row_state(i, data)
+        self._decode_rows = rows
 
     def post_prefill(self, result, forward_batch, schedule_batch, requests):
         del forward_batch, schedule_batch
@@ -129,9 +218,47 @@ class FishS2ProModelRunner(ModelRunner):
         del forward_batch, schedule_batch
         self._collect_step_outputs(result, requests)
 
+    def post_decode_launch(self, result, forward_batch, requests):
+        n = len(requests)
+        if int(forward_batch.batch_size) < n:
+            raise ValueError("forward_batch.batch_size < len(requests)")
+        # note (Junnan Li): detach from the graph output buffers before the next replay.
+        result.next_token_ids = self.model._output_semantic_ids[:n].clone()
+        codes = self.model._output_codes[:n].detach().clone()
+        host = self._pinned_pingpong(
+            "_host_staging_buffers",
+            "_staging_slot",
+            result.next_token_ids.shape,
+            result.next_token_ids.dtype,
+            realloc_on_grow=True,
+        )
+        host[:n].copy_(result.next_token_ids, non_blocking=True)
+        # note (Junnan Li): the base runner records the completion event after this D2H.
+        return _StepSnapshot(host[:n], codes, requests)
+
+    def post_decode_resolve(
+        self, snapshot, result, forward_batch, schedule_batch, requests
+    ):
+        del forward_batch, schedule_batch, requests
+        if snapshot.consumed:
+            return
+        snapshot.consumed = True
+        collect_s2pro_step_outputs(
+            result,
+            snapshot.requests,
+            output_semantic_ids=snapshot.host,
+            output_codes=snapshot.codes,
+            im_end_token_id=self._im_end_token_id,
+            rep_history_len=self.model._rep_history_len,
+            skip_rows=snapshot.skip_rows,
+            clone_codes=False,
+        )
+
     def _sync_decode_state(self, requests: list) -> None:
         for row_idx, sched_req in enumerate(requests):
             self._sync_decode_row_state(row_idx, sched_req.data)
+        self._decode_rows = tuple(r.data for r in requests)
+        self._set_decode_active(requests)
 
     def _sync_decode_row_state(self, row_idx: int, data: Any) -> None:
         self.model._sampling_temperature[row_idx] = data.temperature
@@ -146,7 +273,15 @@ class FishS2ProModelRunner(ModelRunner):
         # semantic_history_count is the uncapped per-request AR step (pre-step).
         self.model._step_count[row_idx] = int(data.semantic_history_count)
 
+        self.model._generation_done[row_idx] = False
         history_len = self.model._rep_history_len
+        # note (Junnan Li): the host checkpoint is chronological, so a full ring restarts at slot 0.
+        self.model._prev_token_cursor[row_idx] = (
+            min(int(data.semantic_history_count), history_len) % history_len
+        )
+        last_codes = data.last_codebook_values
+        if last_codes is not None:
+            self.model._vq_codes[row_idx].copy_(last_codes.to(self.model._vq_codes))
         history = data.semantic_history_tokens
         if history is not None:
             self.model._prev_tokens[row_idx].copy_(
