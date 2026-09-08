@@ -127,6 +127,8 @@ calibration; sibling cleanup may SIGKILL it. `tune.py` prefers
 - Calibration venv exists.
 - `torch` and `sglang` match current project pins.
 - Editable package points to the selected worktree.
+- `SGLANG_OMNI_ROUTER_BIN` names the release binary built from the selected
+  checkout.
 - `CAP_SYS_PTRACE` is present for the FP8 TP=2 test.
 
 Using the maintained calibration venv normally requires only:
@@ -137,7 +139,18 @@ uv pip install -e .
 ```
 
 Do not rebuild the venv or bulk-download assets before precheck identifies a
-specific gap.
+specific gap. Prepare the router once before running the precheck:
+
+```bash
+cd "$TUNE_REPO_ROOT"
+export SGLANG_OMNI_ROUTER_BIN="$(
+  bash .github/scripts/prepare_rust_router.sh build
+)"
+```
+
+Install Rust using the
+[router installation guide](../../../docs/basic_usage/omni_router.md#installation)
+if `cargo` is unavailable.
 
 ## 5. Caches and assets
 
