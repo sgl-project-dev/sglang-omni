@@ -66,12 +66,9 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 flow_batch_admission_frames=8000,
                 max_batch_size=16,
                 max_batch_wait_ms=30,
-                # note (guozhihao-224): mutually exclusive DiT accelerators.
-                # note (db-ol): the factory compiles the DiT unless TensorRT is
-                # enabled, set enable_dit_torch_compile false to run it eager.
+                # note (guozhihao-224, chenyang):
+                # torch.compile is opt-in via enable_dit_torch_compile.
                 enable_flow_estimator_trt=False,
-                # Official CV3 defaults. Keep hop growth on: SeedTTS c=16
-                # A/B preferred growth ON over disable_hop_growth.
                 token_hop_len=25,
                 token_max_hop_len=100,
                 disable_hop_growth=False,
