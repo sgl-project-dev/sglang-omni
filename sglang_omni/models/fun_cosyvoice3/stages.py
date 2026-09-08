@@ -1171,7 +1171,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 30,
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
-    enable_dit_torch_compile: bool | None = None,
+    enable_dit_torch_compile: bool = False,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
@@ -1190,8 +1190,6 @@ def create_vocoder_executor(
             "enable_flow_estimator_trt and enable_dit_torch_compile both "
             "target flow.decoder.estimator; enable only one"
         )
-    if enable_dit_torch_compile is None:
-        enable_dit_torch_compile = not enable_flow_estimator_trt
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:

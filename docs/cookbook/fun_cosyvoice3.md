@@ -39,8 +39,6 @@ Download the checkpoint:
 hf download FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 ```
 
-## Server Configuration
-
 The pipeline is `preprocessing → tts_engine → vocoder`. First startup can take several minutes while the `tts_engine` captures CUDA graphs.
 
 ```bash
@@ -49,32 +47,13 @@ sgl-omni serve \
   --port 8000
 ```
 
+## Serving Optimization
+
 ### Flow Decoder Batching
 
-The buffered vocoder uses the batch-capable `FunCosyVoice3Flow.inference` API for every
-request. `SimpleScheduler` collects up to 16 requests for at most 30 ms, then the vocoder
-groups requests by total mel length in 50-frame buckets. Every bucket, including a
-single-request bucket, calls the same built-in Flow inference method; packing, padding,
-masking, CFM Euler/CFG, and output unpadding are handled inside the Flow implementation.
-The 50-frame default matches the current DiT estimator's static chunk size; a larger bucket
-can combine more requests at the cost of additional padding, compute, and peak GPU memory.
+The buffered vocoder batches requests through a two-stage pipeline. The scheduler collects up to 16 requests over at most 30 ms, then groups them by mel length in 50-frame buckets. Each bucket, including single-request buckets, invokes `Flow.inference()` once, where padding, masking, and CFM decoding are handled internally. To prevent long requests from blocking later ones, a bucket-rounded admission budget (`flow_batch_admission_frames`, default 8000 frames) controls batch assembly; requests exceeding this budget run as independent `B=1` batches.
 
-The scheduler uses a bucket-rounded Flow admission budget, configured by
-`flow_batch_admission_frames` (8,000 by default). It controls whether a later request joins the
-current Flow batch; it is not a maximum supported request length. A request whose total
-prompt-plus-output mel length exceeds that budget runs as a B=1 Flow batch through the same
-adapter, and later requests wait for the next scheduler batch. This preserves valid long
-generations while preventing them from being combined with more work.
-
-HiFT is batched the same way: the mels from one Flow bucket are right-zero-padded into a single
-tensor, decoded in one HiFT call, and sliced back to each request's true length, under the
-padding budget `hift_max_padding_waste` (1.5 by default; `1.0` only groups requests that need no
-padding at all). HiFT is prepared for this at load time by folding away its `weight_norm`
-parametrizations. Right-zero-padding matches the zero padding HiFT applies in single-request
-inference, so batched output is identical except in the final mel frame of padded requests.
-
-The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator, an opt-in
-TensorRT estimator (see below), and buffered `streaming=False, finalize=True` inference only.
+HiFT vocoding follows the same batching pattern. Mels from a Flow bucket are right-zero-padded into a single tensor, decoded in one HiFT call, and sliced back to each request's true length. The padding budget (`hift_max_padding_waste`, default 1.5) limits wasted computation; since right-padding matches HiFT's single-request behavior, batched output is equivalent to individual inference except on padded frames. This design trades off throughput against latency while maintaining output correctness.
 
 Change the mel-frame bucket size, for example to 100 frames:
 
@@ -85,19 +64,7 @@ sgl-omni serve \
   --vocoder.factory.flow_batch_bucket_frames 100
 ```
 
-The same setting can be written in the pipeline config under the vocoder's
-`factory` group:
-
-```yaml
-stages:
-  vocoder:
-    factory:
-      flow_batch_bucket_frames: 100
-```
-
-Increase the normal Flow batching budget only after measuring the target GPU. This changes the
-maximum aggregate padded work admitted into one scheduler batch; it does not reject a longer
-single request.
+This would increase the throughput at the cost of latency and higher peak GPU memory. Increase the normal Flow batching budget only after measuring the target GPU.
 
 ```bash
 sgl-omni serve \
@@ -106,47 +73,26 @@ sgl-omni serve \
   --vocoder.factory.flow_batch_admission_frames 4000
 ```
 
-The YAML equivalent is:
+On the other hand, decrease the admission budget to reduce latency and lower peak GPU memory.
 
-```yaml
-stages:
-  vocoder:
-    factory:
-      flow_batch_admission_frames: 4000
-```
+### Vocoder Configuration
 
-The remaining vocoder `factory` options are `max_batch_size` (16) and `max_batch_wait_ms` (30)
-for the scheduler batch, `dtype` (`bfloat16`) for the Flow autocast, `hift_dtype` (`float32`,
-independent of `dtype`; `bfloat16` measured no faster for HiFT on H200 and lowers output fidelity)
-for the HiFT autocast, `enable_dit_torch_compile`, and `enable_flow_estimator_trt`
-(see below; mutually exclusive DiT accelerators). The
-`tts_engine` stage takes `onnx_intra_op_threads` (16) for the speech tokenizer and speaker
-encoder ONNX sessions, and `preprocessing` takes `max_concurrency` (8) for concurrent reference
-conditioning.
+Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts `max_batch_size` (16) and `max_batch_wait_ms` (30) to tune batch assembly. Flow uses `dtype` (bfloat16) for autocast, while HiFT uses `hift_dtype` (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Two mutually exclusive accelerators are available: `enable_dit_torch_compile` and `enable_flow_estimator_trt`.
 
-The built-in Flow implementation is tied to the Flow/CFM structure in the documented CosyVoice commit
-`074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`. It does not patch the CosyVoice source on disk; an
-incompatible Flow structure fails directly instead of using a fallback implementation.
+The TTS engine stage accepts `onnx_intra_op_threads` (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes `max_concurrency` (8) to limit concurrent reference conditioning requests.
 
 ### torch.compile for the DiT backbone
 
-The flow decoder's DiT backbone (`flow.decoder.estimator`, a 22-layer DiT invoked
-once per Euler step) is compiled with `torch.compile` to reduce per-step
-kernel-launch overhead. It is on by default unless the TensorRT estimator below
-is enabled. The compile pays a one-time cost of about 100 s at startup with an
-empty inductor cache and uses `dynamic=True`, so one symbolic-sequence-length
-graph serves every utterance length.
-
-Run the estimator eager instead by overriding the vocoder stage's `factory` args
-(the `stages.` prefix is implied in the CLI dotted path), for example to shorten
-startup during development:
+`torch.compile` is off by default. Enable it when you want the lowest DiT kernel-launch overhead. The first startup with an empty Inductor cache takes about 100 s and builds one symbolic (`dynamic=True`) graph for every utterance length; later starts reuse that cache. Keep the cache so you do not pay the compile cost again (`~/.cache/torch/inductor`, or `TORCHINDUCTOR_CACHE_DIR`).
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --vocoder.factory.enable_dit_torch_compile false \
+  --vocoder.factory.enable_dit_torch_compile true \
   --port 8000
 ```
+
+Do not enable it together with TensorRT.
 
 ### TensorRT for the DiT backbone
 
@@ -163,8 +109,7 @@ cond/uncond pairs into that CFG=2 engine; out-of-profile `T` falls back to
 the original PyTorch DiT.
 
 TensorRT and `torch.compile` both replace the same DiT, so they are mutually
-exclusive. Enabling TensorRT skips the default compile on its own, setting both
-flags to true is rejected:
+exclusive. Setting both flags to true is rejected:
 
 ```bash
 sgl-omni serve \
