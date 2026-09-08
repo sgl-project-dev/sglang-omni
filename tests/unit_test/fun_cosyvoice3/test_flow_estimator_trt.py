@@ -16,6 +16,7 @@ from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     _cfg_pair_shapes,
     _dynamic_shapes,
     _require_cfg_pair_inputs,
+    _try_enable_fp16_tactics,
     execute_flow_estimator,
     is_flow_estimator_trt,
     resolve_flow_estimator_onnx,
@@ -97,6 +98,40 @@ def test_require_cfg_pair_inputs_rejects_wrong_t_or_spks() -> None:
         _require_cfg_pair_inputs(
             x, mask, mu, torch.zeros(_CFG_BATCH), torch.zeros(4, _MEL_DIM), cond
         )
+
+
+def test_try_enable_fp16_tactics_skips_missing_flag() -> None:
+    class _Config:
+        def __init__(self) -> None:
+            self.flags: list[object] = []
+
+        def set_flag(self, flag: object) -> None:
+            self.flags.append(flag)
+
+    class _TRT11:
+        class BuilderFlag:
+            TF32 = "tf32"
+
+    config = _Config()
+    assert _try_enable_fp16_tactics(config, _TRT11) is False
+    assert config.flags == []
+
+
+def test_try_enable_fp16_tactics_sets_legacy_flag() -> None:
+    class _Config:
+        def __init__(self) -> None:
+            self.flags: list[object] = []
+
+        def set_flag(self, flag: object) -> None:
+            self.flags.append(flag)
+
+    class _TRT10:
+        class BuilderFlag:
+            FP16 = "fp16"
+
+    config = _Config()
+    assert _try_enable_fp16_tactics(config, _TRT10) is True
+    assert config.flags == ["fp16"]
 
 
 def test_canonicalize_device_equates_cuda_and_cuda0(monkeypatch) -> None:
