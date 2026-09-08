@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import types
 from typing import Any
 
 import torch
@@ -33,6 +34,39 @@ _COSYVOICE_INSTALL_HINT = (
 )
 
 
+def _is_musa_device(device: str) -> bool:
+    return str(device).startswith("musa")
+
+
+def _prepare_hift_for_musa(hift: Any) -> None:
+    """Keep CosyVoice HiFiGAN on MUSA-supported convolution dtypes."""
+    hift.float()
+    modules = [hift]
+    named_modules = getattr(hift, "named_modules", None)
+    if callable(named_modules):
+        modules.extend(module for _, module in named_modules())
+
+    for module in modules:
+        predictor = getattr(module, "f0_predictor", None)
+        if predictor is None or getattr(predictor, "_sglang_omni_musa_float32", False):
+            continue
+        predictor.float()
+        original_forward = predictor.forward
+
+        def _forward_float32(
+            self: Any,
+            x: torch.Tensor,
+            *args: Any,
+            _original_forward: Any = original_forward,
+            **kwargs: Any,
+        ) -> Any:
+            self.float()
+            return _original_forward(x.float(), *args, **kwargs)
+
+        predictor.forward = types.MethodType(_forward_float32, predictor)
+        predictor._sglang_omni_musa_float32 = True
+
+
 def load_state(payload: StagePayload) -> FunCosyVoice3State:
     return _load_pipeline_state(payload, FunCosyVoice3State)
 
@@ -56,6 +90,8 @@ def _load_cosyvoice3_flow_hift(
     hift = cv.model.hift
     flow.to(device).eval()
     hift.to(device).eval()
+    if _is_musa_device(device):
+        _prepare_hift_for_musa(hift)
     del cv.model.llm
     return flow, hift
 
@@ -74,18 +110,26 @@ def create_sglang_tts_engine_executor(
     device: str = "cuda:0",
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
+    disable_cuda_graph: bool = False,
+    disable_piecewise_cuda_graph: bool = False,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> Any:
     from sglang_omni.models.fun_cosyvoice3.engine_builder import (
         FunCosyVoice3EngineBuilder,
     )
 
+    overrides = dict(server_args_overrides or {})
+    if disable_cuda_graph:
+        overrides["disable_cuda_graph"] = True
+    if disable_piecewise_cuda_graph:
+        overrides["disable_piecewise_cuda_graph"] = True
+
     return FunCosyVoice3EngineBuilder().build(
         model_path,
         device=device,
         gpu_id=gpu_id,
         dtype=dtype,
-        server_args_overrides=server_args_overrides,
+        server_args_overrides=overrides,
     )
 
 
