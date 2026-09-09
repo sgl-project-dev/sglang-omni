@@ -16,9 +16,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from sglang_omni.models.auk.constants import (
-    NO_PROMPT_AUDIO_MARKER,
-)
+from sglang_omni.models.auk.constants import NO_PROMPT_AUDIO_MARKER
 
 logger = logging.getLogger(__name__)
 

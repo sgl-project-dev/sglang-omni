@@ -24,10 +24,7 @@ from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
 from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig, make_runtime_config
 from sglang_omni.models.auk.payload_types import AuKState
-from sglang_omni.models.auk.reference_encode import (
-    AuKConditionEncoder,
-    build_messages,
-)
+from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.request_builders import (
     AuKPreprocessingContext,
     cleanup_prepared_auk_request,
