@@ -75,6 +75,7 @@ def _scheduler_output(*, is_prefill: bool):
         is_prefill_only=False,
         output_ids=None,
         marker="worker-batch",
+        sampling_info=SimpleNamespace(penalizer_orchestrator=None),
         prefill_input_ids_cpu=None,
         mix_running_indices=None,
     )

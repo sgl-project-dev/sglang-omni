@@ -77,11 +77,19 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
         else:
             mapped_gpu = str(spec.gpu_id)
 
-        return {
+        env_updates = {
             "CUDA_VISIBLE_DEVICES": mapped_gpu,
             "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
             "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
         }
+        # note (ratish): NVLS multicast binding is not available on every host,
+        # and NCCL 2.29 fails communicator init instead of falling back. A
+        # value from the shell or the stage configuration stands.
+        if "NCCL_NVLS_ENABLE" not in source_env and (
+            "NCCL_NVLS_ENABLE" not in spec.env_defaults
+        ):
+            env_updates["NCCL_NVLS_ENABLE"] = "0"
+        return env_updates
 
     def get_intra_node_transport(self) -> TransportKind:
         from sglang_omni.comm.data_ref import TransportKind
