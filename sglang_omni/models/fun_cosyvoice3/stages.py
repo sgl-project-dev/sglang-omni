@@ -15,6 +15,9 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
+from sglang_omni.models.fun_cosyvoice3.config import (
+    reject_conflicting_dit_accelerators,
+)
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -1185,11 +1188,10 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
-        raise ValueError(
-            "enable_flow_estimator_trt and enable_dit_torch_compile both "
-            "target flow.decoder.estimator; enable only one"
-        )
+    reject_conflicting_dit_accelerators(
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_estimator_trt=enable_flow_estimator_trt,
+    )
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:

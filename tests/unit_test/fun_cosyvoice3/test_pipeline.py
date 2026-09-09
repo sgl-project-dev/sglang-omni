@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from sglang_omni.config.manager import ConfigManager
@@ -80,6 +81,18 @@ def test_fun_cosyvoice3_layout_probe_requires_marker(tmp_path) -> None:
     (empty / "config.json").write_text("{}", encoding="utf-8")
 
     assert try_resolve_arch_from_cosyvoice3_layout(str(empty)) is None
+
+
+def test_fun_cosyvoice3_rejects_compile_and_trt_together() -> None:
+    config = FunCosyVoice3PipelineConfig(model_path="model")
+    manager = ConfigManager(config)
+    with pytest.raises(ValueError, match="enable only one"):
+        manager.merge_config(
+            {
+                "vocoder.factory.enable_dit_torch_compile": True,
+                "vocoder.factory.enable_flow_estimator_trt": True,
+            }
+        )
 
 
 def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
