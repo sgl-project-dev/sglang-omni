@@ -13,6 +13,7 @@ from sglang.srt.platforms.xpu import XpuSRTPlatform
 
 import sglang_omni.platforms as platforms
 import sglang_omni.platforms.xpu as xpu_platform
+from sglang_omni.pipeline.stage_workers import StageLaunchConfig
 from sglang_omni.platforms.cpu import CPUOmniPlatform
 from sglang_omni.platforms.cuda import CUDAOmniPlatform
 from sglang_omni.platforms.interface import OmniPlatform
@@ -46,6 +47,21 @@ def test_cpu_platform_needs_no_stage_process_env() -> None:
     spec = SimpleNamespace(stage_name="cpu", tp_size=2, gpu_id=None)
 
     assert CPUOmniPlatform().get_stage_process_env(spec, {}) == {}
+
+
+def test_cuda_tp_stage_env_is_the_narrowing_plus_nvls_off() -> None:
+    spec = StageLaunchConfig(stage_name="thinker", tp_size=2, gpu_id=1)
+
+    env = CUDAOmniPlatform().get_stage_process_env(
+        spec, {"CUDA_VISIBLE_DEVICES": "3,4"}
+    )
+
+    assert env == {
+        "CUDA_VISIBLE_DEVICES": "4",
+        "SGLANG_ONE_VISIBLE_DEVICE_PER_PROCESS": "true",
+        "SGLANG_ENABLE_TP_MEMORY_INBALANCE_CHECK": "false",
+        "NCCL_NVLS_ENABLE": "0",
+    }
 
 
 def test_rocm_platform_keeps_cuda_compatible_tp_mapping() -> None:
