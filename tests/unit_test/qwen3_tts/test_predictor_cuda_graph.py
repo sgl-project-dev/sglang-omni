@@ -13,18 +13,22 @@ from __future__ import annotations
 import ast
 import gc
 import weakref
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend, set_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.layers.quantization.unquant import Bf16GemmBackend
+from sglang.srt.layers.rotary_embedding.base import RotaryEmbedding
 from torch import nn
 
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
-from sglang_omni.vendor.sglang.layers import RMSNorm, get_rope
+from sglang_omni.vendor.sglang.layers import RMSNorm
 
 
 @pytest.fixture(autouse=True)
@@ -1350,18 +1354,26 @@ def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
     return talker
 
 
-@pytest.fixture
-def published_server_args():
+@pytest.fixture(params=["cuda", "torch"])
+def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
     from sglang.srt.runtime_context import get_context
 
-    with get_context().override_server_args(model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base"):
-        yield
+    mode = request.param
+    with get_context().override_server_args(
+        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+    ):
+        previous_backend = get_fused_op_backend()
+        try:
+            set_fused_op_backend(KernelBackend.TORCH if mode == "torch" else None)
+            yield mode
+        finally:
+            set_fused_op_backend(previous_backend)
 
 
 @pytest.mark.accelerator
 @pytest.mark.parametrize("batch_size", [1, 16])
 def test_rope_store_writes_the_cache_the_copy_path_writes(
-    batch_size: int, published_server_args
+    batch_size: int, predictor_rope_dispatch: str
 ):
     """sglang's rope kernel with the store argument leaves the same bits in the
     predictor cache as the plain rope followed by the two copies, and the
@@ -1382,11 +1394,15 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
         qkv_proj=_TupleLinear(
             ROPE_HIDDEN, (ROPE_NUM_HEADS + 2 * ROPE_NUM_KV_HEADS) * ROPE_HEAD_DIM
         ).to(device, DTYPE),
-        rotary_emb=get_rope(ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000).to(device),
+        # A fresh rotary resolves this fixture's dispatch instead of reusing
+        # get_rope's process-wide cache from another parameterized case.
+        rotary_emb=RotaryEmbedding(
+            ROPE_HEAD_DIM, ROPE_HEAD_DIM, 64, 10000, True, DTYPE
+        ).to(device),
         compatible_with_fused_kv_buffer=True,
     )
-    assert Qwen3TTSTalker._resolve_predictor_rope_store(attn, device=device)
-    stored = _rope_store_talker(device, stores=True)
+    stores = Qwen3TTSTalker._resolve_predictor_rope_store(attn, device=device)
+    stored = _rope_store_talker(device, stores=stores)
     copied = _rope_store_talker(device, stores=False)
 
     predictor_len = NUM_CODE_GROUPS + 1
@@ -1410,6 +1426,7 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
         assert torch.equal(stored._predictor_v_cache, copied._predictor_v_cache)
 
     written = stored._predictor_k_cache[0, :batch_size]
+    assert stores == (predictor_rope_dispatch == "cuda")
     assert bool(written.abs().sum() > 0)
     assert bool(stored._predictor_k_cache[0, batch_size:].abs().sum() == 0)
 

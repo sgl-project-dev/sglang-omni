@@ -11,6 +11,8 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Optional, Tuple
 
 import torch
+from sglang.kernels.fused_op import get_fused_op_backend
+from sglang.kernels.spec import KernelBackend
 from sglang.srt.batch_invariant_ops import is_batch_invariant_mode_enabled
 from sglang.srt.layers.logits_processor import LogitsProcessorOutput
 from sglang.srt.layers.quantization.unquant import (
@@ -1789,15 +1791,14 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
 
     @staticmethod
     def _resolve_predictor_rope_store(attn: Any, *, device: torch.device) -> bool:
-        """The predictor's rotary is sglang's plain RotaryEmbedding, which on
-        CUDA runs one kernel that rotates q and k and can store k and v into a
-        row cache in the same launch. The native forward of every other device
-        and the fallback kernel for head sizes it does not cover reject the
-        store argument, so those keep the copies."""
+        """Resolve store support before capture: a supported CUDA head size
+        does not imply CUDA dispatch when the backend override selects Torch."""
         return (
             device.type == "cuda"
             and attn.compatible_with_fused_kv_buffer
             and not attn.rotary_emb.use_fallback_kernel
+            and get_fused_op_backend()
+            not in (KernelBackend.TORCH, KernelBackend.TORCH_COMPILE)
         )
 
     def _predictor_cached_self_attention(
