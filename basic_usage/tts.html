@@ -232,6 +232,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/auk.html">AuK</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="current nav bd-sidenav">
@@ -609,6 +610,10 @@ for details.</p>
 <tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/zonos2.html"><span class="std std-doc">ZONOS2</span></a></p></td>
 <td><p><code class="docutils literal notranslate"><span class="pre">--model-path</span> <span class="pre">Zyphra/zonos2</span></code></p></td>
 <td><p>MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook)</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="../cookbook/auk.html"><span class="std std-doc">AuK</span></a></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--model-path</span></code> only</p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">tencent/AuK</span></code> and <code class="docutils literal notranslate"><span class="pre">tencent/AuK-Flash</span></code>. Instruction-driven generation and editing at 24 kHz. Reference audio is optional; speech requires <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code>. Downloads the separate Qwen2.5-Omni-3B encoder. Serial, non-streaming engine</p></td>
 </tr>
 </tbody>
 </table>

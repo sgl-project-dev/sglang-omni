@@ -8,7 +8,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
 
-    <title>Voxtral TTS &#8212; SGLang</title>
+    <title>AuK &#8212; SGLang</title>
   
   
   
@@ -49,15 +49,15 @@
     <script src="../_static/copybutton.js?v=ccdb6887"></script>
     <script src="../_static/scripts/sphinx-book-theme.js?v=fab101a9"></script>
     <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
-    <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook/voxtral_tts';</script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'cookbook/auk';</script>
     <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
     <script src="../_static/js/qwen3_omni_server_generator.js?v=d7738e8a"></script>
     <script src="../_static/js/ming_omni_server_generator.js?v=7979a72f"></script>
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
-    <link rel="next" title="Fish Audio S2-Pro" href="fishaudio_s2_pro.html" />
-    <link rel="prev" title="Higgs TTS" href="higgs_tts.html" />
+    <link rel="next" title="Omni Model Usage" href="../basic_usage/qwen3_omni.html" />
+    <link rel="prev" title="Fun-CosyVoice3" href="fun_cosyvoice3.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.4" />
@@ -214,7 +214,7 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
 <ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="higgs_tts.html">Higgs TTS</a></li>
-<li class="toctree-l1 current active"><a class="current reference internal" href="#">Voxtral TTS</a></li>
+<li class="toctree-l1"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
 <li class="toctree-l1"><a class="reference internal" href="qwen3_tts.html">Qwen3 TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ming_tts.html">Ming-Omni-TTS</a></li>
@@ -232,7 +232,7 @@
 <li class="toctree-l1"><a class="reference internal" href="ming_omni.html">Ming-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
-<li class="toctree-l1"><a class="reference internal" href="auk.html">AuK</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">AuK</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="nav bd-sidenav">
@@ -338,7 +338,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/voxtral_tts.md?plain=1" target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/blob/main/docs/cookbook/auk.md?plain=1" target="_blank"
    class="btn btn-sm btn-source-file-button dropdown-item"
    title="Show source"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -355,7 +355,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/cookbook/voxtral_tts.md" target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/edit/main/docs/cookbook/auk.md" target="_blank"
    class="btn btn-sm btn-source-edit-button dropdown-item"
    title="Suggest edit"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -372,7 +372,7 @@
       
       
       
-      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fcookbook/voxtral_tts.html&body=Your%20issue%20content%20here." target="_blank"
+      <li><a href="https://github.com/sgl-project/sglang-omni/issues/new?title=Issue%20on%20page%20%2Fcookbook/auk.html&body=Your%20issue%20content%20here." target="_blank"
    class="btn btn-sm btn-source-issues-button dropdown-item"
    title="Open an issue"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -402,7 +402,7 @@
       
       
       
-      <li><a href="../_sources/cookbook/voxtral_tts.md" target="_blank"
+      <li><a href="../_sources/cookbook/auk.md" target="_blank"
    class="btn btn-sm btn-download-source-button dropdown-item"
    title="Download source file"
    data-bs-placement="left" data-bs-toggle="tooltip"
@@ -485,7 +485,7 @@
               
 
 <div id="jb-print-docs-body" class="onlyprint">
-    <h1>Voxtral TTS</h1>
+    <h1>AuK</h1>
     <!-- Table of contents -->
     <div id="print-main-content">
         <div id="jb-print-toc">
@@ -496,19 +496,12 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#preset-voice">Preset Voice</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#named-voices">Named Voices</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
-</ul>
-</li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seedtts-evaluation">SeedTTS Evaluation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upstream-parity">Upstream Parity</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attribution">Attribution</a></li>
 </ul>
             </nav>
         </div>
@@ -520,218 +513,139 @@
 <div id="searchbox"></div>
                 <article class="bd-article">
                   
-  <section class="tex2jax_ignore mathjax_ignore" id="voxtral-tts">
-<h1>Voxtral TTS<a class="headerlink" href="#voxtral-tts" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/mistralai/Voxtral-4B-TTS-2603">Voxtral-4B-TTS</a> is an open-weights
-text-to-speech model from Mistral AI built on a Ministral-3B backbone. It generates lifelike
-24 kHz speech with natural prosody across 9 languages and ships with a set of preset named
-voices. In SGLang-Omni, Voxtral runs as a <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_generation</span> <span class="pre">→</span> <span class="pre">vocoder</span></code> pipeline
-and is served through the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
+  <section class="tex2jax_ignore mathjax_ignore" id="auk">
+<h1>AuK<a class="headerlink" href="#auk" title="Link to this heading">#</a></h1>
+<p><a class="reference external" href="https://huggingface.co/tencent/AuK">AuK</a> and <a class="reference external" href="https://huggingface.co/tencent/AuK-Flash">AuK-Flash</a> support instruction-driven speech generation and editing. They share a four-stage pipeline: preprocessing → conditioning → DiT sampling → VAE decoding. AuK-Flash is the DMD-distilled four-step recipe.</p>
+<p>The released checkpoints use:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Component</p></th>
+<th class="head"><p>Configuration</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>Conditioner</p></td>
+<td><p>Frozen Qwen2.5-Omni-3B Thinker, text and audio only</p></td>
+</tr>
+<tr class="row-odd"><td><p>DiT</p></td>
+<td><p>Flux-style MMDiT: 10 double-stream blocks, 20 single-stream blocks, dim=1536, 24 heads</p></td>
+</tr>
+<tr class="row-even"><td><p>VAE</p></td>
+<td><p>Shared reference encoder and audio decoder; 50 Hz, 64-channel latents</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Checkpoint</p></th>
+<th class="head"><p>Sampling</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><a class="reference external" href="https://huggingface.co/tencent/AuK"><code class="docutils literal notranslate"><span class="pre">tencent/AuK</span></code></a></p></td>
+<td><p>Euler, NFE=32, CFG=2.0, sway=-1.0</p></td>
+</tr>
+<tr class="row-odd"><td><p><a class="reference external" href="https://huggingface.co/tencent/AuK-Flash"><code class="docutils literal notranslate"><span class="pre">tencent/AuK-Flash</span></code></a></p></td>
+<td><p>Released four-step time grid, CFG=0. Factory <code class="docutils literal notranslate"><span class="pre">nfe</span></code> / <code class="docutils literal notranslate"><span class="pre">cfg_strength</span></code> / <code class="docutils literal notranslate"><span class="pre">sway_sampling_coef</span></code> are ignored</p></td>
+</tr>
+</tbody>
+</table>
+</div>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then install the Voxtral-specific tokenizer and download the model:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="c1"># Voxtral preprocessing uses Mistral's Tekken tokenizer from mistral-common.</span>
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">'mistral_common[audio]&gt;=1.11.0'</span>
-
-hf<span class="w"> </span>download<span class="w"> </span>mistralai/Voxtral-4B-TTS-2603
+<p>Follow <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>, then run from the repository root:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>tencent/AuK<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>The model repository is public, so no Hugging Face token is required.</p>
-</section>
-<section id="server-configuration">
-<h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
-<p>The pipeline is <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_generation</span> <span class="pre">→</span> <span class="pre">vocoder</span></code>.
-First startup can take several minutes while the <code class="docutils literal notranslate"><span class="pre">tts_generation</span></code> stage captures CUDA graphs.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--model-path<span class="w"> </span>mistralai/Voxtral-4B-TTS-2603<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/voxtral_tts.yaml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>python<span class="w"> </span>-m<span class="w"> </span>sglang_omni.cli<span class="w"> </span>serve<span class="w"> </span>--model-path<span class="w"> </span>tencent/AuK-Flash<span class="w"> </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
 </section>
-<section id="synthesizing-speech">
-<h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
-<section id="preset-voice">
-<h3>Preset Voice<a class="headerlink" href="#preset-voice" title="Link to this heading">#</a></h3>
-<p>Voxtral ships preset voices with the checkpoint. Use <code class="docutils literal notranslate"><span class="pre">cheerful_female</span></code> for the
-default preset voice.</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<section id="speech-generation">
+<h2>Speech Generation<a class="headerlink" href="#speech-generation" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> takes the text in <code class="docutils literal notranslate"><span class="pre">input</span></code>. Without reference audio, <code class="docutils literal notranslate"><span class="pre">instructions</span></code> describes the voice and defaults to <code class="docutils literal notranslate"><span class="pre">A</span> <span class="pre">clear,</span> <span class="pre">natural</span> <span class="pre">voice.</span></code> An explicit target duration is required in this mode:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "mistralai/Voxtral-4B-TTS-2603",</span>
-<span class="s1">    "voice": "cheerful_female",</span>
-<span class="s1">    "input": "SGLang-Omni is a great project!"</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.wav
+<span class="s1">    "input": "Welcome home.",</span>
+<span class="s1">    "instructions": "warm, relaxed female voice",</span>
+<span class="s1">    "stage_params": {"auk_engine": {"gen_seconds": 3}},</span>
+<span class="s1">    "seed": 1234,</span>
+<span class="s1">    "response_format": "wav"</span>
+<span class="s1">  }'</span><span class="w"> </span>--output<span class="w"> </span>speech.wav
 </pre></div>
 </div>
-</section>
-<section id="named-voices">
-<h3>Named Voices<a class="headerlink" href="#named-voices" title="Link to this heading">#</a></h3>
-<p>Voxtral speaks with <strong>preset named voices</strong> (it does not clone from a reference clip). Select
-one with the <code class="docutils literal notranslate"><span class="pre">voice</span></code> field:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<p>For voice cloning, provide <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> or one structured reference. The model uses a same-voice instruction and ignores the voice description. HTTP(S) URLs, audio data URLs, and server-local paths are accepted. To use a <code class="docutils literal notranslate"><span class="pre">file://</span></code> URL, start the server with <code class="docutils literal notranslate"><span class="pre">--allowed-local-media-path</span> <span class="pre">/abs/reference-dir</span></code> and reference a file within that directory, such as <code class="docutils literal notranslate"><span class="pre">file:///abs/reference-dir/reference.wav</span></code>. Without this flag, <code class="docutils literal notranslate"><span class="pre">file://</span></code> references return HTTP 400.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "mistralai/Voxtral-4B-TTS-2603",</span>
-<span class="s1">    "voice": "casual_male",</span>
-<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
-<span class="s1">    "max_new_tokens": 4096</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.wav
+<span class="s1">    "input": "Welcome home.",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">    "ref_text": "We asked over twenty different people, and they all said it was his.",</span>
+<span class="s1">    "seed": 1234,</span>
+<span class="s1">    "response_format": "wav"</span>
+<span class="s1">  }'</span><span class="w"> </span>--output<span class="w"> </span>speech.wav
 </pre></div>
 </div>
-<p>The available voices ship inside the checkpoint as <code class="docutils literal notranslate"><span class="pre">voice_embedding/*.pt</span></code> files. List them
-from your downloaded snapshot:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">MODEL_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>hf<span class="w"> </span>download<span class="w"> </span>mistralai/Voxtral-4B-TTS-2603<span class="w"> </span>--quiet<span class="k">)</span><span class="s2">"</span>
-ls<span class="w"> </span><span class="s2">"</span><span class="si">${</span><span class="nv">MODEL_PATH</span><span class="si">}</span><span class="s2">/voice_embedding"</span>
+<p>When <code class="docutils literal notranslate"><span class="pre">gen_seconds</span></code> is omitted, voice cloning requires the reference transcript (<code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, or <code class="docutils literal notranslate"><span class="pre">references[0].text</span></code>). Target duration is estimated as:</p>
+<div class="highlight-text notranslate"><div class="highlight"><pre><span></span>target_seconds = reference_seconds × UTF8_bytes(input) / UTF8_bytes(ref_text)
 </pre></div>
 </div>
-<section id="python">
-<h4>Python<a class="headerlink" href="#python" title="Link to this heading">#</a></h4>
-<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
-
-<span class="n">resp</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
-    <span class="s2">"http://localhost:8000/v1/audio/speech"</span><span class="p">,</span>
-    <span class="n">json</span><span class="o">=</span><span class="p">{</span>
-        <span class="s2">"model"</span><span class="p">:</span> <span class="s2">"mistralai/Voxtral-4B-TTS-2603"</span><span class="p">,</span>
-        <span class="s2">"voice"</span><span class="p">:</span> <span class="s2">"casual_male"</span><span class="p">,</span>
-        <span class="s2">"input"</span><span class="p">:</span> <span class="s2">"Get the trust fund to the bank early."</span><span class="p">,</span>
-        <span class="s2">"max_new_tokens"</span><span class="p">:</span> <span class="mi">4096</span><span class="p">,</span>
-    <span class="p">},</span>
-<span class="p">)</span>
-<span class="n">resp</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
-<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"output.wav"</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-    <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
-</pre></div>
-</div>
+<p>Explicit <code class="docutils literal notranslate"><span class="pre">gen_seconds</span></code> takes priority and must be positive. Target duration rounds up to 20 ms frames and is capped at 30 seconds by default. To change the cap, set <code class="docutils literal notranslate"><span class="pre">max_seconds</span></code> on both stages: <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_seconds</span></code> and <code class="docutils literal notranslate"><span class="pre">--auk_engine.factory.max_seconds</span></code>.</p>
 </section>
-</section>
-<section id="streaming">
-<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
-<p>Set <code class="docutils literal notranslate"><span class="pre">&quot;stream&quot;:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">&quot;response_format&quot;:</span> <span class="pre">&quot;pcm&quot;</span></code> to receive raw PCM audio
-chunks in real time:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-N<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<section id="speech-editing">
+<h2>Speech Editing<a class="headerlink" href="#speech-editing" title="Link to this heading">#</a></h2>
+<p><code class="docutils literal notranslate"><span class="pre">/generate</span></code> accepts a raw AuK instruction in <code class="docutils literal notranslate"><span class="pre">prompt</span></code> and returns JSON. Set <code class="docutils literal notranslate"><span class="pre">output_modalities</span></code> to <code class="docutils literal notranslate"><span class="pre">[&quot;audio&quot;]</span></code> and <code class="docutils literal notranslate"><span class="pre">return_logprob</span></code> to <code class="docutils literal notranslate"><span class="pre">false</span></code> (AuK does not produce token log probabilities). Supply reference audio through <code class="docutils literal notranslate"><span class="pre">metadata.tts_params.ref_audio</span></code>:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>http://localhost:8000/generate<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s1">'Content-Type: application/json'</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-<span class="s1">    "model": "mistralai/Voxtral-4B-TTS-2603",</span>
-<span class="s1">    "voice": "casual_male",</span>
-<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
-<span class="s1">    "stream": true,</span>
-<span class="s1">    "response_format": "pcm"</span>
-<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--output<span class="w"> </span>output.pcm
+<span class="s1">    "prompt": "Remove the background noise.",</span>
+<span class="s1">    "metadata": {"tts_params": {"ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"}},</span>
+<span class="s1">    "output_modalities": ["audio"],</span>
+<span class="s1">    "return_logprob": false</span>
+<span class="s1">  }'</span>
 </pre></div>
 </div>
-<p>Streaming returns <code class="docutils literal notranslate"><span class="pre">audio/pcm</span></code> 16-bit mono PCM bytes with sample-rate metadata in
-the response headers. See the <a class="reference internal" href="higgs_tts.html#streaming"><span class="std std-ref">Higgs TTS cookbook</span></a>
-for a full Python raw PCM consumer.</p>
+<p>Override duration with <code class="docutils literal notranslate"><span class="pre">stage_params.auk_engine.gen_seconds</span></code>. Otherwise, editing uses the source’s complete 20 ms frames, subject to the duration cap. Raw requests without reference audio or explicit duration default to 5 seconds.</p>
 </section>
+<section id="sampling">
+<h2>Sampling<a class="headerlink" href="#sampling" title="Link to this heading">#</a></h2>
+<p>Base AuK uses Euler integration with factory defaults <code class="docutils literal notranslate"><span class="pre">nfe=32</span></code>, <code class="docutils literal notranslate"><span class="pre">cfg_strength=2.0</span></code>, and <code class="docutils literal notranslate"><span class="pre">sway_sampling_coef=-1.0</span></code>. Override them with <code class="docutils literal notranslate"><span class="pre">--auk_engine.factory.*</span></code> flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on <code class="docutils literal notranslate"><span class="pre">tencent/AuK-Flash</span></code>. Request overrides of these settings and <code class="docutils literal notranslate"><span class="pre">max_seconds</span></code> are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.</p>
+<p><code class="docutils literal notranslate"><span class="pre">seed</span></code> initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.</p>
+<p>Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set <code class="docutils literal notranslate"><span class="pre">--conditioning.factory.max_batch_size</span></code>, <code class="docutils literal notranslate"><span class="pre">--auk_engine.factory.max_batch_size</span></code>, or <code class="docutils literal notranslate"><span class="pre">--decode.factory.max_batch_size</span></code> to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.</p>
 </section>
-<section id="request-parameters">
-<h2>Request Parameters<a class="headerlink" href="#request-parameters" title="Link to this heading">#</a></h2>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Parameter</p></th>
-<th class="head"><p>Default</p></th>
-<th class="head"><p>Notes</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model</span></code></p></td>
-<td><p>served model</p></td>
-<td><p>Served model identifier</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">input</span></code></p></td>
-<td><p>(required)</p></td>
-<td><p>Text to synthesize</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">voice</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">default</span></code></p></td>
-<td><p>Preset voice name from the checkpoint’s <code class="docutils literal notranslate"><span class="pre">voice_embedding/</span></code> directory</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">4096</span></code></p></td>
-<td><p>Maximum number of generated acoustic tokens</p></td>
-</tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">response_format</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">wav</span></code></p></td>
-<td><p>Output container (<code class="docutils literal notranslate"><span class="pre">wav</span></code>, <code class="docutils literal notranslate"><span class="pre">mp3</span></code>, <code class="docutils literal notranslate"><span class="pre">flac</span></code>, <code class="docutils literal notranslate"><span class="pre">opus</span></code>, <code class="docutils literal notranslate"><span class="pre">aac</span></code>, <code class="docutils literal notranslate"><span class="pre">pcm</span></code>)</p></td>
-</tr>
-<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
-<td><p>Stream raw PCM audio chunks</p></td>
-</tr>
-</tbody>
-</table>
+<section id="seedtts-evaluation">
+<h2>SeedTTS Evaluation<a class="headerlink" href="#seedtts-evaluation" title="Link to this heading">#</a></h2>
+<p>The standard benchmark detects <code class="docutils literal notranslate"><span class="pre">tencent/AuK</span></code> and <code class="docutils literal notranslate"><span class="pre">tencent/AuK-Flash</span></code> and starts the server from <code class="docutils literal notranslate"><span class="pre">--model-path</span></code>. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">CUDA_VISIBLE_DEVICES</span><span class="o">=</span><span class="m">0</span><span class="w"> </span>python<span class="w"> </span>-m<span class="w"> </span>benchmarks.eval.benchmark_tts_seedtts<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--model<span class="w"> </span>tencent/AuK<span class="w"> </span>--output-dir<span class="w"> </span>results/auk_en
+</pre></div>
 </div>
-<blockquote>
-<div><p>Voxtral generation is <strong>deterministic</strong>: the engine fixes <code class="docutils literal notranslate"><span class="pre">temperature</span></code> to <code class="docutils literal notranslate"><span class="pre">0.0</span></code>, so sampling
-parameters such as <code class="docutils literal notranslate"><span class="pre">top_p</span></code>, <code class="docutils literal notranslate"><span class="pre">top_k</span></code>, and <code class="docutils literal notranslate"><span class="pre">temperature</span></code> are not used. Reference-clip voice
-cloning (<code class="docutils literal notranslate"><span class="pre">references</span></code>) is <strong>not</strong> supported for Voxtral — use a preset <code class="docutils literal notranslate"><span class="pre">voice</span></code> instead.</p>
-</div></blockquote>
+<p>Add <code class="docutils literal notranslate"><span class="pre">--concurrency</span> <span class="pre">16</span></code> to evaluate with 16 in-flight requests. Use <code class="docutils literal notranslate"><span class="pre">--max-samples</span></code> and <code class="docutils literal notranslate"><span class="pre">--sample-offset</span></code> for a subset. <code class="docutils literal notranslate"><span class="pre">--generate-only</span></code> and <code class="docutils literal notranslate"><span class="pre">--transcribe-only</span></code> run individual phases; add <code class="docutils literal notranslate"><span class="pre">--use-existing-server</span></code> to either mode to use a running server. Explicit CLI options override the AuK defaults.</p>
+<p><code class="docutils literal notranslate"><span class="pre">wer_results.json</span></code> includes full sample mean WER, <code class="docutils literal notranslate"><span class="pre">wer_below_50_per_sample_mean</span></code> (excluding samples strictly above 50%), and <code class="docutils literal notranslate"><span class="pre">n_above_50_pct_wer</span></code>. Corpus WER is reported separately and is word-weighted.</p>
 </section>
-<section id="benchmark-results">
-<h2>Benchmark Results<a class="headerlink" href="#benchmark-results" title="Link to this heading">#</a></h2>
-<p>Seed-TTS EN (full set, 1088 utterances), bf16, <code class="docutils literal notranslate"><span class="pre">max_new_tokens=4096</span></code>,
-<code class="docutils literal notranslate"><span class="pre">--no-ref-audio</span> <span class="pre">--voice</span> <span class="pre">cheerful_female</span></code>, concurrency 16, WER scored with HF
-Whisper-large-v3. Hardware: 1× H200 SXM.</p>
-<div class="pst-scrollable-table-container"><table class="table">
-<thead>
-<tr class="row-odd"><th class="head"><p>Metric</p></th>
-<th class="head"><p>Value</p></th>
-</tr>
-</thead>
-<tbody>
-<tr class="row-even"><td><p>WER (corpus micro-avg)</p></td>
-<td><p>1.20%</p></td>
-</tr>
-<tr class="row-odd"><td><p>WER (per-sample mean / median)</p></td>
-<td><p>1.22% / 0.00%</p></td>
-</tr>
-<tr class="row-even"><td><p>WER (per-sample p95 / max)</p></td>
-<td><p>9.09% / 42.86%</p></td>
-</tr>
-<tr class="row-odd"><td><p>&gt;50% WER samples</p></td>
-<td><p>0 / 1088</p></td>
-</tr>
-<tr class="row-even"><td><p>Latency mean / median (s)</p></td>
-<td><p>2.94 / 2.86</p></td>
-</tr>
-<tr class="row-odd"><td><p>Latency p95 / p99 (s)</p></td>
-<td><p>4.56 / 5.37</p></td>
-</tr>
-<tr class="row-even"><td><p>RTF mean / median</p></td>
-<td><p>0.519 / 0.541</p></td>
-</tr>
-<tr class="row-odd"><td><p>Output throughput (tok/s)</p></td>
-<td><p>383.7</p></td>
-</tr>
-<tr class="row-even"><td><p>Throughput (req/s)</p></td>
-<td><p>5.40</p></td>
-</tr>
-<tr class="row-odd"><td><p>Completed / failed requests</p></td>
-<td><p>1088 / 0</p></td>
-</tr>
-</tbody>
-</table>
+<section id="upstream-parity">
+<h2>Upstream Parity<a class="headerlink" href="#upstream-parity" title="Link to this heading">#</a></h2>
+<p>The checkpoint test compares reference latents, fused Qwen conditioning, generated latents, and waveforms with upstream, with and without reference audio. It aligns the upstream process RNG with the request seed to compare the same random inputs. Install <code class="docutils literal notranslate"><span class="pre">torchdiffeq</span></code>, <code class="docutils literal notranslate"><span class="pre">qwen-omni-utils</span></code>, and <code class="docutils literal notranslate"><span class="pre">audioread</span></code> in addition to the serving dependencies, and use a GPU with memory for both implementations:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>pip<span class="w"> </span>install<span class="w"> </span>torchdiffeq<span class="w"> </span>qwen-omni-utils<span class="w"> </span>audioread
+git<span class="w"> </span>clone<span class="w"> </span>https://github.com/Tencent-Hunyuan/AuK.git<span class="w"> </span>/tmp/AuK
+git<span class="w"> </span>-C<span class="w"> </span>/tmp/AuK<span class="w"> </span>checkout<span class="w"> </span>d9f30ffe4231dbc90b48cc83a35d310fece0b060
+<span class="nv">AUK_UPSTREAM_SOURCE</span><span class="o">=</span>/tmp/AuK<span class="w"> </span><span class="se">\</span>
+<span class="nv">AUK_PARITY_CHECKPOINT</span><span class="o">=</span>tencent/AuK<span class="w"> </span><span class="se">\</span>
+python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/test_model/test_auk_parity.py<span class="w"> </span>-v
+</pre></div>
 </div>
-<p>Reproduce with the SeedTTS command documented in <code class="docutils literal notranslate"><span class="pre">benchmarks/README.md</span></code>. The Voxtral model card
-also quotes ~70 ms first-audio latency at concurrency 1; the table above is a throughput-oriented
-run at concurrency 16, so its RTF reflects batched load rather than the latency-optimized
-single-stream figure. Output is 24 kHz.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span><span class="nv">AUK_UPSTREAM_SOURCE</span><span class="o">=</span>/tmp/AuK<span class="w"> </span><span class="se">\</span>
+<span class="nv">AUK_PARITY_CHECKPOINT</span><span class="o">=</span>tencent/AuK-Flash<span class="w"> </span><span class="se">\</span>
+python<span class="w"> </span>-m<span class="w"> </span>pytest<span class="w"> </span>tests/test_model/test_auk_parity.py<span class="w"> </span>-v
+</pre></div>
+</div>
+<p><code class="docutils literal notranslate"><span class="pre">AUK_QWEN_CHECKPOINT</span></code> optionally selects a local encoder. The test skips unless both <code class="docutils literal notranslate"><span class="pre">AUK_UPSTREAM_SOURCE</span></code> and <code class="docutils literal notranslate"><span class="pre">AUK_PARITY_CHECKPOINT</span></code> are set.</p>
 </section>
-<section id="known-limitations">
-<h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
-<ul class="simple">
-<li><p><strong>Preset voices only.</strong> Voxtral selects from named voices baked into the checkpoint; it does
-not clone an arbitrary speaker from a reference clip in this engine.</p></li>
-<li><p><strong>Deterministic decoding.</strong> <code class="docutils literal notranslate"><span class="pre">temperature</span></code> is fixed at <code class="docutils literal notranslate"><span class="pre">0.0</span></code>; you cannot trade determinism for
-diversity through sampling parameters.</p></li>
-<li><p><strong>Language coverage.</strong> Quality is tuned for the 9 supported languages (English, French,
-Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).</p></li>
-<li><p><strong>Non-commercial license.</strong> The weights are CC BY-NC 4.0; commercial use is not permitted.</p></li>
-</ul>
+<section id="attribution">
+<h2>Attribution<a class="headerlink" href="#attribution" title="Link to this heading">#</a></h2>
+<p>The implementation derives from <a class="reference external" href="https://github.com/Tencent-Hunyuan/AuK">Tencent-Hunyuan/AuK</a> at the revision above. Its MIT notice is preserved in <code class="docutils literal notranslate"><span class="pre">sglang_omni/models/auk/LICENSE</span></code>. The VAE source also retains NVIDIA and alias-free-torch attribution.</p>
 </section>
 </section>
 
@@ -747,20 +661,20 @@ Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).</p></li>
                   
 <div class="prev-next-area">
     <a class="left-prev"
-       href="higgs_tts.html"
+       href="fun_cosyvoice3.html"
        title="previous page">
       <i class="fa-solid fa-angle-left"></i>
       <div class="prev-next-info">
         <p class="prev-next-subtitle">previous</p>
-        <p class="prev-next-title">Higgs TTS</p>
+        <p class="prev-next-title">Fun-CosyVoice3</p>
       </div>
     </a>
     <a class="right-next"
-       href="fishaudio_s2_pro.html"
+       href="../basic_usage/qwen3_omni.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">Fish Audio S2-Pro</p>
+        <p class="prev-next-title">Omni Model Usage</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
@@ -783,19 +697,12 @@ Spanish, German, Italian, Portuguese, Dutch, Arabic, Hindi).</p></li>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#preset-voice">Preset Voice</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#named-voices">Named Voices</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
-</ul>
-</li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming">Streaming</a></li>
-</ul>
-</li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#request-parameters">Request Parameters</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmark-results">Benchmark Results</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-generation">Speech Generation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#speech-editing">Speech Editing</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#sampling">Sampling</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#seedtts-evaluation">SeedTTS Evaluation</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#upstream-parity">Upstream Parity</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#attribution">Attribution</a></li>
 </ul>
   </nav></div>
 
