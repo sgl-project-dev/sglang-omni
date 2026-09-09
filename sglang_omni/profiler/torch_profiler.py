@@ -1,10 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
-# Adapted from vLLM-Omni diffusion profiler (Apache 2.0 licensed)
-# Original files:
-# - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/torch_profiler.py
-
 import logging
 import os
 import subprocess
@@ -14,6 +10,11 @@ from contextlib import nullcontext
 from torch.profiler import ProfilerActivity, profile
 
 from .base_profiler import ProfilerBase
+
+# Adapted from vLLM-Omni diffusion profiler (Apache 2.0 licensed)
+# Original files:
+# - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/torch_profiler.py
+
 
 logging.basicConfig(
     level=logging.INFO,
