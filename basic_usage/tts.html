@@ -231,6 +231,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/qwen3_omni.html">Qwen3-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/ming_omni.html">Ming-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="../cookbook/llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../cookbook/fun_cosyvoice3.html">Fun-CosyVoice3</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="current nav bd-sidenav">
@@ -586,7 +587,7 @@ for details.</p>
 <td><p>Text-only synthesis or one local reference clip with its transcript; streaming; the provided config uses TP1</p></td>
 </tr>
 <tr class="row-even"><td><p><a class="reference internal" href="../cookbook/fun_cosyvoice3.html"><span class="std std-doc">Fun-CosyVoice3</span></a></p></td>
-<td><p><code class="docutils literal notranslate"><span class="pre">examples/configs/fun_cosyvoice3_0_5b.yaml</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">--model-path</span></code> only</p></td>
 <td><p>Requires one reference audio clip via <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> or <code class="docutils literal notranslate"><span class="pre">references</span></code>. Supports zero-shot cloning, cross-lingual, instruct mode, causal streaming, and buffered speed control</p></td>
 </tr>
 <tr class="row-odd"><td><p><a class="reference internal" href="../cookbook/moss_tts.html"><span class="std std-doc">MOSS-TTS</span></a></p></td>
@@ -721,7 +722,6 @@ MeanFlow-only for now. <code class="docutils literal notranslate"><span class="p
 <p>For Fun-CosyVoice3:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-media-domain<span class="w"> </span>huggingface.co<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-media-domain<span class="w"> </span>cas-bridge.xethub.hf.co<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--allowed-media-domain<span class="w"> </span>us.aws.cdn.hf.co<span class="w"> </span><span class="se">\</span>

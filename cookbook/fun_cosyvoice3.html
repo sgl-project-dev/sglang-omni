@@ -56,6 +56,8 @@
     <link rel="icon" href="../_static/logo.ico"/>
     <link rel="index" title="Index" href="../genindex.html" />
     <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="Omni Model Usage" href="../basic_usage/qwen3_omni.html" />
+    <link rel="prev" title="LLaDA2.0-Uni" href="llada2_uni.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.4" />
@@ -158,8 +160,6 @@
       
       
       
-        
-      
       <dialog id="pst-primary-sidebar-modal"></dialog>
       <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
         
@@ -212,7 +212,7 @@
 <li class="toctree-l1"><a class="reference internal" href="../get_started/installation_cpu.html">🚀 Installation — Intel CPU</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Cookbook</span></p>
-<ul class="nav bd-sidenav">
+<ul class="current nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="higgs_tts.html">Higgs TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="voxtral_tts.html">Voxtral TTS</a></li>
 <li class="toctree-l1"><a class="reference internal" href="fishaudio_s2_pro.html">Fish Audio S2-Pro</a></li>
@@ -231,6 +231,7 @@
 <li class="toctree-l1"><a class="reference internal" href="qwen3_omni.html">Qwen3-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="ming_omni.html">Ming-Omni</a></li>
 <li class="toctree-l1"><a class="reference internal" href="llada2_uni.html">LLaDA2.0-Uni</a></li>
+<li class="toctree-l1 current active"><a class="current reference internal" href="#">Fun-CosyVoice3</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">General Usage</span></p>
 <ul class="nav bd-sidenav">
@@ -494,17 +495,8 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
-</ul>
-</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
-</ul>
-</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-based-style-control">Instruction-based Style Control</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speed-control">Speed Control</a></li>
@@ -512,6 +504,22 @@
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-optimization">Serving Optimization</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vocoder-configuration">Vocoder Configuration</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Zero-shot Voice Cloning</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Cross-lingual Synthesis</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Instruction-based Style Control</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Speed Control</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id5">Streaming</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id6">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-architecture">Model Architecture</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
@@ -528,20 +536,15 @@
                   
   <section class="tex2jax_ignore mathjax_ignore" id="fun-cosyvoice3">
 <h1>Fun-CosyVoice3<a class="headerlink" href="#fun-cosyvoice3" title="Link to this heading">#</a></h1>
-<p><a class="reference external" href="https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512">Fun-CosyVoice3-0.5B</a> is a
-lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
-It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens),
-conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
-speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and
-instruction-based style control. The model produces 24 kHz speech at a
-25 Hz token frame rate through the <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code> pipeline and the
-OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
+<p><a class="reference external" href="https://huggingface.co/FunAudioLLM/Fun-CosyVoice3-0.5B-2512">Fun-CosyVoice3-0.5B</a> is a lightweight text-to-speech model (0.5B parameters) from the FunAudioLLM team at Alibaba.
+It uses a Qwen2.5-0.5B backbone with FSQ speech tokens (vocab = 6561 + 200 special tokens), conditioned on a CAMPPlus speaker embedding and prompt speech tokens extracted via an ONNX
+speech tokenizer. It supports zero-shot voice cloning, cross-lingual synthesis, and instruction-based style control. The model produces 24 kHz speech at a rate of 25 Hz token frame rate through the <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code> pipeline and the OpenAI-compatible <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> endpoint.</p>
 <section id="prerequisites">
 <h2>Prerequisites<a class="headerlink" href="#prerequisites" title="Link to this heading">#</a></h2>
-<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> by following <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
-<p>Fun-CosyVoice3 depends on the <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package:</p>
+<p>Install <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> from source as in <a class="reference internal" href="../get_started/installation.html"><span class="std std-doc">Installation</span></a>.</p>
+<p>Fun-CosyVoice3 needs <code class="docutils literal notranslate"><span class="pre">sox</span></code> and a few extra Python packages. From the repository root, install the extra against <strong>this checkout</strong>:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>apt-get<span class="w"> </span>update<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>apt-get<span class="w"> </span>install<span class="w"> </span>-y<span class="w"> </span>sox
-uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span><span class="s2">"sglang-omni[fun-cosyvoice3]"</span>
+uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>-e<span class="w"> </span><span class="s2">".[fun-cosyvoice3]"</span>
 </pre></div>
 </div>
 <p>Clone the CosyVoice repository with its Matcha-TTS submodule and add both to <code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>:</p>
@@ -556,144 +559,288 @@ git<span class="w"> </span>-C<span class="w"> </span><span class="si">${</span><
 <span class="nb">export</span><span class="w"> </span><span class="nv">PYTHONPATH</span><span class="o">=</span><span class="s2">"</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">:</span><span class="si">${</span><span class="nv">COSYVOICE_PATH</span><span class="si">}</span><span class="s2">/third_party/Matcha-TTS:</span><span class="nv">$PYTHONPATH</span><span class="s2">"</span>
 </pre></div>
 </div>
-<p><strong>Do not</strong> run <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-r</span> <span class="pre">requirements.txt</span></code> from the CosyVoice checkout. That file pins
-<code class="docutils literal notranslate"><span class="pre">torch</span></code>, <code class="docutils literal notranslate"><span class="pre">torchaudio</span></code>, <code class="docutils literal notranslate"><span class="pre">transformers</span></code>, and <code class="docutils literal notranslate"><span class="pre">diffusers</span></code> versions that conflict with the
-<code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> core pins — only the <code class="docutils literal notranslate"><span class="pre">fun-cosyvoice3</span></code> extra above and the two <code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code>
-entries are needed; the CosyVoice Flow and HiFT modules import fine against the
-<code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> versions of those shared packages.</p>
-<p>The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, which use
-the <code class="docutils literal notranslate"><span class="pre">onnxruntime</span></code> already pinned in <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>’s core dependencies.</p>
+<p><strong>Do not</strong> run <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">-r</span> <span class="pre">requirements.txt</span></code> from the CosyVoice checkout. That file pins <code class="docutils literal notranslate"><span class="pre">torch</span></code>, <code class="docutils literal notranslate"><span class="pre">torchaudio</span></code>, <code class="docutils literal notranslate"><span class="pre">transformers</span></code>, and <code class="docutils literal notranslate"><span class="pre">diffusers</span></code> versions that conflict with the <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> core pins. Only the <code class="docutils literal notranslate"><span class="pre">fun-cosyvoice3</span></code> extra above and the two <code class="docutils literal notranslate"><span class="pre">PYTHONPATH</span></code> entries are needed; the CosyVoice Flow and HiFT modules import fine against the <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> versions of those shared packages.</p>
+<p>The checkpoint includes ONNX models for the speech tokenizer and speaker encoder, which use the <code class="docutils literal notranslate"><span class="pre">onnxruntime</span></code> already pinned in <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code>’s core dependencies.</p>
 <p>Download the checkpoint:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>hf<span class="w"> </span>download<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512
 </pre></div>
 </div>
-</section>
-<section id="server-configuration">
-<h2>Server Configuration<a class="headerlink" href="#server-configuration" title="Link to this heading">#</a></h2>
-<p>The pipeline is <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code>. First startup can take several
-minutes while the <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> captures CUDA graphs.</p>
+<p>The pipeline is <code class="docutils literal notranslate"><span class="pre">preprocessing</span> <span class="pre">→</span> <span class="pre">tts_engine</span> <span class="pre">→</span> <span class="pre">vocoder</span></code>. First startup can take several minutes while the <code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> captures CUDA graphs.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+</section>
+<section id="synthesizing-speech">
+<h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
+<section id="zero-shot-voice-cloning">
+<h3>Zero-shot Voice Cloning<a class="headerlink" href="#zero-shot-voice-cloning" title="Link to this heading">#</a></h3>
+<p>CosyVoice3 clones a voice from a short reference audio clip. <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> can be a local path, file URL, data URL, or HTTP URL. <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> (the transcript of the reference clip) is optional but recommended for better alignment.</p>
+<ol class="arabic simple">
+<li><p>Using CURL:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",</span>
+<span class="s1">    "input": "SGLang-Omni makes text-to-speech fast and easy to deploy.",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">    "ref_text": "We asked over twenty different people, and they all said it was his."</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>Using Python:</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
+
+<span class="n">resp</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
+    <span class="s2">"http://localhost:8000/v1/audio/speech"</span><span class="p">,</span>
+    <span class="n">json</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"model"</span><span class="p">:</span> <span class="s2">"FunAudioLLM/Fun-CosyVoice3-0.5B-2512"</span><span class="p">,</span>
+        <span class="s2">"input"</span><span class="p">:</span> <span class="s2">"Get the trust fund to the bank early."</span><span class="p">,</span>
+        <span class="s2">"ref_audio"</span><span class="p">:</span> <span class="s2">"https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span><span class="p">,</span>
+        <span class="s2">"ref_text"</span><span class="p">:</span> <span class="s2">"We asked over twenty different people, and they all said it was his."</span><span class="p">,</span>
+    <span class="p">},</span>
+<span class="p">)</span>
+<span class="n">resp</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"output.wav"</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+    <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="cross-lingual-synthesis">
+<h3>Cross-lingual Synthesis<a class="headerlink" href="#cross-lingual-synthesis" title="Link to this heading">#</a></h3>
+<p>CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a different language than the synthesis text. Omit <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> to enter cross-lingual mode.</p>
+<ol class="arabic simple">
+<li><p>Using CURL:</p></li>
+</ol>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",</span>
+<span class="s1">    "input": "今天天气真好，我们一起出去散步吧。",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+<ol class="arabic simple" start="2">
+<li><p>Using Python:</p></li>
+</ol>
+<div class="highlight-python notranslate"><div class="highlight"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">requests</span>
+
+<span class="n">resp</span> <span class="o">=</span> <span class="n">requests</span><span class="o">.</span><span class="n">post</span><span class="p">(</span>
+    <span class="s2">"http://localhost:8000/v1/audio/speech"</span><span class="p">,</span>
+    <span class="n">json</span><span class="o">=</span><span class="p">{</span>
+        <span class="s2">"model"</span><span class="p">:</span> <span class="s2">"FunAudioLLM/Fun-CosyVoice3-0.5B-2512"</span><span class="p">,</span>
+        <span class="s2">"input"</span><span class="p">:</span> <span class="s2">"今天天气真好，我们一起出去散步吧。"</span><span class="p">,</span>
+        <span class="s2">"ref_audio"</span><span class="p">:</span> <span class="s2">"https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"</span><span class="p">,</span>
+    <span class="p">},</span>
+<span class="p">)</span>
+<span class="n">resp</span><span class="o">.</span><span class="n">raise_for_status</span><span class="p">()</span>
+<span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">"output.wav"</span><span class="p">,</span> <span class="s2">"wb"</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
+    <span class="n">f</span><span class="o">.</span><span class="n">write</span><span class="p">(</span><span class="n">resp</span><span class="o">.</span><span class="n">content</span><span class="p">)</span>
+</pre></div>
+</div>
+</section>
+<section id="instruction-based-style-control">
+<h3>Instruction-based Style Control<a class="headerlink" href="#instruction-based-style-control" title="Link to this heading">#</a></h3>
+<p>Pass <code class="docutils literal notranslate"><span class="pre">instructions</span></code> to guide prosody, emotion, or speaking style:</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",</span>
+<span class="s1">    "input": "Welcome to our annual developer conference.",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">    "instructions": "Speak in a cheerful and energetic tone, as if addressing a large audience."</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+</section>
+<section id="speed-control">
+<h3>Speed Control<a class="headerlink" href="#speed-control" title="Link to this heading">#</a></h3>
+<p>Adjust playback speed with <code class="docutils literal notranslate"><span class="pre">speed</span></code> (default <code class="docutils literal notranslate"><span class="pre">1.0</span></code>):</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",</span>
+<span class="s1">    "input": "This is spoken at one point three times normal speed.",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">    "speed": 1.3</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.wav
+</pre></div>
+</div>
+</section>
+<section id="streaming">
+<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
+<p>Incremental Flow + HiFT decoding supports streaming. Set <code class="docutils literal notranslate"><span class="pre">stream:</span> <span class="pre">true</span></code> and <code class="docutils literal notranslate"><span class="pre">response_format:</span> <span class="pre">&quot;pcm&quot;</span></code> to emit audio before AR generation completes. The vocoder uses CosyVoice3’s causal chunk loop: 25 speech tokens per hop (~1 s of audio). The first PCM chunk is emitted once AR produces <code class="docutils literal notranslate"><span class="pre">28</span> <span class="pre">+</span> <span class="pre">prompt_pad</span></code> tokens (where <code class="docutils literal notranslate"><span class="pre">prompt_pad</span></code> rounds the Flow prompt length to a 25-token multiple). Later hops grow from 25 to 50 to 100 tokens in vocoder to increase batching efficiency without affecting audio continuity or real-time factor, only the decoding granularity changes, not the total synthesis time. The scheduler processes at most one hop per request per step to prevent backlogged streams from monopolizing the GPU. Non-streaming requests decode the entire utterance in one pass.</p>
+<p>Optional serving knobs (vocoder factory):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Factory arg</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">token_hop_len</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">25</span></code></p></td>
+<td><p>Base hop size; must match training chunk size</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">token_max_hop_len</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">100</span></code></p></td>
+<td><p>Cap for <code class="docutils literal notranslate"><span class="pre">25</span> <span class="pre">→</span> <span class="pre">50</span> <span class="pre">→</span> <span class="pre">100</span></code> growth</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">disable_hop_growth</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Leave off; growth ON performs better at high concurrency</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
+<span class="s1">    "model": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512",</span>
+<span class="s1">    "input": "Get the trust fund to the bank early.",</span>
+<span class="s1">    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",</span>
+<span class="s1">    "ref_text": "We asked over twenty different people, and they all said it was his.",</span>
+<span class="s1">    "stream": true,</span>
+<span class="s1">    "response_format": "pcm"</span>
+<span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--output<span class="w"> </span>output.pcm
+</pre></div>
+</div>
+</section>
+</section>
+<section id="generation-parameters">
+<h2>Generation Parameters<a class="headerlink" href="#generation-parameters" title="Link to this heading">#</a></h2>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Parameter</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Notes</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">model</span></code></p></td>
+<td><p>served model</p></td>
+<td><p>Served model identifier</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">input</span></code></p></td>
+<td><p>(required)</p></td>
+<td><p>Text to synthesize</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">ref_audio</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Reference audio for voice cloning (path / URL / data URL)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">ref_text</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Transcript of the reference audio. Improves cloning quality; omit for cross-lingual mode</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">instructions</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Instruction text for style/prosody/emotion guidance</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">speed</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.0</span></code></p></td>
+<td><p>Playback speed multiplier</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">temperature</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.7</span></code></p></td>
+<td><p>Sampling temperature</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">top_p</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">0.8</span></code></p></td>
+<td><p>Top-p sampling</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">top_k</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">20</span></code></p></td>
+<td><p>Top-k sampling</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">repetition_penalty</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">1.1</span></code></p></td>
+<td><p>Repetition penalty</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">min(2048,</span> <span class="pre">20x</span> <span class="pre">target</span> <span class="pre">text</span> <span class="pre">tokens)</span></code></p></td>
+<td><p>Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least <code class="docutils literal notranslate"><span class="pre">2x</span></code> that length has been generated</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">seed</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Random seed for reproducibility</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">stream</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">false</span></code></p></td>
+<td><p>Incremental causal Flow + HiFT; first PCM chunk after <code class="docutils literal notranslate"><span class="pre">28</span> <span class="pre">+</span> <span class="pre">prompt_pad</span></code> speech tokens (<code class="docutils literal notranslate"><span class="pre">prompt_pad</span></code> rounds the prompt length to a multiple of 25)</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+</section>
+<section id="serving-optimization">
+<h2>Serving Optimization<a class="headerlink" href="#serving-optimization" title="Link to this heading">#</a></h2>
 <section id="flow-decoder-batching">
 <h3>Flow Decoder Batching<a class="headerlink" href="#flow-decoder-batching" title="Link to this heading">#</a></h3>
-<p>The buffered vocoder uses the batch-capable <code class="docutils literal notranslate"><span class="pre">FunCosyVoice3Flow.inference</span></code> API for every
-request. <code class="docutils literal notranslate"><span class="pre">SimpleScheduler</span></code> collects up to 16 requests for at most 30 ms, then the vocoder
-groups requests by total mel length in 50-frame buckets. Every bucket, including a
-single-request bucket, calls the same built-in Flow inference method; packing, padding,
-masking, CFM Euler/CFG, and output unpadding are handled inside the Flow implementation.
-The 50-frame default matches the current DiT estimator’s static chunk size; a larger bucket
-can combine more requests at the cost of additional padding, compute, and peak GPU memory.</p>
-<p>The scheduler uses a bucket-rounded Flow admission budget, configured by
-<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code> (8,000 by default). It controls whether a later request joins the
-current Flow batch; it is not a maximum supported request length. A request whose total
-prompt-plus-output mel length exceeds that budget runs as a B=1 Flow batch through the same
-adapter, and later requests wait for the next scheduler batch. This preserves valid long
-generations while preventing them from being combined with more work.</p>
-<p>HiFT is batched the same way: the mels from one Flow bucket are right-zero-padded into a single
-tensor, decoded in one HiFT call, and sliced back to each request’s true length, under the
-padding budget <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code> (1.5 by default; <code class="docutils literal notranslate"><span class="pre">1.0</span></code> only groups requests that need no
-padding at all). HiFT is prepared for this at load time by folding away its <code class="docutils literal notranslate"><span class="pre">weight_norm</span></code>
-parametrizations. Right-zero-padding matches the zero padding HiFT applies in single-request
-inference, so batched output is identical except in the final mel frame of padded requests.</p>
-<p>The built-in Flow implementation supports the pinned CosyVoice PyTorch estimator, an opt-in
-TensorRT estimator (see below), and buffered <code class="docutils literal notranslate"><span class="pre">streaming=False,</span> <span class="pre">finalize=True</span></code> inference only.</p>
+<p>The buffered vocoder batches requests through a two-stage pipeline. The scheduler collects up to 16 requests over at most 30 ms, then groups them by mel length in 50-frame buckets. Each bucket, including single-request buckets, invokes <code class="docutils literal notranslate"><span class="pre">Flow.inference()</span></code> once, where padding, masking, and CFM decoding are handled internally. To prevent long requests from blocking later ones, a bucket-rounded admission budget (<code class="docutils literal notranslate"><span class="pre">flow_batch_admission_frames</span></code>, default 8000 frames) controls batch assembly; requests exceeding this budget run as independent <code class="docutils literal notranslate"><span class="pre">B=1</span></code> batches.</p>
+<p>HiFT vocoding follows the same batching pattern. Mels from a Flow bucket are right-zero-padded into a single tensor, decoded in one HiFT call, and sliced back to each request’s true length. The padding budget (<code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>, default 1.5) limits wasted computation; since right-padding matches HiFT’s single-request behavior, batched output is equivalent to individual inference except on padded frames. This design trades off throughput against latency while maintaining output correctness.</p>
 <p>Change the mel-frame bucket size, for example to 100 frames:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--vocoder.factory.flow_batch_bucket_frames<span class="w"> </span><span class="m">100</span>
 </pre></div>
 </div>
-<p>The same setting can be written in the pipeline config under the vocoder’s
-<code class="docutils literal notranslate"><span class="pre">factory</span></code> group:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">flow_batch_bucket_frames</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100</span>
-</pre></div>
-</div>
-<p>Increase the normal Flow batching budget only after measuring the target GPU. This changes the
-maximum aggregate padded work admitted into one scheduler batch; it does not reject a longer
-single request.</p>
+<p>This would increase the throughput at the cost of latency and higher peak GPU memory. Increase the normal Flow batching budget only after measuring the target GPU.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--vocoder.factory.flow_batch_admission_frames<span class="w"> </span><span class="m">4000</span>
 </pre></div>
 </div>
-<p>The YAML equivalent is:</p>
-<div class="highlight-yaml notranslate"><div class="highlight"><pre><span></span><span class="nt">stages</span><span class="p">:</span>
-<span class="w">  </span><span class="nt">vocoder</span><span class="p">:</span>
-<span class="w">    </span><span class="nt">factory</span><span class="p">:</span>
-<span class="w">      </span><span class="nt">flow_batch_admission_frames</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4000</span>
-</pre></div>
-</div>
-<p>The remaining vocoder <code class="docutils literal notranslate"><span class="pre">factory</span></code> options are <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> (16) and <code class="docutils literal notranslate"><span class="pre">max_batch_wait_ms</span></code> (30)
-for the scheduler batch, <code class="docutils literal notranslate"><span class="pre">dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">bfloat16</span></code>) for the Flow autocast, <code class="docutils literal notranslate"><span class="pre">hift_dtype</span></code> (<code class="docutils literal notranslate"><span class="pre">float32</span></code>,
-independent of <code class="docutils literal notranslate"><span class="pre">dtype</span></code>; <code class="docutils literal notranslate"><span class="pre">bfloat16</span></code> measured no faster for HiFT on H200 and lowers output fidelity)
-for the HiFT autocast, <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>, and <code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>
-(see below; mutually exclusive DiT accelerators). The
-<code class="docutils literal notranslate"><span class="pre">tts_engine</span></code> stage takes <code class="docutils literal notranslate"><span class="pre">onnx_intra_op_threads</span></code> (16) for the speech tokenizer and speaker
-encoder ONNX sessions, and <code class="docutils literal notranslate"><span class="pre">preprocessing</span></code> takes <code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code> (8) for concurrent reference
-conditioning.</p>
-<p>The built-in Flow implementation is tied to the Flow/CFM structure in the documented CosyVoice commit
-<code class="docutils literal notranslate"><span class="pre">074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc</span></code>. It does not patch the CosyVoice source on disk; an
-incompatible Flow structure fails directly instead of using a fallback implementation.</p>
+<p>On the other hand, decrease the admission budget to reduce latency and lower peak GPU memory.</p>
+</section>
+<section id="vocoder-configuration">
+<h3>Vocoder Configuration<a class="headerlink" href="#vocoder-configuration" title="Link to this heading">#</a></h3>
+<p>Vocoder configuration controls batching, precision, and acceleration. The scheduler accepts <code class="docutils literal notranslate"><span class="pre">max_batch_size</span></code> (16) and <code class="docutils literal notranslate"><span class="pre">max_batch_wait_ms</span></code> (30) to tune batch assembly. Flow uses <code class="docutils literal notranslate"><span class="pre">dtype</span></code> (bfloat16) for autocast, while HiFT uses <code class="docutils literal notranslate"><span class="pre">hift_dtype</span></code> (float32), independent of Flow; bfloat16 shows no speedup on H200 and reduces fidelity. Two mutually exclusive accelerators are available: <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code> and <code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>.</p>
+<p>The TTS engine stage accepts <code class="docutils literal notranslate"><span class="pre">onnx_intra_op_threads</span></code> (16) for the speech tokenizer and speaker encoder ONNX sessions. Preprocessing takes <code class="docutils literal notranslate"><span class="pre">max_concurrency</span></code> (8) to limit concurrent reference conditioning requests.</p>
 </section>
 <section id="torch-compile-for-the-dit-backbone">
 <h3>torch.compile for the DiT backbone<a class="headerlink" href="#torch-compile-for-the-dit-backbone" title="Link to this heading">#</a></h3>
-<p>The flow decoder’s DiT backbone (<code class="docutils literal notranslate"><span class="pre">flow.decoder.estimator</span></code>, a 22-layer DiT invoked
-once per Euler step) is compiled with <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> to reduce per-step
-kernel-launch overhead. It is on by default unless the TensorRT estimator below
-is enabled. The compile pays a one-time cost of about 100 s at startup with an
-empty inductor cache and uses <code class="docutils literal notranslate"><span class="pre">dynamic=True</span></code>, so one symbolic-sequence-length
-graph serves every utterance length.</p>
-<p>Run the estimator eager instead by overriding the vocoder stage’s <code class="docutils literal notranslate"><span class="pre">factory</span></code> args
-(the <code class="docutils literal notranslate"><span class="pre">stages.</span></code> prefix is implied in the CLI dotted path), for example to shorten
-startup during development:</p>
+<p><code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> is off by default. Enable it when you want the lowest DiT kernel-launch overhead. The first startup with an empty Inductor cache takes about 100 s and builds one symbolic (<code class="docutils literal notranslate"><span class="pre">dynamic=True</span></code>) graph for every utterance length; later starts reuse that cache. Keep the cache so you do not pay the compile cost again (<code class="docutils literal notranslate"><span class="pre">~/.cache/torch/inductor</span></code>, or <code class="docutils literal notranslate"><span class="pre">TORCHINDUCTOR_CACHE_DIR</span></code>).</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--vocoder.factory.enable_dit_torch_compile<span class="w"> </span><span class="nb">false</span><span class="w"> </span><span class="se">\</span>
+<span class="w">  </span>--vocoder.factory.enable_dit_torch_compile<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
+<p>Do not enable it together with TensorRT.</p>
 </section>
 <section id="tensorrt-for-the-dit-backbone">
 <h3>TensorRT for the DiT backbone<a class="headerlink" href="#tensorrt-for-the-dit-backbone" title="Link to this heading">#</a></h3>
-<p>The same <code class="docutils literal notranslate"><span class="pre">flow.decoder.estimator</span></code> can be replaced with a TensorRT engine built
-from the checkpoint’s bundled ONNX (<code class="docutils literal notranslate"><span class="pre">flow.decoder.estimator.fp32.onnx</span></code> is
-preferred). This is opt-in: TensorRT is not a <code class="docutils literal notranslate"><span class="pre">sglang-omni</span></code> extra, first
-startup builds and caches a <code class="docutils literal notranslate"><span class="pre">.plan</span></code> under <code class="docutils literal notranslate"><span class="pre">COSYVOICE3_TRT_CACHE</span></code> or
-<code class="docutils literal notranslate"><span class="pre">~/.cache/sglang-omni/cosyvoice3_trt</span></code>, and the official CosyVoice ONNX freezes
-CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
-The engine is attached as an <code class="docutils literal notranslate"><span class="pre">nn.Module</span></code> wrapper (<code class="docutils literal notranslate"><span class="pre">FlowEstimatorTRTModule</span></code>)
-so CosyVoice does not take its raw <code class="docutils literal notranslate"><span class="pre">execute_async_v3</span></code> path. Packed Flow
-(CFG batch = <code class="docutils literal notranslate"><span class="pre">2</span> <span class="pre">*</span> <span class="pre">request_batch</span></code>) still works by chunking request-wise
-cond/uncond pairs into that CFG=2 engine; out-of-profile <code class="docutils literal notranslate"><span class="pre">T</span></code> falls back to
-the original PyTorch DiT.</p>
-<p>TensorRT and <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code> both replace the same DiT, so they are mutually
-exclusive. Enabling TensorRT skips the default compile on its own, setting both
-flags to true is rejected:</p>
+<p>TensorRT accelerates the DiT by building a cached <code class="docutils literal notranslate"><span class="pre">.plan</span></code> engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive.</p>
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>uv<span class="w"> </span>pip<span class="w"> </span>install<span class="w"> </span>tensorrt
+</pre></div>
+</div>
+<p>See NVIDIA’s <a class="reference external" href="https://docs.nvidia.com/deeplearning/tensorrt/latest/installing-tensorrt/install-pip.html">pip install guide</a> for more details.</p>
+<p>Enable the flag:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>sgl-omni<span class="w"> </span>serve<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--model-path<span class="w"> </span>FunAudioLLM/Fun-CosyVoice3-0.5B-2512<span class="w"> </span><span class="se">\</span>
-<span class="w">  </span>--config<span class="w"> </span>examples/configs/fun_cosyvoice3_0_5b.yaml<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--vocoder.factory.enable_flow_estimator_trt<span class="w"> </span><span class="nb">true</span><span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8000</span>
 </pre></div>
 </div>
-<p>On one H200, packed Flow + HiFT (80 target tokens, 25 prompt tokens,
-6 timed iters after 2 warmups) was:</p>
+<p>On one H200, Flow latency and vocoder RTF comparisons:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Backend</p></th>
-<th class="head"><p>B</p></th>
+<th class="head"><p>Batch size</p></th>
 <th class="head"><p>Flow latency</p></th>
 <th class="head"><p>Vocoder RTF</p></th>
 </tr>
@@ -732,12 +879,7 @@ flags to true is rejected:</p>
 </tbody>
 </table>
 </div>
-<p>TensorRT here is not bit-exact with eager PyTorch (FP16 TensorRT tactics on
-the fp32 ONNX; cosine similarity about 0.995 on one packed mel).</p>
-<p>The same three vocoder backends on the full SeedTTS EN set (1088 samples),
-buffered <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> (non-streaming, generate-only), one H200, 0
-failures. ASR WER was not remeasured; vocoder-only mel cosine vs eager is
-about 0.995.</p>
+<p>Full SeedTTS EN set (1088 samples) on buffered <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code>, one H200:</p>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Backend</p></th>
@@ -787,17 +929,10 @@ about 0.995.</p>
 </tbody>
 </table>
 </div>
-<p>At concurrency 1 the pipeline is still mostly preprocessing + AR, so TensorRT
-is about 1.17× <code class="docutils literal notranslate"><span class="pre">torch.compile</span></code>. At concurrency 16 the vocoder is the bottleneck
-and TensorRT is about 1.23× compile throughput (2.23× eager). It remains
-opt-in because TensorRT is a separate install and the first engine build takes
-about a minute.</p>
+<p>This result is only demonstrative, since we have further optimization after the evluation of TensorRT is done.</p>
 </section>
-</section>
-<section id="synthesizing-speech">
-<h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
-<section id="zero-shot-voice-cloning">
-<h3>Zero-shot Voice Cloning<a class="headerlink" href="#zero-shot-voice-cloning" title="Link to this heading">#</a></h3>
+<section id="id1">
+<h3>Zero-shot Voice Cloning<a class="headerlink" href="#id1" title="Link to this heading">#</a></h3>
 <p>CosyVoice3 clones a voice from a short reference audio clip. <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> can be a local
 path, file URL, data URL, or HTTP URL. <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> (the transcript of the reference clip)
 is optional but recommended for better alignment.</p>
@@ -832,8 +967,8 @@ is optional but recommended for better alignment.</p>
 </div>
 </section>
 </section>
-<section id="cross-lingual-synthesis">
-<h3>Cross-lingual Synthesis<a class="headerlink" href="#cross-lingual-synthesis" title="Link to this heading">#</a></h3>
+<section id="id2">
+<h3>Cross-lingual Synthesis<a class="headerlink" href="#id2" title="Link to this heading">#</a></h3>
 <p>CosyVoice3 supports cross-lingual voice cloning where the reference speaker speaks a
 different language than the synthesis text. Omit <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> to enter cross-lingual mode.</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
@@ -847,8 +982,8 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </pre></div>
 </div>
 </section>
-<section id="instruction-based-style-control">
-<h3>Instruction-based Style Control<a class="headerlink" href="#instruction-based-style-control" title="Link to this heading">#</a></h3>
+<section id="id3">
+<h3>Instruction-based Style Control<a class="headerlink" href="#id3" title="Link to this heading">#</a></h3>
 <p>Pass <code class="docutils literal notranslate"><span class="pre">instructions</span></code> to guide prosody, emotion, or speaking style:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -862,8 +997,8 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </pre></div>
 </div>
 </section>
-<section id="speed-control">
-<h3>Speed Control<a class="headerlink" href="#speed-control" title="Link to this heading">#</a></h3>
+<section id="id4">
+<h3>Speed Control<a class="headerlink" href="#id4" title="Link to this heading">#</a></h3>
 <p>Adjust playback speed with <code class="docutils literal notranslate"><span class="pre">speed</span></code> (default <code class="docutils literal notranslate"><span class="pre">1.0</span></code>):</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span>http://localhost:8000/v1/audio/speech<span class="w"> </span><span class="se">\</span>
 <span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
@@ -877,8 +1012,8 @@ different language than the synthesis text. Omit <code class="docutils literal n
 </pre></div>
 </div>
 </section>
-<section id="streaming">
-<h3>Streaming<a class="headerlink" href="#streaming" title="Link to this heading">#</a></h3>
+<section id="id5">
+<h3>Streaming<a class="headerlink" href="#id5" title="Link to this heading">#</a></h3>
 <p>Incremental Flow + HiFT decoding is enabled. Set <code class="docutils literal notranslate"><span class="pre">stream:</span> <span class="pre">true</span></code> and use
 <code class="docutils literal notranslate"><span class="pre">response_format:</span> <span class="pre">&quot;pcm&quot;</span></code> so the server can emit audio before speech-token
 generation finishes.</p>
@@ -931,8 +1066,8 @@ in sync if you change the hop):</p>
 </div>
 </section>
 </section>
-<section id="generation-parameters">
-<h2>Generation Parameters<a class="headerlink" href="#generation-parameters" title="Link to this heading">#</a></h2>
+<section id="id6">
+<h2>Generation Parameters<a class="headerlink" href="#id6" title="Link to this heading">#</a></h2>
 <div class="pst-scrollable-table-container"><table class="table">
 <thead>
 <tr class="row-odd"><th class="head"><p>Parameter</p></th>
@@ -1044,38 +1179,17 @@ in sync if you change the hop):</p>
 <section id="known-limitations">
 <h2>Known Limitations<a class="headerlink" href="#known-limitations" title="Link to this heading">#</a></h2>
 <ul class="simple">
-<li><p><strong>Reference audio required.</strong> CosyVoice3 requires a reference audio clip for voice
-cloning; it does not support text-only synthesis without a speaker reference.</p></li>
-<li><p><strong>30-second limit.</strong> Reference audio must be 30 seconds or shorter for speech token
-extraction.</p></li>
-<li><p><strong>Speaker similarity.</strong> Providing <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> (the transcript) yields better voice
-similarity than omitting it (cross-lingual mode).</p></li>
-<li><p><strong>Reference shape.</strong> The endpoint accepts either <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> plus optional <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>,
-or one item in <code class="docutils literal notranslate"><span class="pre">references</span></code>; multiple references are rejected for this checkpoint.</p></li>
-<li><p><strong>Prompt modes.</strong> Provide either <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> or <code class="docutils literal notranslate"><span class="pre">instructions</span></code> for the reference prompt,
-not both. <code class="docutils literal notranslate"><span class="pre">instructions</span></code> selects CosyVoice3 <code class="docutils literal notranslate"><span class="pre">instruct2</span></code> conditioning.</p></li>
-<li><p><strong>Reference conditioning cache.</strong> Local files, data URLs, and byte payloads are cached
-by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded
-on every request instead of being cached by URL alone.</p></li>
-<li><p><strong>Speed control.</strong> Applied once, on the decoded waveform, by the shared
-<code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> response-encoding path.</p></li>
+<li><p><strong>Reference audio required.</strong> CosyVoice3 requires a reference audio clip for voice cloning; it does not support text-only synthesis without a speaker reference.</p></li>
+<li><p><strong>30-second limit.</strong> Reference audio must be 30 seconds or shorter for speech token extraction.</p></li>
+<li><p><strong>Speaker similarity.</strong> Providing <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> (the transcript) yields better voice similarity than omitting it (cross-lingual mode).</p></li>
+<li><p><strong>Reference shape.</strong> The endpoint accepts either <code class="docutils literal notranslate"><span class="pre">ref_audio</span></code> plus optional <code class="docutils literal notranslate"><span class="pre">ref_text</span></code>, or one item in <code class="docutils literal notranslate"><span class="pre">references</span></code>; multiple references are rejected for this checkpoint.</p></li>
+<li><p><strong>Prompt modes.</strong> Provide either <code class="docutils literal notranslate"><span class="pre">ref_text</span></code> or <code class="docutils literal notranslate"><span class="pre">instructions</span></code> for the reference prompt, not both. <code class="docutils literal notranslate"><span class="pre">instructions</span></code> selects CosyVoice3 <code class="docutils literal notranslate"><span class="pre">instruct2</span></code> conditioning.</p></li>
+<li><p><strong>Reference conditioning cache.</strong> Local files, data URLs, and byte payloads are cached by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded on every request instead of being cached by URL alone.</p></li>
+<li><p><strong>Speed control.</strong> Applied once, on the decoded waveform, by the shared <code class="docutils literal notranslate"><span class="pre">/v1/audio/speech</span></code> response-encoding path.</p></li>
 <li><p><strong>Voice conversion.</strong> Voice conversion is outside the current zero-shot TTS scope.</p></li>
-<li><p><strong>Streaming decode.</strong> Causal Flow + HiFT emit PCM after each hop
-(<code class="docutils literal notranslate"><span class="pre">pre_lookahead_len=3</span></code>; hop grows 25 → 50 → 100 by default). Quality can
-differ slightly from the buffered whole-utterance path. Opt-in TensorRT
-(<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>) also accelerates streaming hops; do not enable
-it together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. TRT freezes DiT attention, so
-streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT
-wrapper when streaming: CosyVoice’s raw TRT enqueue is incompatible with
-packed hop-batch CFG shapes.</p></li>
-<li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator
-and the opt-in TensorRT estimator. HiFT batches only the mels produced by one
-Flow bucket while padding waste stays within <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>.
-Streaming coalesces first/follow-up hops across requests
-(<code class="docutils literal notranslate"><span class="pre">_can_batch_stream_chunks</span></code>, short peer wait) so TTFP stays low under load.</p></li>
-<li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be
-installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
-only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
+<li><p><strong>Streaming decode.</strong> Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (<code class="docutils literal notranslate"><span class="pre">enable_flow_estimator_trt</span></code>) also accelerates streaming hops; do not enable it together with <code class="docutils literal notranslate"><span class="pre">enable_dit_torch_compile</span></code>. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice’s raw TRT enqueue is incompatible with packed hop-batch CFG shapes.</p></li>
+<li><p><strong>Flow batch scope.</strong> Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. HiFT batches only the mels produced by one Flow bucket while padding waste stays within <code class="docutils literal notranslate"><span class="pre">hift_max_padding_waste</span></code>. Streaming coalesces first/follow-up hops across requests (<code class="docutils literal notranslate"><span class="pre">_can_batch_stream_chunks</span></code>, short peer wait) so TTFP stays low under load.</p></li>
+<li><p><strong>cosyvoice dependency.</strong> The <code class="docutils literal notranslate"><span class="pre">cosyvoice</span></code> package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
 </ul>
 </section>
 </section>
@@ -1091,6 +1205,24 @@ only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
                 <footer class="prev-next-footer d-print-none">
                   
 <div class="prev-next-area">
+    <a class="left-prev"
+       href="llada2_uni.html"
+       title="previous page">
+      <i class="fa-solid fa-angle-left"></i>
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">previous</p>
+        <p class="prev-next-title">LLaDA2.0-Uni</p>
+      </div>
+    </a>
+    <a class="right-next"
+       href="../basic_usage/qwen3_omni.html"
+       title="next page">
+      <div class="prev-next-info">
+        <p class="prev-next-subtitle">next</p>
+        <p class="prev-next-title">Omni Model Usage</p>
+      </div>
+      <i class="fa-solid fa-angle-right"></i>
+    </a>
 </div>
                 </footer>
               
@@ -1110,17 +1242,8 @@ only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
-</ul>
-</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
-<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a><ul class="nav section-nav flex-column">
-<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
-</ul>
-</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#zero-shot-voice-cloning">Zero-shot Voice Cloning</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#cross-lingual-synthesis">Cross-lingual Synthesis</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#instruction-based-style-control">Instruction-based Style Control</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#speed-control">Speed Control</a></li>
@@ -1128,6 +1251,22 @@ only the CosyVoice Flow and HiFT paths are used by the vocoder.</p></li>
 </ul>
 </li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#generation-parameters">Generation Parameters</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#serving-optimization">Serving Optimization</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#flow-decoder-batching">Flow Decoder Batching</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#vocoder-configuration">Vocoder Configuration</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#torch-compile-for-the-dit-backbone">torch.compile for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#tensorrt-for-the-dit-backbone">TensorRT for the DiT backbone</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id1">Zero-shot Voice Cloning</a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#python">Python</a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id2">Cross-lingual Synthesis</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id3">Instruction-based Style Control</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id4">Speed Control</a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#id5">Streaming</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#id6">Generation Parameters</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#benchmarking">Benchmarking</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#model-architecture">Model Architecture</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#known-limitations">Known Limitations</a></li>
