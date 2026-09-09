@@ -225,3 +225,44 @@ async def test_failed_close_stops_active_runtime_worker(close_failure):
     events = [env.event for env, _ in runtime.output]
     assert any(isinstance(e, Failure) and e.code == "cleanup_timeout" for e in events)
     assert not any(isinstance(e, Closed) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_shared_manager_preserves_transcription_intent(monkeypatch):
+    from sglang_omni.config import AudioChunkingConfig, RealtimeTranscriptionConfig
+    from sglang_omni.serve.realtime.manager import RealtimeSessionManager
+    from sglang_omni.serve.realtime.protocol import SharedRealtimeSession
+    from sglang_omni.serve.realtime.transcription_session import (
+        RealtimeTranscriptionSession,
+    )
+
+    monkeypatch.setattr(RealtimeTranscriptionSession, "_new_vad", lambda *args: None)
+    manager = RealtimeSessionManager(
+        client=object(),
+        model_name="asr",
+        audio_chunking=AudioChunkingConfig(),
+        transcription_config=RealtimeTranscriptionConfig(strategy_cls=object),
+    )
+    from starlette.websockets import WebSocket, WebSocketState
+
+    sent = []
+
+    async def receive():
+        return {"type": "websocket.connect"}
+
+    async def send(message):
+        sent.append(message)
+
+    websocket = WebSocket({"type": "websocket"}, receive, send)
+    await websocket.accept()
+    conversation = manager.open(object())
+    transcription = manager.open(websocket, intent="transcription")
+    assert isinstance(conversation, SharedRealtimeSession)
+    assert isinstance(transcription, RealtimeTranscriptionSession)
+    with pytest.raises(ValueError, match="Realtime intent"):
+        manager.open(object(), intent="unknown")
+    await manager.close(conversation.session_id)
+    await manager.close(transcription.session_id)
+    assert manager.active_sessions() == []
+    assert websocket.application_state == WebSocketState.DISCONNECTED
+    assert sent[-1]["type"] == "websocket.close"
