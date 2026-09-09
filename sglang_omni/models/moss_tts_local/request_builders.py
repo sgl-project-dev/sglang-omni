@@ -9,6 +9,9 @@ from typing import Any
 
 import torch
 
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    _STREAMING_ROPE_CACHE_DURATION_SECONDS,
+)
 from sglang_omni.models.moss_tts.request_builders import (
     _DATA_URI_RE,
     MOSS_TTS_DEFAULT_MAX_NEW_TOKENS,
@@ -29,6 +32,12 @@ from sglang_omni.scheduling.streaming_vocoder import INITIAL_CODEC_CHUNK_FRAMES_
 from sglang_omni.scheduling.types import ARRequestData
 
 _MOSS_TTS_LOCAL_PREPARED_MARKER = "_moss_tts_local_prepared_request"
+_MOSS_TTS_LOCAL_AUDIO_FRAME_RATE = 12.5
+# note (Zhang Yiyang): Each Local AR step emits at most one audio frame;
+# derive the token limit once from the fixed RoPE duration budget.
+_MOSS_TTS_LOCAL_MAX_STREAMING_TOKENS = int(
+    _STREAMING_ROPE_CACHE_DURATION_SECONDS * _MOSS_TTS_LOCAL_AUDIO_FRAME_RATE
+)
 
 
 @dataclass
@@ -175,6 +184,15 @@ def build_generation_kwargs(
         )
     else:
         max_new_tokens = int(raw_max_new_tokens)
+
+    if params.get("stream") and max_new_tokens > _MOSS_TTS_LOCAL_MAX_STREAMING_TOKENS:
+        raise ValueError(
+            "MOSS-TTS Local streaming max_new_tokens must be <= "
+            f"{_MOSS_TTS_LOCAL_MAX_STREAMING_TOKENS} "
+            f"({_STREAMING_ROPE_CACHE_DURATION_SECONDS / 60:g} minutes at "
+            f"{_MOSS_TTS_LOCAL_AUDIO_FRAME_RATE:g} audio frames/s), "
+            f"got {max_new_tokens}"
+        )
 
     generation_kwargs: dict[str, Any] = {
         "max_new_tokens": max_new_tokens,

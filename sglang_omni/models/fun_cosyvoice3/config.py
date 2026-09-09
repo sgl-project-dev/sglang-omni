@@ -38,15 +38,23 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             name="preprocessing",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_preprocessing_executor",
+            factory=FactoryArgs(max_concurrency=8),
             next="tts_engine",
         ),
         EngineStageConfig(
             name="tts_engine",
             process="pipeline",
             factory_path=f"{_PKG}.stages.create_sglang_tts_engine_executor",
-            factory=FactoryArgs(device=current_platform.device_type, dtype="bfloat16"),
+            factory=FactoryArgs(
+                device=current_platform.device_type,
+                dtype="bfloat16",
+                onnx_intra_op_threads=16,
+                # Keep in sync with vocoder token_hop_len (AR flush cadence).
+                token_hop_len=25,
+            ),
             gpu=0,
             next="vocoder",
+            stream_to=["vocoder"],
         ),
         StageConfig(
             name="vocoder",
@@ -55,12 +63,22 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 dtype="bfloat16",
                 flow_batch_bucket_frames=50,
-                flow_batch_admission_frames=2000,
-                # Opt-in; off by default (one-time startup compile cost).
-                enable_dit_torch_compile=False,
+                flow_batch_admission_frames=8000,
+                max_batch_size=16,
+                max_batch_wait_ms=30,
+                # note (guozhihao-224): mutually exclusive DiT accelerators.
+                # note (db-ol): the factory compiles the DiT unless TensorRT is
+                # enabled, set enable_dit_torch_compile false to run it eager.
+                enable_flow_estimator_trt=False,
+                # Official CV3 defaults. Keep hop growth on: SeedTTS c=16
+                # A/B preferred growth ON over disable_hop_growth.
+                token_hop_len=25,
+                token_max_hop_len=100,
+                disable_hop_growth=False,
             ),
             gpu=0,
             terminal=True,
+            can_accept_stream_before_payload=True,
         ),
     ]
 
