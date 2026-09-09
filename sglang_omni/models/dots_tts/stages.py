@@ -24,14 +24,9 @@ from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 from sglang_omni.utils.checkpoint import resolve_checkpoint
+from sglang_omni.utils.device import resolve_device_spec
 
 _DEFAULT_CONTEXT_LENGTH = 2048
-
-
-def _device(device: str | None, gpu_id: int | None) -> str:
-    if device is not None and device != "cuda":
-        return device
-    return f"cuda:{int(gpu_id or 0)}"
 
 
 def _configure_optimized_kernels() -> None:
@@ -392,13 +387,13 @@ def create_preprocessing_executor(
 def create_reference_encode_executor(
     model_path: str,
     *,
-    device: str | None = "cuda",
+    device: str | None = None,
     gpu_id: int | None = None,
     max_concurrency: int = 8,
     max_batch_size: int = 1,
     max_batch_wait_ms: float = 4.0,
 ) -> SimpleScheduler:
-    worker_device = _device(device, gpu_id)
+    worker_device = resolve_device_spec(device, gpu_id)
     codec = load_dots_audio_codec(model_path, device=worker_device)
     encoder = DotsReferenceEncoder(
         codec,
@@ -420,7 +415,7 @@ def create_sglang_latent_engine_executor(
     optimize: bool = True,
     max_generate_length: int = 500,
     num_steps: int = 4,
-    device: str | None = "cuda",
+    device: str | None = None,
     gpu_id: int | None = None,
     server_args_overrides: dict[str, Any] | None = None,
 ) -> OmniScheduler:
@@ -432,7 +427,7 @@ def create_sglang_latent_engine_executor(
         max_audio_patches=max_generate_length,
     ).build(
         model_path,
-        device=device or "cuda",
+        device=device,
         gpu_id=gpu_id,
         dtype=precision,
         server_args_overrides=server_args_overrides,
@@ -442,7 +437,7 @@ def create_sglang_latent_engine_executor(
 def create_vocoder_executor(
     model_path: str,
     *,
-    device: str | None = "cuda",
+    device: str | None = None,
     gpu_id: int | None = None,
     optimize: bool = True,
     vocoder_merge_steps: int = 4,
@@ -450,7 +445,9 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 2,
     stream_slots: int = 16,
 ) -> DotsTTSStreamingVocoder:
-    codec = load_dots_audio_codec(model_path, device=_device(device, gpu_id))
+    codec = load_dots_audio_codec(
+        model_path, device=resolve_device_spec(device, gpu_id)
+    )
     vocoder = DotsTTSStreamingVocoder(
         codec,
         optimize=optimize,

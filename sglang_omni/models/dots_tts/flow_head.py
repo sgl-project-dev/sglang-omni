@@ -765,6 +765,17 @@ class DotsTTSFlowHead(nn.Module):
             yield
             return
         device = state.fm_sequence.device
+        if device.type == "mps":
+            # note (guozhihao-224): fork_rng has no MPS device list; MPS owns
+            # one global generator, so save/restore it around the sampling.
+            previous = torch.mps.get_rng_state()
+            torch.mps.set_rng_state(state.rng_state)
+            try:
+                yield
+            finally:
+                state.rng_state = torch.mps.get_rng_state()
+                torch.mps.set_rng_state(previous)
+            return
         cuda_device = None
         if device.type == "cuda":
             cuda_device = (

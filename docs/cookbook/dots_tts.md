@@ -82,6 +82,45 @@ On a full GPU the default `16 × 500` layout is intended. On tighter cards, lowe
 
 Incremental / bucketed tail-KV allocation is not implemented yet; capacity is still the eager full-length pool.
 
+## Apple Silicon
+
+dots.tts serves on Apple through two eager single-request paths; continuous batching stays CUDA-only. The engine detects an MPS device and pins `max_running_requests=1`, `torch_native` attention, and an eager backbone automatically, so the SOAR checkpoint is the natural fit — it already runs the single-request flow solver. Both paths read the same checkpoint; no separate converted artifact is required.
+
+The `dots.tts` package is excluded on Apple arm64 (it pulls Pynini, which has no macOS wheel), so install it without dependencies and add the pure-Python `wetext` normalizer the pipeline substitutes for it:
+
+```bash
+./install.sh
+source .venv-apple/bin/activate
+uv pip install --no-deps dots.tts==0.2.1 wetext==0.0.4
+export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
+```
+
+Keep `DYLD_LIBRARY_PATH` set in the shell that starts `sgl-omni` so TorchCodec finds the keg-only FFmpeg libraries.
+
+### MLX
+
+Set `SGLANG_USE_MLX=1` to run the Qwen2 backbone, semantic encoder, and flow-matching DiT with native MLX; the AudioVAE codec and BigVGAN vocoder continue on Torch/MPS.
+
+```bash
+SGLANG_USE_MLX=1 sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
+### Torch/MPS
+
+Without the MLX opt-in the same pipeline runs the backbone through PyTorch MPS in float32 (Metal aborts on the mixed-dtype matmuls a bfloat16 profile would emit). It is a useful correctness baseline and needs no extra setup beyond the prerequisites above.
+
+```bash
+sgl-omni serve \
+  --model-path dots-studio/dots.tts-soar \
+  --config examples/configs/dots_tts_soar.yaml \
+  --allowed-local-media-path docs/_static/audio \
+  --port 8000
+```
+
 ## Synthesizing Speech
 
 dots.tts needs a reference clip and its transcript. The speaker comes entirely from the reference (x-vector plus prompt latents), so there is no zero-shot `voice` preset. Under the default continuous-batching deployment, a request without `references` is rejected.

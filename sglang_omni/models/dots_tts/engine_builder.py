@@ -10,6 +10,8 @@ from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 
 logger = logging.getLogger(__name__)
 
+_MPS_MEM_FRACTION_FLOOR = 0.78
+
 
 class DotsTTSEngineBuilder(TtsEngineBuilder):
     model_name = "dots.tts"
@@ -34,12 +36,36 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             raise ValueError("dots.tts batching limits must be positive")
         self._model_runner: Any | None = None
         self._acoustic_tail: Any | None = None
+        # Filled by SGLangGenerationEngineBuilder.build before the infra is created.
+        self.checkpoint_dir: str | None = None
+        self.device: str | None = None
+
+    def _uses_torch_mps(self) -> bool:
+        # note (guozhihao-224): the Torch/MPS profile is the non-MLX Apple path.
+        return self._on_apple() and not self._use_mlx()
+
+    def _on_apple(self) -> bool:
+        import torch
+
+        return self.device is not None and torch.device(self.device).type == "mps"
+
+    @staticmethod
+    def _use_mlx() -> bool:
+        from sglang.srt.utils.tensor_bridge import use_mlx
+
+        return bool(use_mlx())
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
-        del checkpoint_dir
+        from sglang_omni.models.dots_tts.compat import import_dots_solver_deps
         from sglang_omni.models.dots_tts.hf_config import register_dots_tts_hf_config
 
         register_dots_tts_hf_config()
+        if self._on_apple():
+            # note (guozhihao-224): the DiT compile hook and acoustic-tail
+            # graphs are CUDA-only; Apple serves the eager single-request path.
+            self.optimize = False
+            import_dots_solver_deps()
+        del checkpoint_dir
 
     def customize_server_args(self, server_args: Any) -> None:
         # The compiled DiT path only serves max_running_requests=1; the batched
@@ -52,6 +78,31 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
             _configure_optimized_kernels()
 
     def generation_defaults(self, *, dtype: str) -> dict[str, Any]:
+        if self._on_apple():
+            if self._use_mlx():
+                # note (guozhihao-224): only idle torch weights sit on Metal
+                # under MLX; bf16 halves them.
+                dtype = "bfloat16"
+            else:
+                # note (guozhihao-224): Metal aborts on mixed-dtype matmuls;
+                # the Torch/MPS profile runs one eager fp32 request.
+                dtype = "float32"
+            return {
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "max_running_requests": 1,
+                "chunked_prefill_size": 0,
+                # note (guozhihao-224): unified memory must also hold the
+                # weights; start at the viability floor, not the canonical
+                # dedicated-card 0.20.
+                "mem_fraction_static": _MPS_MEM_FRACTION_FLOOR,
+                "attention_backend": "torch_native",
+                "sampling_backend": "pytorch",
+                "dtype": dtype,
+                "trust_remote_code": False,
+            }
         return {
             "disable_cuda_graph": True,
             "disable_overlap_schedule": True,
@@ -70,6 +121,22 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         requested = int(
             overrides.get("max_running_requests", self.max_running_requests)
         )
+        if self._on_apple():
+            if requested != 1:
+                raise ValueError(
+                    "dots.tts Apple profiles currently require max_running_requests=1"
+                )
+            # note (guozhihao-224): the canonical 0.20 assumes a dedicated
+            # card; unified memory must also hold the weights.
+            requested_fraction = float(overrides.get("mem_fraction_static", 0.20))
+            if requested_fraction < _MPS_MEM_FRACTION_FLOOR:
+                logger.info(
+                    "dots.tts Apple: raising mem_fraction_static from "
+                    "%.2f to %.2f (unified memory must fit weights + KV)",
+                    requested_fraction,
+                    _MPS_MEM_FRACTION_FLOOR,
+                )
+                overrides["mem_fraction_static"] = _MPS_MEM_FRACTION_FLOOR
         if requested <= 0:
             raise ValueError("dots.tts max_running_requests must be positive")
         self.max_running_requests = requested
@@ -80,10 +147,19 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
                 "dots.tts uses its DiT compile path; SGLang backbone compile is disabled"
             )
         if not bool(overrides.get("disable_cuda_graph", True)):
-            # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
-            # its can_run gate requires an exact hidden-mode match with the
-            # acoustic tail's per-step request.
-            overrides["enable_return_hidden_states"] = True
+            if self._on_apple():
+                # note (guozhihao-224): no CUDA graph lifecycle on Metal;
+                # degrade loudly so the canonical serving configs still boot.
+                logger.info(
+                    "dots.tts Apple: forcing disable_cuda_graph=True "
+                    "(no CUDA graph lifecycle on Metal)"
+                )
+                overrides["disable_cuda_graph"] = True
+            else:
+                # note (luojiaxuan): the decode graph must be captured with hidden states (FULL);
+                # its can_run gate requires an exact hidden-mode match with the
+                # acoustic tail's per-step request.
+                overrides["enable_return_hidden_states"] = True
 
     def setup_model(
         self,
@@ -94,8 +170,17 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        del checkpoint_dir, device, gpu_id
         model = model_worker.model_runner.model
+        if self._uses_torch_mps():
+            # note (guozhihao-224): SGLang casts input embeddings to bf16,
+            # which the fp32 MPS profile cannot satisfy; own the backbone
+            # forward with the pinned HF Qwen2.
+            from sglang_omni.models.dots_tts.torch_mps_runner import (
+                install_torch_mps_backbone,
+            )
+
+            install_torch_mps_backbone(model, checkpoint_dir)
+        del device, gpu_id
         max_running_requests = int(server_args.max_running_requests)
         if not bool(server_args.disable_cuda_graph):
             from sglang_omni.scheduling.generation_batch_policy import (
@@ -149,6 +234,25 @@ class DotsTTSEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if self._use_mlx():
+            from sglang_omni.models.dots_tts.mlx.runner import DotsTTSMlxModelRunner
+
+            if self.checkpoint_dir is None:
+                raise RuntimeError(
+                    "dots.tts MLX runner requires checkpoint_dir, which "
+                    "SGLangGenerationEngineBuilder.build sets before infra creation"
+                )
+            self._model_runner = DotsTTSMlxModelRunner(
+                model_worker, output_proc, checkpoint_dir=self.checkpoint_dir
+            )
+            return self._model_runner
+        if self._uses_torch_mps():
+            from sglang_omni.models.dots_tts.torch_mps_runner import (
+                DotsTTSTorchMpsModelRunner,
+            )
+
+            self._model_runner = DotsTTSTorchMpsModelRunner(model_worker, output_proc)
+            return self._model_runner
         from sglang_omni.models.dots_tts.model_runner import DotsTTSModelRunner
 
         self._model_runner = DotsTTSModelRunner(model_worker, output_proc)
