@@ -65,9 +65,10 @@ async def _run_benchmark(
     spec: BenchmarkSpec,
     scenarios: list[Scenario],
     harness_log: list[str],
+    results: list[ScenarioResult],
     *,
     router_stage_snapshots: Path | None = None,
-) -> list[ScenarioResult]:
+) -> None:
     timeout = aiohttp.ClientTimeout(total=spec.params.timeout_s)
     headers = _auth_headers(spec)
     connector = aiohttp.TCPConnector(limit=_connector_limit(spec))
@@ -76,7 +77,6 @@ async def _run_benchmark(
         headers=headers,
         connector=connector,
     ) as session:
-        results: list[ScenarioResult] = []
         stage_snapshots: dict[str, dict] = {}
         for stage in spec.params.load_stages:
             stage_scenarios = [
@@ -99,22 +99,34 @@ async def _run_benchmark(
                 )
             )
             if router_stage_snapshots is not None:
-                stage_snapshots[stage.id] = {
-                    "before": before,
-                    "after": await _wait_for_router_idle(
+                try:
+                    after = await _wait_for_router_idle(
                         session,
                         spec.base_url,
                         timeout_s=spec.params.timeout_s,
                         expected_worker_ids=tuple(
                             worker["worker_id"] for worker in before["workers"]
                         ),
-                    ),
-                }
+                    )
+                except Exception as exc:
+                    stage_snapshots[stage.id] = {
+                        "before": before,
+                        "after": None,
+                        "observation_error": {
+                            "type": exc.__class__.__name__,
+                            "message": str(exc),
+                        },
+                    }
+                    router_stage_snapshots.write_text(
+                        json.dumps(stage_snapshots, indent=2) + "\n",
+                        encoding="utf-8",
+                    )
+                    raise
+                stage_snapshots[stage.id] = {"before": before, "after": after}
                 router_stage_snapshots.write_text(
                     json.dumps(stage_snapshots, indent=2) + "\n",
                     encoding="utf-8",
                 )
-        return results
 
 
 async def _router_diagnostics(
@@ -854,6 +866,7 @@ def main() -> int:
         return 2
 
     scenarios: list[Scenario] = []
+    results: list[ScenarioResult] = []
     try:
         scenarios = build_scenarios(spec)
         stage_request_total = sum(
@@ -869,11 +882,12 @@ def main() -> int:
             if args.router_stage_snapshots is not None
             else None
         )
-        results = asyncio.run(
+        asyncio.run(
             _run_benchmark(
                 spec,
                 scenarios,
                 harness_log,
+                results,
                 router_stage_snapshots=router_stage_snapshots,
             )
         )
@@ -888,13 +902,13 @@ def main() -> int:
         harness_log.append(f"unhandled harness error: {exc.__class__.__name__}: {exc}")
         report = build_results_report(
             spec,
-            [],
+            results,
             scenarios=scenarios,
             harness_status="error",
             harness_error=f"{exc.__class__.__name__}: {exc}",
         )
         try:
-            write_artifacts(out_dir, spec, scenarios, [], report)
+            write_artifacts(out_dir, spec, scenarios, results, report)
             write_harness_log(out_dir, harness_log)
         except ArtifactError:
             pass
