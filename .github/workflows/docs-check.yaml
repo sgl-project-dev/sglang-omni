@@ -32,7 +32,9 @@ jobs:
       - name: Install dependencies
         run: |
           # Note (Akazaakane): The third-party Chrome repo is unnecessary for docs builds.
-          sudo rm -f /etc/apt/sources.list.d/google-chrome*.list
+          sudo find /etc/apt/sources.list.d -type f \( -name '*.list' -o -name '*.sources' \) \
+            -exec grep -qE 'https?://dl\.google\.com/linux/chrome(-stable)?/deb([/[:space:]]|$)' {} \; \
+            -delete
 
           timeout 5m sudo apt-get \
             -o Acquire::Retries=3 \
