@@ -1390,11 +1390,18 @@ def _rope_copy_reference(
 
 @pytest.fixture(params=["cuda", "torch"])
 def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
+    from sglang.srt.model_executor.cuda_graph_config import (
+        Backend,
+        CudaGraphConfig,
+        PhaseConfig,
+    )
     from sglang.srt.runtime_context import get_context
 
     mode = request.param
     with get_context().override_server_args(
-        model_path="Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+        cuda_graph_config=CudaGraphConfig(
+            prefill=PhaseConfig(backend=Backend.DISABLED)
+        ),
     ):
         previous_backend = get_fused_op_backend()
         try:
