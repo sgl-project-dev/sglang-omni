@@ -635,7 +635,7 @@ def read_pins():
     data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
     pins = {}
     for dep in data["project"]["dependencies"]:
-        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^\s,"]+)', dep)
+        m = re.match(r'^\s*"?([A-Za-z0-9_\-]+)"?\s*==\s*([^;\s,"]+)', dep)
         if m: pins[m.group(1).lower()] = m.group(2)
     return pins
 
