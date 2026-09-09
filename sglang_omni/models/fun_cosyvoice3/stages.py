@@ -15,9 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
-from sglang_omni.models.fun_cosyvoice3.config import (
-    reject_conflicting_dit_accelerators,
-)
+from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
