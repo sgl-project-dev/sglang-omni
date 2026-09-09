@@ -30,6 +30,7 @@ GPU_IDLE_POLL_SECONDS = 5
 WAV_HEADER_SIZE = 44
 SSE_DATA_PREFIX = "data: "
 SSE_DONE_MARKER = "data: [DONE]"
+STREAM_SERVER_LOGS_ENV = "OMNI_CI_STREAM_SERVER_LOGS"
 
 
 @contextmanager
@@ -67,7 +68,7 @@ def no_proxy_env() -> dict[str, str]:
 def server_log_file(tmp_path_factory, prefix: str = "server_logs") -> Path | None:
     """Capture server logs to a file on CI; stream to the terminal locally."""
     is_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    if not is_ci:
+    if not is_ci or os.environ.get(STREAM_SERVER_LOGS_ENV) == "1":
         return None
     return tmp_path_factory.mktemp(prefix) / "server.log"
 

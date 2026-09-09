@@ -211,9 +211,9 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh \
 The number of Tab A terminals and Tab B terminals must each equal the number of
 GPU groups (one pair per group; no duplicates). Start one Tab C per active
 cpuset. Tab B must switch away from killed servers and attach logs from each
-new server launch in the same terminal. Tab B prefers `runN.log` because it
-combines worker output with router output tee'd by the fixture, and falls back
-to `server.log` when needed. Durable filtered Tab B output is teed under
+new server launch in the same terminal. Calibration streams worker and router
+output into `runN.log`; Tab B falls back to `server.log` when needed. Durable
+filtered Tab B output is teed under
 `/tmp/calibration_tabB_<group>.log` as a backup.
 
 During a run, also poll at most every 120 seconds with `status`, `strict-audit`,

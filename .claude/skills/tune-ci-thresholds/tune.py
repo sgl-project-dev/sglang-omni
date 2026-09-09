@@ -3386,6 +3386,9 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
     # extra_env is derived from test filename at discover — all stages
     # sharing a test file have identical extra_env; just use the first.
     env = os.environ.copy()
+    # Keep worker and router output in the one pytest log followed by Tab B,
+    # even when the calibration shell inherits GitHub Actions variables.
+    env["OMNI_CI_STREAM_SERVER_LOGS"] = "1"
     # Never inherit a shell-level CUDA_VISIBLE_DEVICES — CI gets a fresh
     # container per stage; tune.py picks GPUs after cleanup instead.
     env.pop("CUDA_VISIBLE_DEVICES", None)
