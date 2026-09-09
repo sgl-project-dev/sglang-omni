@@ -1594,6 +1594,7 @@ class OmniScheduler:
     def _make_batch_result(mr_output):
         # process_batch_result reads reporting tokens. The next-forward GPU
         # token rail is independently published through FutureMap.
+        from sglang.srt.layers.logits_processor import LogitsProcessorOutput
         from sglang.srt.managers.scheduler import GenerationBatchResult
 
         # Note (wenyao): reuse the runner-staged pinned host copy so the mixin's
@@ -1603,7 +1604,9 @@ class OmniScheduler:
         if mr_output.host_token_ids is not None:
             next_token_ids = mr_output.host_token_ids
         return GenerationBatchResult(
-            logits_output=None,
+            # Note (Junnan Li): Omni already collects hidden states and customized
+            # output, but native result processing still requires this container.
+            logits_output=LogitsProcessorOutput(next_token_logits=None),
             next_token_ids=next_token_ids,
             can_run_cuda_graph=mr_output.can_run_cuda_graph,
         )
@@ -1628,17 +1631,11 @@ class OmniScheduler:
         live batch carries no token side channel under the upstream FutureMap
         contract.
         """
-        from sglang.srt.managers.scheduler import GenerationBatchResult
-
         mr_output = self._model_runner.execute_resolve(pending_step)
         if mr_output is None:
             return _FAILED_BATCH_RESULT
         self._emit_stream_output(sched_output, mr_output, skip_rids=skip_rids)
-        return GenerationBatchResult(
-            logits_output=None,
-            next_token_ids=mr_output.next_token_ids,
-            can_run_cuda_graph=mr_output.can_run_cuda_graph,
-        )
+        return self._make_batch_result(mr_output)
 
     def _handle_batch_failure(self, batch: Any, error: Exception) -> None:
         reqs = list(batch.reqs)
