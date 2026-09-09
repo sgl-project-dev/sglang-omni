@@ -161,7 +161,6 @@ def _generate_one(ctx: _EngineContext, payload: StagePayload) -> StagePayload:
     if not torch.isfinite(wav).all():
         raise RuntimeError("AuK generated audio contains NaN/Inf")
     wav = wav.float().cpu()
-    state.audio_samples = wav
     state.ref_audio = None
     state.qwen_audio = None
     state.prompt_tokens = int(mask.sum())
