@@ -57,10 +57,8 @@ class Qwen3OmniThinkerForCausalLM(nn.Module):
             quant_config=quant_config,
             prefix=add_prefix("model", prefix),
         )
-        # Note (Ratish): SGLang 0.5.19 changes the default deepstack addition order,
-        # regressing Omni's MMMU/Video-MME thinker accuracy. Restore the 0.5.18
-        # order on this model before forward/graph capture, without enabling
-        # global RL/on-policy mode.
+        # sglang v0.5.19's default deepstack order regresses omni visual accuracy;
+        # remove this override once the upstream default passes omni's visual checks.
         self.model.use_hf_deepstack_order = True
         if getattr(self.config, "tie_word_embeddings", False):
             self.lm_head = self.model.embed_tokens
