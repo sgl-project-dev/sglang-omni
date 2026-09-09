@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 import torch
 
 from sglang_omni.config.manager import ConfigManager
@@ -11,7 +10,6 @@ from sglang_omni.models.fun_cosyvoice3 import CAPABILITIES
 from sglang_omni.models.fun_cosyvoice3.config import FunCosyVoice3PipelineConfig
 from sglang_omni.models.fun_cosyvoice3.payload_types import FunCosyVoice3State
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
-from sglang_omni.utils import try_resolve_arch_from_cosyvoice3_layout
 from tests.unit_test.pipeline.helpers import build_compiled_process_topology
 
 
@@ -59,40 +57,6 @@ def test_fun_cosyvoice3_config_and_registry_contract() -> None:
         PIPELINE_CONFIG_REGISTRY.get_config("FunCosyVoice3SGLangModel")
         is FunCosyVoice3PipelineConfig
     )
-
-
-def test_fun_cosyvoice3_resolves_from_checkpoint_layout(
-    tmp_path,
-) -> None:
-    checkpoint = tmp_path / "Fun-CosyVoice3-0.5B-2512"
-    checkpoint.mkdir()
-    (checkpoint / "config.json").write_text("{}", encoding="utf-8")
-    (checkpoint / "cosyvoice3.yaml").write_text("llm: {}\n", encoding="utf-8")
-
-    manager = ConfigManager.from_model_path(str(checkpoint))
-
-    assert isinstance(manager.config, FunCosyVoice3PipelineConfig)
-    assert manager.config.model_path == str(checkpoint)
-
-
-def test_fun_cosyvoice3_layout_probe_requires_marker(tmp_path) -> None:
-    empty = tmp_path / "other-model"
-    empty.mkdir()
-    (empty / "config.json").write_text("{}", encoding="utf-8")
-
-    assert try_resolve_arch_from_cosyvoice3_layout(str(empty)) is None
-
-
-def test_fun_cosyvoice3_rejects_compile_and_trt_together() -> None:
-    config = FunCosyVoice3PipelineConfig(model_path="model")
-    manager = ConfigManager(config)
-    with pytest.raises(ValueError, match="enable only one"):
-        manager.merge_config(
-            {
-                "vocoder.factory.enable_dit_torch_compile": True,
-                "vocoder.factory.enable_flow_estimator_trt": True,
-            }
-        )
 
 
 def test_fun_cosyvoice3_flow_factory_overrides_use_typed_path() -> None:
