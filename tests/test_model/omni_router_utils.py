@@ -553,6 +553,10 @@ def worker_request_delta(before: dict, after: dict) -> dict:
         delta_workers.append(
             {
                 **worker,
+                "dispatches": [
+                    {"class": service_class, "requests": count}
+                    for service_class, count in class_counts.items()
+                ],
                 "routed_requests": sum(class_counts.values()),
                 "routed_requests_by_class": class_counts,
             }
