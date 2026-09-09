@@ -54,15 +54,27 @@ class AuKConditionEncoder:
             Qwen2_5OmniThinkerForConditionalGeneration,
         )
 
+        class AuKThinker(Qwen2_5OmniThinkerForConditionalGeneration):
+            # The full Omni checkpoint also contains speech-generation branches.
+            _keys_to_ignore_on_load_unexpected = [
+                *(
+                    Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected
+                    or []
+                ),
+                r"^(talker|token2wav)\.",
+            ]
+
         self.model_path = model_path
         self.device = torch.device(device)
         self.dtype = dtype
 
-        logger.info("AuK: loading Qwen2.5-Omni encoder from %s", model_path)
-        self.processor = Qwen2_5OmniProcessor.from_pretrained(model_path)
-        model = Qwen2_5OmniThinkerForConditionalGeneration.from_pretrained(
-            model_path, torch_dtype=dtype
+        logger.info(
+            "AuK: loading Qwen2.5-Omni Thinker from %s; "
+            "checkpoint talker/token2wav branches are unused",
+            model_path,
         )
+        self.processor = Qwen2_5OmniProcessor.from_pretrained(model_path)
+        model = AuKThinker.from_pretrained(model_path, torch_dtype=dtype)
         # Keep the multimodal Thinker (text + audio); drop the unused vision tower.
         model.visual = None
         # Only hidden states condition the DiT; vocabulary logits are unused.

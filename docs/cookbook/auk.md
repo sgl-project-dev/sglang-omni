@@ -1,14 +1,19 @@
 # AuK
 
-[AuK](https://huggingface.co/tencent/AuK) supports instruction-driven speech generation and editing.
+[AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash) support instruction-driven speech generation and editing. They share one pipeline. AuK-Flash is the DMD-distilled four-step recipe.
 
-The released `tencent/AuK` checkpoint uses:
+The released checkpoints use:
 
 | Component | Configuration |
 |---|---|
 | Conditioner | Frozen Qwen2.5-Omni-3B Thinker, text and audio only |
 | DiT | Flux-style MMDiT: 10 double-stream blocks, 20 single-stream blocks, dim=1536, 24 heads |
 | VAE | Shared reference encoder and audio decoder; 50 Hz, 64-channel latents |
+
+| Checkpoint | Sampling |
+|---|---|
+| [`tencent/AuK`](https://huggingface.co/tencent/AuK) | Euler, NFE=32, CFG=2.0, sway=-1.0 |
+| [`tencent/AuK-Flash`](https://huggingface.co/tencent/AuK-Flash) | Released four-step time grid, CFG=0. Factory `nfe` / `cfg_strength` / `sway_sampling_coef` are ignored |
 
 ## Prerequisites
 
@@ -18,16 +23,9 @@ Follow [Installation](../get_started/installation.md), then run from the reposit
 sgl-omni serve --model-path tencent/AuK --port 8000
 ```
 
-The server downloads AuK and the separate `Qwen/Qwen2.5-Omni-3B` encoder as needed. Serving knobs live on `AuKPipelineConfig`; there is no example YAML. To use a local encoder:
-
 ```bash
-sgl-omni serve \
-  --model-path tencent/AuK \
-  --auk_engine.factory.text_encoder_path /path/to/Qwen2.5-Omni-3B \
-  --port 8000
+sgl-omni serve --model-path tencent/AuK-Flash --port 8000
 ```
-
-For AuK-Flash, pass `--model-path tencent/AuK-Flash`. It fixes inference to the released four-step time grid with CFG disabled, ignoring the factory's `nfe`, `cfg_strength`, and `sway_sampling_coef` values.
 
 ## Speech Generation
 
@@ -85,7 +83,7 @@ Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing
 
 ## Sampling
 
-Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags; request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
+Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on `tencent/AuK-Flash`. Request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
 
 `seed` controls target noise only. Reference VAE posterior sampling uses the process RNG, so a request seed alone does not make voice cloning deterministic. Multiple structured references are rejected.
 
@@ -114,7 +112,13 @@ AUK_PARITY_CHECKPOINT=tencent/AuK \
 python -m pytest tests/test_model/test_auk_parity.py -v
 ```
 
-Set `AUK_PARITY_CHECKPOINT=tencent/AuK-Flash` to test Flash. `AUK_QWEN_CHECKPOINT` optionally selects a local encoder. The test skips unless both `AUK_UPSTREAM_SOURCE` and `AUK_PARITY_CHECKPOINT` are set.
+```bash
+AUK_UPSTREAM_SOURCE=/tmp/AuK \
+AUK_PARITY_CHECKPOINT=tencent/AuK-Flash \
+python -m pytest tests/test_model/test_auk_parity.py -v
+```
+
+`AUK_QWEN_CHECKPOINT` optionally selects a local encoder. The test skips unless both `AUK_UPSTREAM_SOURCE` and `AUK_PARITY_CHECKPOINT` are set.
 
 ## Attribution
 
