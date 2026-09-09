@@ -147,14 +147,35 @@ def create_sglang_infrastructure(
                 "engine.kv_cache_bytes is not supported on the MLX path; "
                 "remove it or run this stage on CUDA"
             )
-        from sglang_omni.model_runner.mlx_model_worker import create_mlx_model_worker
+        if model_arch_override is not None:
+            from sglang_omni.models.dots_tts.hf_config import (
+                DOTS_TTS_MODEL_ARCH_OVERRIDE,
+            )
 
-        model_worker = create_mlx_model_worker(
-            config=worker_config,
-            server_args=server_args,
-            gpu_id=gpu_id,
-            tp_rank=tp_rank,
-        )
+            # note (guozhihao-224): dots.tts' MLX path is not an mlx_lm token
+            # runner; keep the plain worker and run MLX compute in an omni
+            # ModelRunner, preserving the request-data plumbing.
+            is_dots = model_arch_override == DOTS_TTS_MODEL_ARCH_OVERRIDE
+        else:
+            is_dots = False
+        if is_dots:
+            model_worker = ModelWorker(
+                config=worker_config,
+                server_args=server_args,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+            )
+        else:
+            from sglang_omni.model_runner.mlx_model_worker import (
+                create_mlx_model_worker,
+            )
+
+            model_worker = create_mlx_model_worker(
+                config=worker_config,
+                server_args=server_args,
+                gpu_id=gpu_id,
+                tp_rank=tp_rank,
+            )
     else:
         model_worker = ModelWorker(
             config=worker_config,

@@ -12,6 +12,56 @@ from types import ModuleType
 _IMPORT_LOCK = threading.Lock()
 
 
+def _install_tn_shim() -> None:
+    """Back tn.chinese / tn.english with wetext when Pynini is absent.
+
+    dots_tts.utils.text imports WeTextProcessing's Normalizers at module
+    scope, and WeTextProcessing depends on Pynini, which ships no macOS
+    wheels — without a substitute the whole dots_tts package fails to import
+    on Apple Silicon. wetext is the pure-Python runtime for the same FSTs,
+    so when the real tn is missing and wetext is installed, register
+    drop-in normalizer modules under the names dots.tts imports.
+    """
+    try:
+        importlib.import_module("tn.chinese.normalizer")
+        return
+    except ImportError:
+        pass
+    try:
+        from wetext import Normalizer as _WetextNormalizer
+    except ImportError:
+        return
+
+    def _make_normalizer_module(package_lang: str, wetext_lang: str) -> ModuleType:
+        module = ModuleType(f"tn.{package_lang}.normalizer")
+
+        class Normalizer:
+            def __init__(self) -> None:
+                self._impl = _WetextNormalizer(lang=wetext_lang, operator="tn")
+
+            def normalize(self, text: str) -> str:
+                return self._impl.normalize(text)
+
+        module.Normalizer = Normalizer
+        return module
+
+    tn = ModuleType("tn")
+    for package_lang, wetext_lang in (("chinese", "zh"), ("english", "en")):
+        package = ModuleType(f"tn.{package_lang}")
+        normalizer = _make_normalizer_module(package_lang, wetext_lang)
+        package.normalizer = normalizer
+        tn.__dict__[package_lang] = package
+        sys.modules[f"tn.{package_lang}"] = package
+        sys.modules[f"tn.{package_lang}.normalizer"] = normalizer
+    sys.modules["tn"] = tn
+
+
+# note (guozhihao-224): installed at module scope because dots_tts submodules
+# can be imported without going through import_dots_tts; a no-op where the
+# real tn exists.
+_install_tn_shim()
+
+
 def import_dots_tts() -> ModuleType:
     """Import the dots_tts package past its torch/torchaudio version check.
 
@@ -46,3 +96,15 @@ def import_dots_tts() -> ModuleType:
             return importlib.import_module("dots_tts")
         finally:
             importlib.metadata.version = reader
+
+
+def import_dots_solver_deps() -> ModuleType:
+    """Import the DiT solver chain on the host default device.
+
+    torchdiffeq materializes its float64 tableau tensors at import time
+    (torchdiffeq/_impl/dopri5.py). SGLang constructs models inside
+    ``torch.device("mps")``, where float64 does not exist, so the chain must
+    be imported before that context opens. Subsequent imports are no-ops.
+    """
+    import_dots_tts()
+    return importlib.import_module("dots_tts.models.dots_tts.core")
