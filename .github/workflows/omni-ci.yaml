@@ -318,7 +318,9 @@ jobs:
             selection_index=$((16#${selection_digest: -1} % ${#models[@]}))
             selected_model="${models[${selection_index}]}"
             selection_reason="stable_github_run_id_digest"
+            echo "Selection digest for TTS CI model: ${selection_digest}"
           fi
+          echo "Selected TTS CI model: ${selected_model}"
 
           # Note (Jiaxin Deng): Qwen3-TTS is gated as a single instance and
           # has no pool of its own, so stage 5 borrows moss there. Skipping it

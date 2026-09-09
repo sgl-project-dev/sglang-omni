@@ -21,7 +21,7 @@ tests/
     ├── ci/
     │   ├── test_cpu_contention.py
     │   ├── test_cpuset_pinning.py
-    │   ├── test_tts_model_rotation_contract.py
+    │   ├── test_ci_model_pick.py
     │   ├── test_tts_mps_runtime.py
     │   └── test_tts_mps_workflow_contract.py
     ├── cli/
