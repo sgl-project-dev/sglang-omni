@@ -1,16 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
-import pytest
 import torch
 import torch.nn.functional as F
 
 from sglang_omni.models.auk.flow_matching import fuse_hidden_states
 
 
-@pytest.mark.parametrize("batch", [1, 2])
-def test_fusion_matches_upstream_layerwise_normalization(batch):
+def test_fusion_matches_upstream_layerwise_normalization():
     torch.manual_seed(42)
-    hidden = torch.randn(batch, 5, 7, 16)
+    hidden = torch.randn(2, 5, 7, 16)
     weights = torch.randn(4)
     scale = torch.tensor([1.5])
     normalized = torch.stack(

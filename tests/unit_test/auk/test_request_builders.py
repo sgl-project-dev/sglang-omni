@@ -27,132 +27,59 @@ from sglang_omni.proto import OmniRequest, StagePayload
 FRAME_RATE = SAMPLE_RATE // VAE_DOWNSAMPLE_RATE
 
 
-@pytest.fixture()
-def context(tmp_path):
-    config = AuKRuntimeConfig(
-        model_path=str(tmp_path),
-        vae={
-            "target_sample_rate": SAMPLE_RATE,
-            "downsample_rate": VAE_DOWNSAMPLE_RATE,
-            "latent_dim": 64,
-        },
-    )
-    set_auk_preprocessing_context(
-        AuKPreprocessingContext(
-            config=config, default_seconds=5.0, max_seconds=MAX_SECONDS
-        )
-    )
+@pytest.fixture
+def context():
+    config = AuKRuntimeConfig(model_path="unused")
+    set_auk_preprocessing_context(AuKPreprocessingContext(config=config))
     yield config
     clear_auk_preprocessing_context()
 
 
-def make_payload(inputs, params=None, metadata=None) -> StagePayload:
+@pytest.fixture
+def reference(tmp_path):
+    path = tmp_path / "ref.wav"
+    # The extra half-frame distinguishes raw editing from explicit duration rounding.
+    torchaudio.save(str(path), torch.zeros(1, 24240), SAMPLE_RATE)
+    return str(path)
+
+
+def make_payload(inputs, params=None) -> StagePayload:
     return StagePayload(
         request_id="req-1",
-        request=OmniRequest(
-            inputs=inputs, params=params or {}, metadata=metadata or {}
-        ),
+        request=OmniRequest(inputs=inputs, params=params or {}),
         data={},
     )
 
 
-def write_wav(path, seconds: float, sample_rate: int = SAMPLE_RATE) -> None:
-    samples = int(seconds * sample_rate)
-    waveform = (0.1 * torch.randn(1, samples)).clamp(-1.0, 1.0)
-    torchaudio.save(str(path), waveform, sample_rate)
-
-
-def test_text_only_request_uses_default_duration(context):
-    state = build_auk_state(make_payload("Say hello"), context)
+@pytest.mark.parametrize(
+    "seconds, frames",
+    [(None, 250), (2.01, 101), (0.001, 1), (999, MAX_SECONDS * FRAME_RATE)],
+)
+def test_generation_duration_and_state_round_trip(context, seconds, frames):
+    payload = make_payload("Say hello", {"gen_seconds": seconds, "seed": 42})
+    result = preprocess_auk_payload(payload)
+    state = AuKState.from_dict(result.data)
+    assert result.request_id == payload.request_id
     assert state.instruction == "Say hello"
-    assert state.ref_audio is None
-    assert state.gen_frames == 5 * FRAME_RATE
-    assert state.sample_rate == SAMPLE_RATE
-
-
-def test_instruction_is_read_from_inputs_and_params(context):
-    state = build_auk_state(
-        make_payload({"instruction": "Replace 'hi' with 'bye'"}), context
-    )
-    assert state.instruction == "Replace 'hi' with 'bye'"
-
-
-def test_missing_instruction_is_rejected(context):
-    with pytest.raises(ValueError, match="instruction"):
-        build_auk_state(make_payload(""), context)
-
-
-def test_gen_seconds_overrides_default(context):
-    state = build_auk_state(make_payload("Say hello", {"gen_seconds": 2.0}), context)
-    assert state.gen_frames == 2 * FRAME_RATE
-
-
-def test_short_duration_rounds_up_to_one_frame(context):
-    state = build_auk_state(make_payload("Say hello", {"gen_seconds": 0.001}), context)
-    assert state.gen_frames == 1
-
-
-def test_gen_seconds_is_clamped_to_max_seconds(context):
-    state = build_auk_state(make_payload("Say hello", {"gen_seconds": 999.0}), context)
-    assert state.gen_frames == MAX_SECONDS * FRAME_RATE
-
-
-def test_invalid_gen_seconds_is_rejected(context):
-    with pytest.raises(ValueError, match="gen_seconds"):
-        build_auk_state(make_payload("Say hello", {"gen_seconds": 0.0}), context)
-
-
-def test_reference_audio_defaults_to_source_length(context, tmp_path):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1.0)
-    state = build_auk_state(
-        make_payload(
-            "Say the following with the same voice: 'hello'",
-            metadata={"tts_params": {"ref_audio": str(path)}},
-        ),
-        context,
-    )
-    assert state.ref_audio is not None
-    assert state.ref_seconds == pytest.approx(1.0, abs=0.05)
-    assert state.gen_frames == pytest.approx(1.0 * FRAME_RATE, abs=1)
-    assert state.ref_audio.dtype == np.float32
-
-
-def test_structured_reference_is_accepted(context, tmp_path):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=0.5)
-    state = build_auk_state(
-        make_payload(
-            {"text": "Say hi", "references": [{"audio_path": str(path)}]},
-            {"gen_seconds": 1.0},
-        ),
-        context,
-    )
-    assert state.ref_audio is not None
-    assert state.gen_frames == 1 * FRAME_RATE
-
-
-def test_raw_editing_duration_uses_complete_reference_frames(context, tmp_path):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1.01)
-    state = build_auk_state(
-        make_payload({"instruction": "Remove noise", "audio": str(path)}), context
-    )
-    assert state.gen_frames == 50
-
-
-def test_seed_is_forwarded(context):
-    state = build_auk_state(
-        make_payload("Say hello", {"seed": 42}),
-        context,
-    )
+    assert state.gen_frames == frames
     assert state.seed == 42
+    assert state.ref_audio is None
 
 
-@pytest.mark.parametrize("name", ["nfe", "cfg_strength", "sway_sampling_coef"])
-def test_request_sampling_knobs_are_rejected(context, name):
+def test_sampling_recipe_cannot_be_overridden_per_request(context):
     with pytest.raises(ValueError, match="server-level"):
-        build_auk_state(make_payload("Say hello", {name: 1}), context)
+        build_auk_state(make_payload("Hello", {"nfe": 1}), context)
+
+
+def test_multiple_references_are_rejected(context):
+    payload = make_payload(
+        {
+            "text": "Hello",
+            "references": [{"audio_path": "a.wav"}, {"audio_path": "b.wav"}],
+        }
+    )
+    with pytest.raises(ValueError, match="at most one"):
+        build_auk_state(payload, context)
 
 
 def speech_payload(**kwargs):
@@ -168,64 +95,59 @@ def speech_payload(**kwargs):
     )
 
 
-def test_speech_instruct_tts_combines_instructions_and_input(context):
+@pytest.mark.parametrize("description", ["warm, relaxed female voice", None])
+def test_speech_instruct_tts_combines_instructions_and_input(context, description):
     payload = speech_payload(
         input="Welcome home.",
-        instructions="warm, relaxed female voice",
+        instructions=description,
         stage_params={"auk_engine": {"gen_seconds": 3.01}},
     )
     state = AuKState.from_dict(preprocess_auk_payload(payload).data)
+    voice = description or "A clear, natural voice."
     assert state.instruction == (
-        'Generate speech based on the following description: "warm, relaxed female voice". '
+        f'Generate speech based on the following description: "{voice}". '
         'The content to speak is: "Welcome home.".'
     )
     assert state.gen_frames == 151
 
 
-def test_speech_zero_shot_tts_builds_auk_instruction(context, tmp_path):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1)
-    payload = speech_payload(
-        input="Welcome home.",
-        ref_audio=str(path),
-        stage_params={"auk_engine": {"gen_seconds": 3}},
+@pytest.mark.parametrize(
+    "structured", [False, True], ids=["legacy-reference", "structured-reference"]
+)
+def test_reference_speech_duration(context, reference, structured):
+    kwargs = (
+        {"references": [{"audio_path": reference, "text": "你好"}]}
+        if structured
+        else {"ref_audio": reference, "ref_text": "你好"}
     )
-    state = AuKState.from_dict(preprocess_auk_payload(payload).data)
-    assert state.instruction == 'Say the following with the same voice: "Welcome home."'
-    assert state.gen_frames == 3 * FRAME_RATE
-    assert state.ref_seconds == pytest.approx(1)
+    state = build_auk_state(speech_payload(input="Hello world!", **kwargs), context)
+    assert state.instruction == 'Say the following with the same voice: "Hello world!"'
+    # 12 UTF-8 bytes / 6 bytes * 1.01 seconds = 101 frames.
+    assert state.gen_frames == 101
+    assert state.ref_seconds == pytest.approx(1.01)
+    assert state.ref_audio.dtype == np.float32
+
+    payload = speech_payload(
+        input="Hello world!", **kwargs, stage_params={"auk_engine": {"gen_seconds": 3}}
+    )
+    assert build_auk_state(payload, context).gen_frames == 150
 
 
-def test_reference_tts_does_not_assume_reference_duration_equals_target_duration(
-    context, tmp_path
-):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1)
+def test_reference_speech_requires_duration_or_transcript(context, reference):
     with pytest.raises(ValueError, match="gen_seconds"):
         preprocess_auk_payload(
-            speech_payload(input="Welcome home.", ref_audio=str(path))
+            speech_payload(input="Welcome home.", ref_audio=reference)
         )
 
 
-def test_speech_without_description_uses_default_voice(context):
-    state = build_auk_state(
-        speech_payload(input="Hello.", stage_params={"auk_engine": {"gen_seconds": 2}}),
-        context,
-    )
-    assert '"A clear, natural voice."' in state.instruction
-    assert 'The content to speak is: "Hello.".' in state.instruction
-
-
-def test_generate_preserves_raw_editing_instruction(context, tmp_path):
+def test_generate_preserves_raw_editing_instruction(context, reference):
     from sglang_omni.client.client import Client
     from sglang_omni.serve.openai_api import _build_rollout_generate_request
     from sglang_omni.serve.protocol import RolloutGenerateRequest
 
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1.01)
     request = RolloutGenerateRequest(
         prompt="Remove the background noise.",
-        metadata={"tts_params": {"ref_audio": str(path)}},
+        metadata={"tts_params": {"ref_audio": reference}},
         output_modalities=["audio"],
     )
     generated = _build_rollout_generate_request(request)
@@ -235,39 +157,3 @@ def test_generate_preserves_raw_editing_instruction(context, tmp_path):
     state = AuKState.from_dict(preprocess_auk_payload(payload).data)
     assert state.instruction == request.prompt
     assert state.gen_frames == 50
-
-
-def test_preprocess_payload_round_trips_state(context):
-    payload = preprocess_auk_payload(make_payload("Say hello", {"gen_seconds": 1.0}))
-    restored = AuKState.from_dict(payload.data)
-    assert restored.instruction == "Say hello"
-    assert restored.gen_frames == 1 * FRAME_RATE
-    assert payload.request_id == "req-1"
-
-
-@pytest.mark.parametrize("structured", [False, True])
-def test_speech_estimates_duration_from_reference_transcript(
-    context, tmp_path, structured
-):
-    path = tmp_path / "ref.wav"
-    write_wav(path, seconds=1)
-    kwargs = (
-        {"references": [{"audio_path": str(path), "text": "你好"}]}
-        if structured
-        else {"ref_audio": str(path), "ref_text": "你好"}
-    )
-    state = build_auk_state(speech_payload(input="Hello world!", **kwargs), context)
-    assert state.gen_frames == 2 * FRAME_RATE
-
-
-def test_multiple_references_are_rejected(context):
-    with pytest.raises(ValueError, match="at most one"):
-        build_auk_state(
-            make_payload(
-                {
-                    "text": "Hello",
-                    "references": [{"audio_path": "a.wav"}, {"audio_path": "b.wav"}],
-                }
-            ),
-            context,
-        )

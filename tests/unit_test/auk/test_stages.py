@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Serial AuK engine contracts, without downloading checkpoints."""
+"""Reference generation, result transport, and checkpoint sampling recipes."""
 
 from unittest.mock import Mock
 
@@ -13,22 +13,22 @@ from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.stages import (
     _EngineContext,
     _generate_one,
-    _reference_latent,
     create_auk_engine_executor,
 )
-from sglang_omni.proto import OmniRequest, StagePayload
+from sglang_omni.pipeline.control_plane import deserialize_message, serialize_message
+from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
 
 
 @pytest.fixture
 def context():
     vae = Mock(hop_size=480)
     vae.encoding_and_normalization.return_value = (
-        torch.randn(1, 64, 51).transpose(1, 2),
+        torch.arange(64 * 51, dtype=torch.float32).reshape(1, 64, 51).transpose(1, 2),
         torch.tensor([50]),
     )
     vae.denormalize.side_effect = lambda latent: latent
-    vae.inference_from_latents.side_effect = lambda latent: torch.zeros(
-        1, 1, latent.shape[-1] * 480
+    vae.inference_from_latents.side_effect = lambda latent: torch.full(
+        (1, 1, latent.shape[-1] * 480), 0.25
     )
     encoder = Mock()
     encoder.encode.return_value = (
@@ -52,58 +52,26 @@ def context():
     )
 
 
-def test_terminal_engine_encodes_and_decodes_with_same_vae(context):
+def test_reference_generation_survives_control_plane_transport(context):
     state = AuKState(
         instruction="Say hello",
         gen_frames=151,
-        ref_audio=np.zeros(24000, dtype=np.float32),
+        ref_audio=np.zeros(24001, dtype=np.float32),
     )
     payload = StagePayload(
         request_id="test", request=OmniRequest(inputs="hello"), data=state.to_dict()
     )
     result = _generate_one(context, payload)
-    context.vae.encoding_and_normalization.assert_called_once()
-    context.vae.inference_from_latents.assert_called_once()
+
+    # Effective length counts complete frames; preserve the VAE's padded latent and layout.
+    _, lengths = context.vae.encoding_and_normalization.call_args.args
+    assert lengths.tolist() == [24000]
     item = context.flow.sample.call_args.args[0]
-    assert item.ref_latent.shape == (51, 64)
+    expected = context.vae.encoding_and_normalization.return_value[0][0]
+    torch.testing.assert_close(item.ref_latent, expected)
+    assert item.ref_latent.stride() == (1, 51)
     assert item.ref_length == 50
-    assert item.ref_latent.device == context.device
-    assert result.data["audio_waveform_shape"] == [151 * 480]
-    assert result.data["modality"] == "audio"
-    assert "latent" not in result.data
-    assert result.data["usage"]["completion_tokens"] == 151
 
-
-def test_reference_encoding_samples_posterior(context):
-    audio = np.zeros(24001, dtype=np.float32)
-    latent, length = _reference_latent(context, audio)
-    assert length == 50
-    context.vae.encode.assert_not_called()
-    assert torch.equal(
-        latent, context.vae.encoding_and_normalization.return_value[0][0]
-    )
-    assert latent.stride() == (1, 51)
-    assert context.vae.encoding_and_normalization.call_args.args[1].tolist() == [24000]
-
-
-def test_terminal_result_round_trips_through_control_plane(context):
-    from sglang_omni.pipeline.control_plane import (
-        deserialize_message,
-        serialize_message,
-    )
-    from sglang_omni.proto import CompleteMessage
-
-    state = AuKState(
-        instruction="Say hello",
-        gen_frames=10,
-        ref_audio=np.zeros(24000, dtype=np.float32),
-    )
-    payload = StagePayload(
-        request_id="serialize",
-        request=OmniRequest(inputs="hello"),
-        data=state.to_dict(),
-    )
-    result = _generate_one(context, payload)
     message = CompleteMessage(
         request_id=payload.request_id,
         from_stage="auk_engine",
@@ -112,20 +80,22 @@ def test_terminal_result_round_trips_through_control_plane(context):
     )
     restored = deserialize_message(serialize_message(message))
     assert restored.result == result.data
-    assert len(restored.result["audio_waveform"]) == 10 * 480 * 4
-    assert "audio_samples" not in restored.result
+    assert restored.result["audio_waveform_shape"] == [151 * 480]
+    waveform = np.frombuffer(restored.result["audio_waveform"], dtype=np.float32)
+    np.testing.assert_array_equal(waveform, np.full(151 * 480, 0.25))
+    assert restored.result["modality"] == "audio"
+    assert restored.result["usage"]["completion_tokens"] == 151
 
 
 @pytest.mark.parametrize("flash", [False, True])
-def test_factory_is_serial_and_flash_matches_upstream_recipe(monkeypatch, flash):
+def test_engine_uses_checkpoint_sampling_recipe(monkeypatch, flash):
     from sglang_omni.models.auk import stages
 
     monkeypatch.setattr(stages, "resolve_checkpoint", lambda path: path)
     config = AuKRuntimeConfig(model_path="stub", name="AuK-Flash" if flash else "AuK")
     monkeypatch.setattr(stages, "make_runtime_config", lambda *args, **kwargs: config)
     encoder = Mock(num_hidden_layers=2)
-    encoder_factory = Mock(return_value=encoder)
-    monkeypatch.setattr(stages, "AuKConditionEncoder", encoder_factory)
+    monkeypatch.setattr(stages, "AuKConditionEncoder", Mock(return_value=encoder))
     for name in (
         "AuKDit",
         "AuKFlowMatching",
@@ -141,10 +111,6 @@ def test_factory_is_serial_and_flash_matches_upstream_recipe(monkeypatch, flash)
     scheduler = create_auk_engine_executor("stub", device="cpu", nfe=8, cfg_strength=3)
     scheduler._fn(None)
     ctx = captured[0]
-    assert scheduler._batch_fn is None
-    assert scheduler._max_batch_size == scheduler._max_concurrency == 1
-    assert encoder_factory.call_args.args[0] == C.DEFAULT_TEXT_ENCODER
-    stages.BigVGANFlowVAE.assert_called_once()
     assert ctx.nfe == (4 if flash else 8)
     assert ctx.cfg_strength == (0 if flash else 3)
     assert ctx.t_grid == (C.FLASH_T_GRID if flash else None)

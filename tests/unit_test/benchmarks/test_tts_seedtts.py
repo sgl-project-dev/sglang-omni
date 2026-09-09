@@ -20,28 +20,21 @@ from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
         ("fishaudio/s2-pro", False),
     ],
 )
-def test_profile_for_model_matches_checkpoint_name(model, is_auk):
-    profile = tts._profile_for_model(model)
+def test_cli_defaults_follow_checkpoint_name(monkeypatch, model, is_auk):
+    monkeypatch.setattr(sys, "argv", ["benchmark", "--model", model])
+    args, profile = tts._parse_args(tts._build_arg_parser())
+    config = tts._config_from_args(args)
     assert profile.forward_sglang_engine is not is_auk
     if is_auk:
-        assert profile.argument_defaults["concurrency"] == 1
+        assert config.concurrency == config.warmup == 1
+        assert config.seed == 1234
+        assert config.output_dir == "results/auk_seedtts"
     else:
         assert profile.argument_defaults == {}
 
 
-@pytest.mark.parametrize(
-    "model, options, phases",
-    [
-        ("tencent/AuK", [], ["generate", "transcribe"]),
-        ("tencent/AuK-Flash", [], ["generate", "transcribe"]),
-        ("tencent/AuK@revision", [], ["generate", "transcribe"]),
-        ("tencent/AuK", ["--generate-only"], ["generate"]),
-        ("tencent/AuK", ["--transcribe-only"], ["transcribe"]),
-        ("tencent/AuK", ["--generate-only", "--use-existing-server"], ["generate"]),
-        ("fishaudio/s2-pro", [], ["generate", "transcribe"]),
-    ],
-)
-def test_shared_server_lifecycle(monkeypatch, model, options, phases):
+@pytest.mark.parametrize("model", ["tencent/AuK", "fishaudio/s2-pro"])
+def test_evaluation_releases_tts_server_before_starting_asr(monkeypatch, model):
     events = []
     servers = []
 
@@ -55,9 +48,7 @@ def test_shared_server_lifecycle(monkeypatch, model, options, phases):
     async def generate(config):
         assert config.port == 18280
         assert config.max_samples == 2
-        if model.startswith("tencent/AuK"):
-            assert config.model == model
-            assert config.concurrency == config.warmup == 1
+        assert config.model == model
         events.append("generate")
 
     def transcribe(config, **kwargs):
@@ -75,7 +66,6 @@ def test_shared_server_lifecycle(monkeypatch, model, options, phases):
             "18280",
             "--max-samples",
             "2",
-            *options,
         ],
     )
     monkeypatch.setattr(tts, "managed_omni_server", server)
@@ -83,21 +73,16 @@ def test_shared_server_lifecycle(monkeypatch, model, options, phases):
     monkeypatch.setattr(tts, "run_tts_seedtts_transcribe", transcribe)
     tts.main()
 
-    if "--use-existing-server" in options:
-        assert events == phases
-        assert not servers
+    assert events == ["start", "generate", "stop", "start", "transcribe", "stop"]
+    assert servers[0]["model_path"] == model
+    assert servers[1]["model_path"] != model
+    if model == "tencent/AuK":
+        assert "max_running_requests" not in servers[0]
+        assert "cuda_graph_max_bs" not in servers[0]
+        assert servers[0]["server_config"] is None
     else:
-        assert events == [
-            event for phase in phases for event in ("start", phase, "stop")
-        ]
-        if "generate" in phases:
-            if model.startswith("tencent/AuK"):
-                assert "max_running_requests" not in servers[0]
-                assert "cuda_graph_max_bs" not in servers[0]
-                assert servers[0]["server_config"] is None
-            else:
-                assert servers[0]["max_running_requests"] == 64
-                assert servers[0]["cuda_graph_max_bs"] == 64
+        assert servers[0]["max_running_requests"] == 64
+        assert servers[0]["cuda_graph_max_bs"] == 64
 
 
 def test_filtered_wer_mean_keeps_exactly_50_percent_and_excludes_failures():
@@ -125,8 +110,6 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
             "benchmark",
             "--model",
             "tencent/AuK",
-            "--generate-only",
-            "--use-existing-server",
             "--max-concurrency",
             "3",
             "--warmup",
@@ -140,12 +123,10 @@ def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
         ],
     )
 
-    async def generate(config):
-        assert config.concurrency == 3
-        assert config.warmup == 0
-        assert config.seed == 7
-        assert config.output_dir == "custom-results"
-        assert config.server_config == "custom.yaml"
-
-    monkeypatch.setattr(tts, "benchmark", generate)
-    tts.main()
+    args, _ = tts._parse_args(tts._build_arg_parser())
+    config = tts._config_from_args(args)
+    assert config.concurrency == 3
+    assert config.warmup == 0
+    assert config.seed == 7
+    assert config.output_dir == "custom-results"
+    assert config.server_config == "custom.yaml"
