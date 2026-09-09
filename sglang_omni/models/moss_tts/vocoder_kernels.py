@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Shared inference kernels for the MOSS audio-tokenizer vocoder."""
+"""Shared inference kernels for the MOSS-Audio-Tokenizer vocoder."""
 
 from __future__ import annotations
 
@@ -133,21 +133,22 @@ def apply_exact_interleaved_rope_inplace(
         return False
     total_pairs = tokens * num_heads * (head_dim // 2)
     block_size = _EXACT_ROPE_BLOCK_SIZE
-    _exact_interleaved_rope_kernel[(triton.cdiv(total_pairs, block_size),)](
-        q,
-        k,
-        cos_sin_cache,
-        position_ids,
-        total_pairs,
-        q.stride(0),
-        q.stride(1),
-        k.stride(0),
-        k.stride(1),
-        num_heads=num_heads,
-        head_dim=head_dim,
-        block_size=block_size,
-        num_warps=_EXACT_ROPE_NUM_WARPS,
-    )
+    with torch.cuda.device(q.device):
+        _exact_interleaved_rope_kernel[(triton.cdiv(total_pairs, block_size),)](
+            q,
+            k,
+            cos_sin_cache,
+            position_ids,
+            total_pairs,
+            q.stride(0),
+            q.stride(1),
+            k.stride(0),
+            k.stride(1),
+            num_heads=num_heads,
+            head_dim=head_dim,
+            block_size=block_size,
+            num_warps=_EXACT_ROPE_NUM_WARPS,
+        )
     return True
 
 
