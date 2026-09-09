@@ -97,11 +97,11 @@ class ConfigManager:
         """Merge the configuration and the extra arguments.
 
         The dotted keys are translated into canonical patches and applied by
-        :class:`~sglang_omni.config.resolver.ConfigResolver`, which is the only
+        :class:sglang_omni.config.resolver.ConfigResolver, which is the only
         code that writes into a configuration.
 
-        ``extra_patches`` carries patches a caller has already translated --
-        the ``--model-path`` flag in ``sgl-omni serve``, for instance.
+        extra_patches carries patches a caller has already translated --
+        the --model-path flag in sgl-omni serve, for instance.
         Everything is resolved together, in one patch set, so that writing the
         same path two ways is refused (or settled by declared specificity)
         rather than by the order the translations happen to run in.

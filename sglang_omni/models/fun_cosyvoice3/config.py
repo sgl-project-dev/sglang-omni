@@ -94,6 +94,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
     ]
 
     def model_post_init(self, __context: Any = None) -> None:
+        # TODO (chenyang): Indeed, TRT and Torch compile conflicts are pretty
+        # common in this repo, so we should make this into config level, not in each model.
         super().model_post_init(__context)
         vocoder = next(stage for stage in self.stages if stage.name == "vocoder")
         extras = vocoder.factory.model_extra
