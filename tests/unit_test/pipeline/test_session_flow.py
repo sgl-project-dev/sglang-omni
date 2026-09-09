@@ -134,3 +134,50 @@ async def test_clear_preserves_input_clock_and_copies_discarded_payload(tmp_path
         assert [r.input_seq for r in receipts] == [0, 2]
         assert receipts[-1].eos
         await output.aclose()
+
+
+@pytest.mark.asyncio
+async def test_open_inputs_are_not_relayed_by_later_commands(tmp_path, monkeypatch):
+    from dataclasses import asdict
+
+    import msgpack
+
+    from sglang_omni.admission import QueueFullError
+    from sglang_omni.proto.session import SESSION_METADATA_KEY, SessionLimits
+
+    async with pipeline(tmp_path) as (coordinator, events, processes):
+        submitted = []
+        submit = coordinator._submit_request
+
+        async def record(request_id, request, **kwargs):
+            submitted.append(
+                (request.metadata[SESSION_METADATA_KEY]["op"], request.inputs)
+            )
+            return await submit(request_id, request, **kwargs)
+
+        monkeypatch.setattr(coordinator, "_submit_request", record)
+        request = OmniRequest(b"initial audio")
+        unit = TimedChunk("audio", 0, 80, 0, b"unit")
+        limit = len(msgpack.packb(asdict(unit), use_bin_type=True))
+        ref = await coordinator.open_session(
+            request,
+            stages=["source", "sink"],
+            limits=SessionLimits(max_chunk_bytes=limit),
+        )
+        output = coordinator.session_outputs(ref)
+        with pytest.raises(QueueFullError):
+            await coordinator.append_session(
+                ref, TimedChunk("audio", 0, 80, 0, b"units")
+            )
+        await coordinator.append_session(ref, unit)
+        assert (await asyncio.wait_for(anext(output), 5)).kind == "data"
+        assert (await asyncio.wait_for(anext(output), 5)).kind == "input_done"
+        ref = await coordinator.abort_session(ref)
+        await output.aclose()
+        assert [value for op, value in submitted if op == "open"] == [
+            request.inputs
+        ] * 2
+        later = [(op, value) for op, value in submitted if op != "open"]
+        assert {op for op, _ in later} == {"append", "abort", "close"}
+        assert all(value is None for _, value in later)
+        assert request.inputs == b"initial audio"

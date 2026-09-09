@@ -863,7 +863,7 @@ that happened to contain an older version of the test.
   ZMQ control messages and shared-memory tensor relay. Only model hooks are synthetic;
   they do not establish native-model or accelerator correctness.
 - `unit_test/scheduling/test_session.py`: Session value validation, stage usage
-  accounting and state cleanup without worker processes. Run the session suite with
+  accounting, exact binary chunk wire sizes and state cleanup without worker processes. Run the session suite with
   `python -m pytest tests/unit_test/pipeline/test_session_*.py tests/unit_test/scheduling/test_session.py -q`.
 
 - `unit_test/pipeline/test_session_shutdown.py`: Deterministic thread and trace

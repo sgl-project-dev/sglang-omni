@@ -152,6 +152,7 @@ class CoordinatorSessions:
                 self._owned_session_task(self._close_session_state(session))
             )
             raise
+        session.request = replace(request, inputs=None)
         session.pump = asyncio.create_task(self._pump_session(session))
         return session.ref
 
@@ -166,8 +167,11 @@ class CoordinatorSessions:
             raise ValueError("input after EOS")
         if chunk.t_start_ms < session.ends.get(chunk.modality, 0):
             raise ValueError("input timing overlaps or moves backwards")
-        encoded = msgpack.packb(asdict(chunk), use_bin_type=True)
-        size = len(encoded)
+        if isinstance(chunk.payload, bytes):
+            size = wire_size(asdict(chunk))
+        else:
+            encoded = msgpack.packb(asdict(chunk), use_bin_type=True)
+            size = len(encoded)
         limits = session.limits
         if (
             size > limits.max_chunk_bytes
@@ -180,7 +184,8 @@ class CoordinatorSessions:
             and len(session.ends) >= limits.max_modalities
         ):
             raise QueueFullError()
-        chunk = TimedChunk(**msgpack.unpackb(encoded, raw=False))
+        if not isinstance(chunk.payload, bytes):
+            chunk = TimedChunk(**msgpack.unpackb(encoded, raw=False))
         session.pending.append((chunk, size))
         session.pending_count += 1
         session.pending_bytes += size

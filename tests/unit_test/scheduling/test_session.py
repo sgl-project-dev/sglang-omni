@@ -134,3 +134,39 @@ def test_ordinary_request_uses_handler_or_reports_scoped_error(configured):
         scheduler.stop()
         worker.join(timeout=5)
     assert not worker.is_alive()
+
+
+@pytest.mark.parametrize("size", [0, 255, 256, 65535, 65536])
+def test_binary_chunk_wire_size_matches_msgpack(size, monkeypatch):
+    import msgpack
+
+    from sglang_omni.proto.session import OutputChunk, wire_size
+
+    chunk = TimedChunk("audio", 0, 80, 0, b"x" * size, format="pcm16")
+    output = OutputChunk(
+        SessionRef("session"),
+        0,
+        0,
+        **{key: value for key, value in asdict(chunk).items() if key != "seq"},
+    )
+    pack = msgpack.packb
+    values = [asdict(chunk), asdict(output)]
+    expected = [len(pack(value, use_bin_type=True)) for value in values]
+    encoded_payloads = []
+
+    def record(value, **kwargs):
+        encoded_payloads.append(len(value["payload"]))
+        return pack(value, **kwargs)
+
+    monkeypatch.setattr(msgpack, "packb", record)
+    assert [wire_size(value) for value in values] == expected
+    assert all(size == 0 for size in encoded_payloads)
+
+
+def test_structured_chunk_wire_size_matches_msgpack():
+    import msgpack
+
+    from sglang_omni.proto.session import wire_size
+
+    value = asdict(TimedChunk("text", 0, 0, 0, {"tokens": [1, 2]}))
+    assert wire_size(value) == len(msgpack.packb(value, use_bin_type=True))
