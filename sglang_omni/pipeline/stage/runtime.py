@@ -1111,10 +1111,13 @@ class Stage:
             for batch_index in range(_OUTBOX_DRAIN_BATCH_SIZE):
                 if out.type == "admitted":
                     if out.request_id not in self._aborted:
+                        self._record_replica_bindings(
+                            out.request_id, (out.metadata or {}).get("replica_bindings")
+                        )
                         self._active_requests.add(out.request_id)
                 elif out.type == "kv_transfer":
                     if out.request_id in self._active_requests:
-                        await self._send_kv_transfer(out.data)
+                        self._launch_kv_transfer(out.data)
                     else:
                         self._discard_kv_transfer(out.data)
                 elif out.request_id in self._active_requests:
@@ -1185,20 +1188,56 @@ class Stage:
                     f"TP follower stage {self.name} received scheduler error: {out.data}"
                 )
 
+    def _launch_kv_transfer(self, transfer: KVPageTransfer) -> None:
+        started = False
+
+        async def send():
+            nonlocal started
+            started = True
+            await self._send_kv_transfer(transfer)
+
+        def done(task):
+            if not started:
+                self._discard_kv_transfer(transfer)
+            self._receive_tasks.discard(task)
+            self._on_background_task_done(task, f"KV transfer {transfer.request_id}")
+
+        task = asyncio.create_task(send())
+        self._receive_tasks.add(task)
+        task.add_done_callback(done)
+
     async def _send_kv_transfer(self, transfer: KVPageTransfer) -> None:
         if not isinstance(transfer, KVPageTransfer):
             raise TypeError(
                 "kv_transfer outbox messages require KVPageTransfer data, got "
                 f"{type(transfer).__name__}"
             )
+        lease = transfer.lease
         try:
+            if transfer.request_id in self._aborted:
+                return
+            to_stage = self._resolve_target_instance(
+                transfer.request_id, transfer.to_stage
+            )
+            target_pool_id = (
+                transfer.target_pool_id
+                if to_stage == transfer.to_stage
+                else f"{to_stage}:kv"
+            )
+            metadata = {
+                **transfer.metadata,
+                "replica_bindings": self._replica_bindings.get(transfer.request_id),
+            }
+            # From here CommEngine owns the lease, including cancellation and
+            # copies retained while their remote completion is uncertain.
+            lease = None
             await self._comm.send_kv_pages(
                 request_id=transfer.request_id,
                 source_pool_id=transfer.source_pool_id,
                 source_page_indices=transfer.source_page_indices,
-                target_pool_id=transfer.target_pool_id,
-                to_stage=transfer.to_stage,
-                metadata=transfer.metadata,
+                target_pool_id=target_pool_id,
+                to_stage=to_stage,
+                metadata=metadata,
                 transfer_id=transfer.transfer_id,
                 lease=transfer.lease,
             )
@@ -1210,7 +1249,10 @@ class Stage:
             )
             await self._send_failure(transfer.request_id, _error_text(exc))
             return
-        self._clear_request_state(transfer.request_id)
+        finally:
+            if lease is not None:
+                lease.release()
+            self._clear_request_state(transfer.request_id)
 
     @staticmethod
     def _discard_kv_transfer(transfer: Any) -> None:

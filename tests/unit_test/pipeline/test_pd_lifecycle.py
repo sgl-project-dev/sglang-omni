@@ -1,0 +1,439 @@
+# SPDX-License-Identifier: Apache-2.0
+"""PD ownership and routing regressions, without model weights or GPU kernels."""
+
+import asyncio
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
+import pytest
+import torch
+
+from sglang_omni.comm import KVPageTransfer
+from sglang_omni.scheduling import pd_utils
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+from sglang_omni.scheduling.pd_scheduler import (
+    OmniDecodeScheduler,
+    OmniPrefillScheduler,
+)
+from sglang_omni.scheduling.pd_utils import (
+    DecodeAdmission,
+    DecodeKVReceiver,
+    SGLangKVLease,
+    req_from_continuation,
+    serialize_kv_allocator,
+)
+from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+from tests.unit_test.pipeline.helpers import make_stage
+from tests.unit_test.pipeline.test_pd_utils import (
+    _allocation,
+    _continuation,
+    _KVAllocator,
+    _prefill_req,
+    _ReqPool,
+)
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+def test_real_allocator_free_cannot_restore_a_concurrent_reservation(
+    monkeypatch, grouped
+):
+    from sglang.srt.mem_cache.allocator.token import TokenToKVPoolAllocator
+
+    allocator = TokenToKVPoolAllocator(4, torch.float32, "cpu", None, False)
+    holder = SimpleNamespace(token_to_kv_pool_allocator=allocator)
+    serialize_kv_allocator(allocator)
+    assert type(holder.token_to_kv_pool_allocator) is TokenToKVPoolAllocator
+    slots = allocator.alloc(1)
+    if grouped:
+        allocator.free_group_begin()
+        allocator.free(slots)
+    free_read, resume_free = threading.Event(), threading.Event()
+    alloc_started, alloc_done = threading.Event(), threading.Event()
+    cat = torch.cat
+
+    def paused_cat(values, *args, **kwargs):
+        if len(values) == 2:
+            free_read.set()
+            assert resume_free.wait(5)
+        return cat(values, *args, **kwargs)
+
+    def reserve():
+        alloc_started.set()
+        result = allocator.alloc(1)
+        alloc_done.set()
+        return result
+
+    monkeypatch.setattr(torch, "cat", paused_cat)
+    with ThreadPoolExecutor(2) as threads:
+        free = threads.submit(
+            holder.token_to_kv_pool_allocator.free_group_end
+            if grouped
+            else lambda: holder.token_to_kv_pool_allocator.free_segment(
+                slots, start_pos=0
+            )
+        )
+        try:
+            assert free_read.wait(5)
+            allocation = threads.submit(reserve)
+            assert alloc_started.wait(5)
+            assert not alloc_done.wait(0.05)
+        finally:
+            resume_free.set()
+        free.result(timeout=5)
+        live = allocation.result(timeout=5)
+    remaining = allocator.alloc(3)
+    assert set(live.tolist()).isdisjoint(remaining.tolist())
+    assert sorted(live.tolist() + remaining.tolist()) == [1, 2, 3, 4]
+
+
+def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
+    scheduler = object.__new__(OmniPrefillScheduler)
+    scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler.running_batch = SimpleNamespace(
+        is_empty=lambda: True, batch_is_full=False
+    )
+    released = []
+    scheduler._release_request_kv_cache = lambda req: released.append(
+        (req, threading.get_ident())
+    )
+    monkeypatch.setattr(OmniScheduler, "get_next_batch_to_run", lambda self: None)
+    req = object()
+    lease = SGLangKVLease(req, scheduler._pd_due_releases)
+    with ThreadPoolExecutor(2) as threads:
+        list(threads.map(lambda _: lease.release(), range(4)))
+    assert released == []
+    scheduler.get_next_batch_to_run()
+    scheduler.get_next_batch_to_run()
+    assert released == [(req, threading.get_ident())]
+
+
+def _message(**updates):
+    from sglang_omni.proto import KVBufferSpec, KVPoolLayout, KVTransferPrepareMessage
+
+    continuation = _continuation()
+    return KVTransferPrepareMessage(
+        request_id=continuation.request_id,
+        transfer_id=continuation.transfer_id,
+        from_stage="prefill",
+        to_stage="decode",
+        source_pool_id="prefill:kv",
+        target_pool_id="decode:kv",
+        source_page_indices=(1, 2, 3),
+        source_layout=KVPoolLayout("test", 1, (KVBufferSpec("kv", 4),)),
+        metadata={"decode_continuation": continuation.encode(), **updates},
+    )
+
+
+def _receiver():
+    return DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=_KVAllocator(),
+        admissions=queue.SimpleQueue(),
+        resume_schema="test-v1",
+    )
+
+
+@pytest.mark.parametrize("finish", ["commit", "abort"])
+def test_receiver_close_retains_copy_pages_until_comm_finishes(finish):
+    receiver = _receiver()
+    message = _message()
+    destination = receiver.reserve(message)
+    receiver.close()
+    assert receiver._allocator.freed == []
+    with pytest.raises(RuntimeError, match="closed"):
+        receiver.reserve(message)
+    if finish == "commit":
+        with pytest.raises(RuntimeError, match="live reservation"):
+            receiver.commit(message, destination)
+    receiver.abort(message, destination, RuntimeError("closed"))
+    receiver.abort(message, destination, RuntimeError("late abort"))
+    assert len(receiver._allocator.freed) == 1
+    assert receiver._admissions.empty()
+
+
+def test_receiver_rejects_mismatched_pages_and_bounds_finished_ids(monkeypatch):
+    receiver = _receiver()
+    message = _message()
+    with pytest.raises(ValueError, match="per prompt token"):
+        receiver.reserve(replace(message, source_page_indices=(1,)))
+    assert receiver._allocator.next_slot == 7
+    monkeypatch.setattr(pd_utils, "_TRANSFER_TOMBSTONE_LIMIT", 2)
+    for index in range(3):
+        continuation = replace(_continuation(), transfer_id=f"transfer-{index}")
+        message = replace(
+            message,
+            transfer_id=continuation.transfer_id,
+            metadata={"decode_continuation": continuation.encode()},
+        )
+        receiver.commit(message, receiver.reserve(message))
+    with pytest.raises(RuntimeError, match="duplicate"):
+        receiver.reserve(message)
+    assert len(receiver._transfer_tombstones) == 2
+    assert "transfer-0" not in receiver._transfer_tombstones
+    assert receiver._allocator.freed == []
+
+
+def _decode_scheduler():
+    scheduler = object.__new__(OmniDecodeScheduler)
+    scheduler._pd_admissions = queue.SimpleQueue()
+    scheduler._pd_deferred_admission = None
+    scheduler._pd_admission_lock = threading.RLock()
+    scheduler._pd_state_restorer = lambda *args: None
+    scheduler._aborted_request_ids = set()
+    scheduler.req_to_token_pool = _ReqPool()
+    scheduler.token_to_kv_pool_allocator = _KVAllocator()
+    scheduler.waiting_queue = []
+    scheduler.outbox = queue.Queue()
+    return scheduler
+
+
+def test_deferred_admission_abort_frees_committed_pages_once():
+    scheduler = _decode_scheduler()
+    scheduler.req_to_token_pool.capacity = 0
+    scheduler._pd_admissions.put(DecodeAdmission(_continuation(), _allocation()))
+    scheduler._drain_decode_admissions()
+    assert scheduler._pd_deferred_admission is not None
+    assert scheduler.token_to_kv_pool_allocator.freed == []
+    scheduler._aborted_request_ids.add("request-1")
+    scheduler._drain_decode_admissions()
+    scheduler._drain_decode_admissions()
+    assert len(scheduler.token_to_kv_pool_allocator.freed) == 1
+    assert scheduler.waiting_queue == []
+
+
+def test_stop_string_requires_and_uses_model_tokenizer():
+    req = _prefill_req()
+    req.sampling_params.stop_strs = ["END"]
+    req.sampling_params.stop_str_max_len = 3
+    continuation = replace(
+        _continuation(),
+        sampling_params=pd_utils._sampling_params_to_dict(req.sampling_params),
+    )
+    pool = _ReqPool()
+    with pytest.raises(ValueError, match="tokenizer"):
+        req_from_continuation(
+            continuation,
+            _allocation(),
+            req_to_token_pool=pool,
+            state_restorer=lambda *args: None,
+        )
+    assert pool.active == {}
+    tokenizer = SimpleNamespace(
+        eos_token_id=2, additional_stop_token_ids=[], decode=lambda ids: "END"
+    )
+    restored = req_from_continuation(
+        continuation,
+        _allocation(),
+        req_to_token_pool=pool,
+        state_restorer=lambda req, *_: setattr(req, "tokenizer", tokenizer),
+    )
+    restored.update_finish_state()
+    assert restored.finished_reason.to_json()["type"] == "stop"
+
+
+def _transfer(request_id="request-1", **updates):
+    return KVPageTransfer(
+        **{
+            "request_id": request_id,
+            "transfer_id": f"{request_id}-transfer",
+            "source_pool_id": "prefill:kv",
+            "target_pool_id": "decode:kv",
+            "source_page_indices": (1, 2, 3),
+            "to_stage": "decode",
+            "lease": Mock(),
+            **updates,
+        }
+    )
+
+
+def test_slow_ack_does_not_block_outbox_and_early_cancellation_releases():
+    async def run():
+        stage = make_stage()
+        stage._running = True
+        slow_ack, fast_sent = asyncio.Event(), asyncio.Event()
+
+        async def send_kv_pages(*, request_id, lease, **kwargs):
+            try:
+                if request_id == "slow":
+                    await slow_ack.wait()
+                else:
+                    fast_sent.set()
+            finally:
+                lease.release()
+
+        stage._comm.send_kv_pages = send_kv_pages
+        from sglang_omni.scheduling.messages import OutgoingMessage
+
+        transfers = [_transfer("slow"), _transfer("fast")]
+        for transfer in transfers:
+            stage._active_requests.add(transfer.request_id)
+            stage.scheduler.outbox.put(
+                OutgoingMessage(transfer.request_id, "kv_transfer", transfer)
+            )
+        drain = asyncio.create_task(stage._drain_outbox())
+        try:
+            await asyncio.wait_for(fast_sent.wait(), 5)
+            transfers[0].lease.release.assert_not_called()
+            slow_ack.set()
+            await asyncio.gather(*tuple(stage._receive_tasks))
+            for transfer in transfers:
+                transfer.lease.release.assert_called_once()
+            cancelled = _transfer("cancelled")
+            stage._launch_kv_transfer(cancelled)
+            task = next(iter(stage._receive_tasks))
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            cancelled.lease.release.assert_called_once()
+        finally:
+            stage._running = False
+            drain.cancel()
+            await asyncio.gather(drain, return_exceptions=True)
+
+    asyncio.run(run())
+
+
+def test_missing_binding_releases_before_comm_takes_ownership():
+    async def run():
+        stage = make_stage(replica_topology={"decode": ["decode@r0", "decode@r1"]})
+        transfer = _transfer()
+        stage._active_requests.add(transfer.request_id)
+        await stage._send_kv_transfer(transfer)
+        transfer.lease.release.assert_called_once()
+        assert transfer.request_id not in stage._active_requests
+        assert "no replica binding" in stage.control_plane.completions[0].error
+
+    asyncio.run(run())
+
+
+def test_memory_pressure_fails_one_request_without_upstream_rebootstrap():
+    from sglang.srt.disaggregation.utils import DisaggregationMode
+
+    scheduler = _decode_scheduler()
+    scheduler.disaggregation_mode = DisaggregationMode.DECODE
+    scheduler.new_token_ratio_tracker = SimpleNamespace(current=0.5)
+    scheduler.tree_cache = SimpleNamespace(req_to_token_pool=SimpleNamespace())
+    scheduler.metrics_reporter = SimpleNamespace(enable_metrics=False)
+    scheduler.server_args = SimpleNamespace()
+    scheduler.abort = Mock()
+    scheduler._emit_request_error = Mock()
+    batch = SimpleNamespace(
+        batch_size=lambda: 1,
+        filter_batch=lambda: None,
+        is_empty=lambda: False,
+        check_decode_mem=lambda: False,
+        retract_decode=lambda args: ([SimpleNamespace(rid="full")], 0.5, []),
+        prepare_for_decode=Mock(),
+    )
+    scheduler.update_running_batch(batch)
+    scheduler.abort.assert_called_once_with("full")
+    assert "cannot resume" in str(scheduler._emit_request_error.call_args.args[1])
+    batch.prepare_for_decode.assert_called_once()
+
+
+def test_non_pd_scheduler_does_not_need_kv_registration():
+    scheduler = SimpleScheduler(lambda payload: payload)
+    stage = make_stage(scheduler=scheduler)
+    assert stage.scheduler is scheduler
+    assert stage._comm._kv_pools == {}
+
+
+def test_binding_survives_comm_handoff_admission_and_next_stage(monkeypatch):
+    import sglang_omni.platforms as platforms
+    from sglang_omni.comm.data_ref import TransportKind
+    from sglang_omni.scheduling.messages import OutgoingMessage
+    from tests.unit_test.pipeline.test_kv_transfer import _pool, _start_pair
+
+    monkeypatch.setattr(
+        platforms.current_platform,
+        "get_intra_node_transport",
+        lambda: TransportKind.CUDA_IPC,
+    )
+
+    async def run():
+        _, source, destination = await _start_pair()
+        scheduler = _decode_scheduler()
+        receiver = DecodeKVReceiver(
+            pool_id="decode:kv",
+            allocator=scheduler.token_to_kv_pool_allocator,
+            admissions=scheduler._pd_admissions,
+            resume_schema="test-v1",
+        )
+        receiver._allocator.next_slot = 0
+        source.register_kv_pool(_pool("prefill:kv"))
+        destination.register_kv_pool(_pool("decode:kv"))
+        destination.register_kv_receiver("decode:kv", receiver)
+        topology = {"post": ["post@r0", "post@r1"]}
+        prefill = make_stage(name="source", replica_topology=topology)
+        prefill._comm = source
+        prefill._record_replica_bindings("request-1", {"post": 1})
+        dispatched = asyncio.Event()
+
+        async def send_payload(**kwargs):
+            dispatched.set()
+
+        dispatcher = SimpleNamespace(send_payload=AsyncMock(side_effect=send_payload))
+        decode = make_stage(
+            name="destination",
+            scheduler=scheduler,
+            replica_topology=topology,
+            get_next=lambda *_: "post",
+            endpoints={"post@r1": "inproc://post1"},
+            same_process_targets={"post@r1"},
+            local_dispatcher=dispatcher,
+        )
+        drain = None
+        try:
+            continuation = _continuation()
+            transfer = _transfer(
+                transfer_id=continuation.transfer_id,
+                to_stage="destination",
+                metadata={"decode_continuation": continuation.encode()},
+            )
+            await prefill._send_kv_transfer(transfer)
+            transfer.lease.release.assert_called_once()
+            scheduler._drain_decode_admissions()
+            scheduler.outbox.put(
+                OutgoingMessage(
+                    "request-1",
+                    "result",
+                    scheduler.waiting_queue[0]._omni_data.stage_payload,
+                )
+            )
+            decode._running = True
+            drain = asyncio.create_task(decode._drain_outbox())
+            await asyncio.wait_for(dispatched.wait(), 5)
+            kwargs = dispatcher.send_payload.call_args.kwargs
+            assert kwargs["to_stage"] == "post@r1"
+            assert kwargs["replica_bindings"] == {"post": 1}
+        finally:
+            decode._running = False
+            if drain is not None:
+                drain.cancel()
+                await asyncio.gather(drain, return_exceptions=True)
+            await source.close()
+            await destination.close()
+
+    asyncio.run(run())
+
+
+def test_replicated_decode_target_uses_bound_instance_and_pool():
+    async def run():
+        stage = make_stage(replica_topology={"decode": ["decode@r0", "decode@r1"]})
+        stage._record_replica_bindings("request-1", {"decode": 1})
+        transfer = _transfer()
+
+        async def send(**kwargs):
+            kwargs["lease"].release()
+
+        stage._comm.send_kv_pages = AsyncMock(side_effect=send)
+        await stage._send_kv_transfer(transfer)
+        kwargs = stage._comm.send_kv_pages.call_args.kwargs
+        assert kwargs["to_stage"] == "decode@r1"
+        assert kwargs["target_pool_id"] == "decode@r1:kv"
+        transfer.lease.release.assert_called_once()
+
+    asyncio.run(run())

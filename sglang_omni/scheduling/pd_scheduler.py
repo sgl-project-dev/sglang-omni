@@ -24,6 +24,7 @@ from sglang_omni.scheduling.pd_utils import (
     defer_first_token_finish,
     req_from_continuation,
     request_page_indices,
+    serialize_kv_allocator,
 )
 
 
@@ -46,6 +47,7 @@ class OmniPrefillScheduler(OmniScheduler):
         self._pd_stage_name = stage_name
         self._pd_partner_stage = partner_stage
         self._pd_state_builder = state_builder
+        self._pd_due_releases = queue.SimpleQueue()
         self._pd_pool_id = f"{stage_name}:kv"
         pool = build_kv_pool(
             self.token_to_kv_pool_allocator.get_kvcache(),
@@ -54,6 +56,12 @@ class OmniPrefillScheduler(OmniScheduler):
         self.kv_registrations = ((pool, None),)
 
     def get_next_batch_to_run(self):
+        while True:
+            try:
+                req = self._pd_due_releases.get_nowait()
+            except queue.Empty:
+                break
+            self._release_request_kv_cache(req)
         if (
             self.running_batch.is_empty()
             and self.running_batch.batch_is_full
@@ -77,6 +85,7 @@ class OmniPrefillScheduler(OmniScheduler):
             if len(req.output_ids) > output_lengths[id(req)]
         }
         self._handoff_prefilled_requests(batch, sampled)
+        return None
 
     def stream_output(self, reqs, return_logprob=False, skip_req=None):
         # A Prefill result must never become a normal StagePayload edge. Normal
@@ -123,7 +132,7 @@ class OmniPrefillScheduler(OmniScheduler):
                     ),
                     to_stage=self._pd_partner_stage,
                     metadata={"decode_continuation": continuation.encode()},
-                    lease=SGLangKVLease(req, self.tree_cache),
+                    lease=SGLangKVLease(req, self._pd_due_releases),
                 )
             except Exception as exc:
                 self._release_request_kv_cache(req)
@@ -158,10 +167,11 @@ class OmniDecodeScheduler(OmniScheduler):
     ) -> None:
         self._pd_admissions = queue.SimpleQueue()
         self._pd_deferred_admission = None
-        self._pd_admission_lock = threading.Lock()
+        self._pd_admission_lock = threading.RLock()
         self._pd_state_restorer = state_restorer
         super().__init__(*args, **kwargs)
         _validate_pd_runtime(self)
+        self._pd_kv_lock = serialize_kv_allocator(self.token_to_kv_pool_allocator)
 
         pool_id = f"{stage_name}:kv"
         pool = build_kv_pool(
@@ -174,6 +184,7 @@ class OmniDecodeScheduler(OmniScheduler):
             admissions=self._pd_admissions,
             resume_schema=resume_schema,
         )
+        self._pd_receiver = receiver
         self.kv_registrations = ((pool, receiver),)
         self.disagg_decode_prealloc_queue = types.SimpleNamespace(
             queue=[], retracted_queue=[], num_tokens_pre_allocated=0
@@ -186,10 +197,24 @@ class OmniDecodeScheduler(OmniScheduler):
         return DisaggregationMode.DECODE
 
     def get_next_batch_to_run(self):
-        self._drain_decode_admissions()
-        plan = _Upstream.get_next_disagg_decode_batch_to_run(self, self.running_batch)
-        self.running_batch = plan.running_batch
-        return plan.batch_to_run
+        with self._pd_admission_lock:
+            self._drain_decode_admissions()
+            # Do not let a new transfer consume the space between the decode
+            # memory check and allocation. Abort takes these locks in this order.
+            with self._pd_kv_lock:
+                plan = _Upstream.get_next_disagg_decode_batch_to_run(
+                    self, self.running_batch
+                )
+                self.running_batch = plan.running_batch
+                return plan.batch_to_run
+
+    def _add_request_to_queue(self, req, is_retracted=False):
+        # Upstream retraction frees KV and expects its own rebootstrap queues.
+        # This handoff has no re-prefill protocol; fail only the affected request.
+        self._emit_request_error(
+            req.rid, RuntimeError("PD decode cannot resume a retracted request")
+        )
+        self.abort(req.rid)
 
     def process_input_requests(self, recv_reqs):
         for payload in recv_reqs:
@@ -209,6 +234,11 @@ class OmniDecodeScheduler(OmniScheduler):
                     except queue.Empty:
                         return
                 request_id = admission.continuation.request_id
+                admitted = OutgoingMessage(
+                    request_id=request_id,
+                    type="admitted",
+                    metadata={"replica_bindings": admission.replica_bindings},
+                )
                 if request_id in self._aborted_request_ids:
                     self._pd_deferred_admission = None
                     self.token_to_kv_pool_allocator.free(admission.allocation.slots)
@@ -226,17 +256,16 @@ class OmniDecodeScheduler(OmniScheduler):
                 except Exception as exc:
                     self._pd_deferred_admission = None
                     self.token_to_kv_pool_allocator.free(admission.allocation.slots)
-                    self.outbox.put(
-                        OutgoingMessage(request_id=request_id, type="admitted")
-                    )
+                    self.outbox.put(admitted)
                     self._emit_request_error(request_id, exc)
                     continue
                 self._pd_deferred_admission = None
                 self.waiting_queue.append(req)
-                self.outbox.put(OutgoingMessage(request_id=request_id, type="admitted"))
+                self.outbox.put(admitted)
 
     def _discard_pending_request_admissions(self) -> None:
         super()._discard_pending_request_admissions()
+        self._pd_receiver.close()
         with self._pd_admission_lock:
             admission = self._pd_deferred_admission
             self._pd_deferred_admission = None
@@ -268,3 +297,5 @@ def _validate_pd_runtime(scheduler: OmniScheduler) -> None:
         raise NotImplementedError("PD currently requires page_size == 1")
     if not scheduler.server_args.disable_radix_cache:
         raise NotImplementedError("PD currently requires RadixCache disabled")
+    if not scheduler.spec_algorithm.is_none():
+        raise NotImplementedError("PD does not support speculative decoding")
