@@ -186,15 +186,12 @@ def set_qwen3_tts_preprocessing_context(
     wrapper: Any,
     standalone: bool = False,
     device: torch.device | None = None,
-    context_length: int | None = None,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _get_qwen3_tts_adhoc_reference_service_locked(
-            model, wrapper, context_length=context_length
-        )
+        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
@@ -913,21 +910,9 @@ class _Qwen3TTSAdhocReferenceHook(
     encoder_id = "qwen3_tts_voice_clone_prompt"
     artifact_kind = "qwen3_tts_voice_clone_prompt_adhoc"
 
-    def __init__(
-        self, *, model: Any, wrapper: Any, context_length: int | None = None
-    ) -> None:
+    def __init__(self, *, model: Any, wrapper: Any) -> None:
         self._model = model
         self._wrapper = wrapper
-        # note(ratish): the engine's context bounds the ICL prompt. A standalone
-        # preprocessing process has no engine and leaves the check to it.
-        self._icl_frame_rule: tuple[int, int, int] | None = None
-        if context_length is not None:
-            tokenizer = model.speech_tokenizer
-            self._icl_frame_rule = (
-                int(context_length),
-                int(tokenizer.feature_extractor.sampling_rate),
-                int(tokenizer.get_encode_downsample_rate()),
-            )
         # note (luojiaxuan): the engine builder loads the speech tokenizer on
         # the same device as the talker model, so model.device selects the
         # dedicated reference-code encode stream for that device.
@@ -981,7 +966,6 @@ class _Qwen3TTSAdhocReferenceHook(
             # mode runs the speaker encoder alone.
             ref_code_future = None
             if not item.x_vector_only_mode:
-                self._check_icl_reference_fits(waveform, sample_rate)
                 ref_code_future = self._ref_code_batcher.submit(waveform, sample_rate)
             speaker_waveform = waveform
             speaker_sample_rate = self._model.speaker_encoder_sample_rate
@@ -1009,27 +993,6 @@ class _Qwen3TTSAdhocReferenceHook(
             "icl_mode": [not item.x_vector_only_mode],
         }
         return voice_clone_prompt, item.ref_text
-
-    def _check_icl_reference_fits(self, waveform: Any, sample_rate: int) -> None:
-        """Refuse an ICL reference the engine cannot admit before it is encoded.
-
-        The tokenizer resamples the clip to its feature extractor rate and
-        keeps one frame per encode_downsample_rate samples, rounded up. The
-        prompt carries one position per frame plus the text, and the engine
-        refuses any input at or above its context, so a clip whose frames alone
-        reach the context is refused here, before any device work.
-        """
-        if self._icl_frame_rule is None:
-            return
-        context_length, tokenizer_rate, downsample_rate = self._icl_frame_rule
-        samples = -(-len(waveform) * tokenizer_rate // int(sample_rate))
-        frames = -(-samples // downsample_rate)
-        if frames >= context_length:
-            raise ValueError(
-                f"Qwen3-TTS ICL reference holds {frames} codec frames, the engine "
-                f"context holds {context_length}; use a shorter reference or "
-                "x_vector_only_mode"
-            )
 
     def store_artifact(self, artifact: tuple[dict[str, Any], str | None]) -> dict:
         voice_clone_prompt, ref_text = artifact
@@ -1089,10 +1052,7 @@ def _qwen3_tts_encoder_config_hash(model: Any, wrapper: Any) -> str:
 
 
 def _get_qwen3_tts_adhoc_reference_service_locked(
-    model: Any,
-    wrapper: Any,
-    *,
-    context_length: int | None = None,
+    model: Any, wrapper: Any
 ) -> ReferenceEncodeService:
     global _ADHOC_REFERENCE_SERVICE_ENTRY
     owner = (id(model), id(wrapper))
@@ -1101,9 +1061,7 @@ def _get_qwen3_tts_adhoc_reference_service_locked(
         if entry is not None:
             entry[1].close()
         service = ReferenceEncodeService(
-            _Qwen3TTSAdhocReferenceHook(
-                model=model, wrapper=wrapper, context_length=context_length
-            ),
+            _Qwen3TTSAdhocReferenceHook(model=model, wrapper=wrapper),
             max_items=256,
             max_bytes=64 * 1024 * 1024,
             timeout_s=130.0,
