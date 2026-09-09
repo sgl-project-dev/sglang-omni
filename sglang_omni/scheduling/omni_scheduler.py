@@ -975,7 +975,7 @@ class OmniScheduler:
             time.sleep(0.0001)
             return
         if self.tp_size > 1 and not self.is_entry_rank:
-            # TP followers receive through broadcast_pyobj, not their inbox.
+            # Note (jzheng17): TP followers receive through broadcast_pyobj, not their inbox.
             # Keep polling so they can join the entry rank's broadcast promptly.
             time.sleep(0.001)
             return
