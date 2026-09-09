@@ -25,17 +25,6 @@ LRELU_SLOPE = 0.1
 
 # vendored: alias-free-torch (anti-aliased periodic activations)
 
-if "sinc" in dir(torch):
-    sinc = torch.sinc
-else:  # pragma: no cover - torch >= 1.9 always provides torch.sinc
-
-    def sinc(x: torch.Tensor):
-        return torch.where(
-            x == 0,
-            torch.tensor(1.0, device=x.device, dtype=x.dtype),
-            torch.sin(math.pi * x) / math.pi / x,
-        )
-
 
 def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int):
     """Kaiser-windowed sinc low-pass kernel of shape [1, 1, kernel_size]."""
@@ -59,7 +48,7 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int):
     if cutoff == 0:
         filter_ = torch.zeros_like(time)
     else:
-        filter_ = 2 * cutoff * window * sinc(2 * cutoff * time)
+        filter_ = 2 * cutoff * window * torch.sinc(2 * cutoff * time)
         # Normalize so the constant component is preserved.
         filter_ = filter_ / filter_.sum()
     return filter_.view(1, 1, kernel_size)

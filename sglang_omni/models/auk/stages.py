@@ -27,7 +27,6 @@ from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
 from sglang_omni.models.auk.request_builders import (
     AuKPreprocessingContext,
-    cleanup_prepared_auk_request,
     preprocess_auk_payload,
     set_auk_preprocessing_context,
 )
@@ -48,10 +47,6 @@ _AUTOCAST_DTYPES: dict[str, torch.dtype | None] = {
     "float16": torch.float16,
     "bfloat16": torch.bfloat16,
 }
-
-
-def load_state_auk(payload: StagePayload) -> AuKState:
-    return load_state(payload, AuKState)
 
 
 def create_preprocessing_executor(
@@ -76,7 +71,6 @@ def create_preprocessing_executor(
     return SimpleScheduler(
         preprocess_auk_payload,
         max_concurrency=max_concurrency,
-        abort_callback=cleanup_prepared_auk_request,
     )
 
 
@@ -127,25 +121,16 @@ def _reference_latent(
     return latent[0], length
 
 
-def _prepare_item(ctx: _EngineContext, state: AuKState):
-    has_reference = state.ref_audio is not None and np.asarray(state.ref_audio).size > 0
-    messages = build_messages(state.instruction, has_reference_audio=has_reference)
-    target_frames = int(min(max(int(state.gen_frames), 1), ctx.max_frames))
-    return (
-        messages,
-        state.qwen_audio,
-        _reference_latent(ctx, state.ref_audio),
-        target_frames,
-    )
-
-
 @torch.inference_mode()
 def _generate_one(ctx: _EngineContext, payload: StagePayload) -> StagePayload:
-    state = load_state_auk(payload)
+    state = load_state(payload, AuKState)
     started = time.perf_counter()
-    messages, audio, (ref_latent, ref_length), frames = _prepare_item(ctx, state)
+    has_reference = state.ref_audio is not None and np.asarray(state.ref_audio).size > 0
+    messages = build_messages(state.instruction, has_reference)
+    frames = min(max(state.gen_frames, 1), ctx.max_frames)
+    ref_latent, ref_length = _reference_latent(ctx, state.ref_audio)
     with _autocast(ctx):
-        hidden, mask = ctx.encoder.encode(messages, audio)
+        hidden, mask = ctx.encoder.encode(messages, state.qwen_audio)
         latent = ctx.flow.sample(
             AuKSampleItem(hidden, mask, frames, ref_latent, state.seed, ref_length),
             steps=ctx.nfe,

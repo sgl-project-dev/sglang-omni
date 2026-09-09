@@ -1,29 +1,32 @@
 # AuK
 
-The pipeline runs CPU preprocessing followed by one serial GPU engine:
-Qwen2.5-Omni conditioning, stochastic VAE reference encoding, DiT sampling,
-and decoding with the same VAE. It returns a complete 24 kHz waveform.
+[AuK](https://huggingface.co/tencent/AuK) supports instruction-driven speech generation and editing. SGLang-Omni runs CPU preprocessing followed by one serial GPU engine and returns 24 kHz mono audio. Batching, streaming, and CUDA graphs are not implemented for this pipeline.
+
+The released `tencent/AuK` checkpoint uses:
+
+| Component | Configuration |
+|---|---|
+| Conditioner | Frozen Qwen2.5-Omni-3B Thinker, text and audio only |
+| DiT | Flux-style MMDiT: 10 double-stream blocks, 20 single-stream blocks, dim=1536, 24 heads |
+| VAE | Shared reference encoder and audio decoder; 50 Hz, 64-channel latents |
+
+Architecture settings come from the checkpoint's `config.yaml`.
+
+## Start the Server
+
+Follow [Installation](../get_started/installation.md), then run from the repository root:
 
 ```bash
-sgl-omni serve --config examples/configs/auk.yaml
+sgl-omni serve --config examples/configs/auk.yaml --port 8000
 ```
 
-The config downloads `tencent/AuK` and the separate
-`Qwen/Qwen2.5-Omni-3B` checkpoint. Set
-`auk_engine.factory.text_encoder_path` to use a local Qwen checkpoint.
-Use `model_path: tencent/AuK-Flash` for the distilled model; it always uses
-the released four-step time grid with CFG disabled.
+The server downloads AuK and the separate `Qwen/Qwen2.5-Omni-3B` encoder as needed. To use a local encoder, set `stages.auk_engine.factory.text_encoder_path` in the YAML.
 
-## Speech API
+For AuK-Flash, change `model_path` to `tencent/AuK-Flash`. It fixes inference to the released four-step time grid with CFG disabled, ignoring the factory's `nfe`, `cfg_strength`, and `sway_sampling_coef` values.
 
-`input` is the text to speak; `instructions` describes the voice. Without
-instructions, the description defaults to `A clear, natural voice.`
-With `ref_audio` (or one structured reference), AuK uses the upstream
-same-voice TTS instruction instead of the voice description.
+## Speech Generation
 
-TTS requires an explicit target duration in seconds. Reference duration is
-independent of target duration. Durations are rounded up to latent frames
-(20 ms) and bounded by the configured maximum (30 seconds by default).
+`/v1/audio/speech` takes the text in `input`. Without reference audio, `instructions` describes the voice and defaults to `A clear, natural voice.` An explicit target duration is required in this mode:
 
 ```bash
 curl http://localhost:8000/v1/audio/speech \
@@ -37,28 +40,66 @@ curl http://localhost:8000/v1/audio/speech \
   }' --output speech.wav
 ```
 
-`/generate` accepts a raw AuK instruction in `prompt`, with duration in
-`stage_params.auk_engine.gen_seconds` and reference audio in
-`metadata.tts_params.ref_audio`. Set `output_modalities` to `["audio"]`.
-Raw editing requests with reference audio may omit the duration to use the
-source duration, as upstream does.
-`nfe`, `cfg_strength`, and `sway_sampling_coef` are server factory settings;
-request overrides are rejected. Engine batching and streaming are unsupported.
+For voice cloning, provide `ref_audio` or one structured reference. The model uses a same-voice instruction and ignores the voice description. Local paths are resolved on the server; HTTP(S), file URLs, and audio data URLs are also accepted.
 
-As upstream, `seed` controls target noise. Reference posterior sampling uses
-the process RNG and is stochastic; a request seed alone does not make reference
-conditioning deterministic.
+```bash
+curl http://localhost:8000/v1/audio/speech \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "input": "Welcome home.",
+    "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
+    "ref_text": "We asked over twenty different people, and they all said it was his.",
+    "seed": 1234,
+    "response_format": "wav"
+  }' --output speech.wav
+```
 
-## Parity Test
+When `gen_seconds` is omitted, voice cloning requires the reference transcript (`ref_text`, or `references[0].text`). Target duration is estimated as:
 
-The test compares real upstream and serving outputs at the reference latent,
-fused Qwen conditioning, generated latent, and waveform boundaries. It lowers
-speech requests through `SpeechRequestValidator` and `Client` before running
-the terminal engine, covering both reference and instruction-only TTS.
-Both runs start with the same process RNG state as well as the same request seed.
+```text
+target_seconds = reference_seconds × UTF8_bytes(input) / UTF8_bytes(ref_text)
+```
 
-Install the repository dependencies plus `torchdiffeq` and `qwen-omni-utils`,
-then run on a GPU with enough memory for both model instances:
+Explicit `gen_seconds` takes priority and must be positive. Target duration rounds up to 20 ms frames and is capped at 30 seconds by default. To change the cap, set `max_seconds` in **both** `stages.preprocessing.factory` and `stages.auk_engine.factory`.
+
+## Speech Editing
+
+`/generate` accepts a raw AuK instruction in `prompt` and returns JSON. Set `output_modalities` to `["audio"]` and supply reference audio through `metadata.tts_params.ref_audio`:
+
+```bash
+curl http://localhost:8000/generate \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "prompt": "Remove the background noise.",
+    "metadata": {"tts_params": {"ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"}},
+    "output_modalities": ["audio"]
+  }'
+```
+
+Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing uses the source's complete 20 ms frames, subject to the duration cap. Raw requests without reference audio or explicit duration default to 5 seconds.
+
+## Sampling
+
+Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Configure these under `stages.auk_engine.factory`; request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
+
+`seed` controls target noise only. Reference VAE posterior sampling uses the process RNG, so a request seed alone does not make voice cloning deterministic. Multiple structured references are rejected.
+
+## SeedTTS Evaluation
+
+The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash`, selects the AuK server config, and defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.benchmark_tts_seedtts \
+  --model tencent/AuK --output-dir results/auk_en
+```
+
+Use `--max-samples` and `--sample-offset` for a subset. `--generate-only` and `--transcribe-only` run individual phases; add `--use-existing-server` to either mode to use a running server. Explicit CLI options override the AuK defaults.
+
+`wer_results.json` includes full sample mean WER, `wer_below_50_per_sample_mean` (excluding samples strictly above 50%), and `n_above_50_pct_wer`. Corpus WER is reported separately and is word-weighted.
+
+## Upstream Parity
+
+The checkpoint test compares reference latents, fused Qwen conditioning, generated latents, and waveforms with upstream, with and without reference audio. It aligns both process RNG and request seed. Install `torchdiffeq` and `qwen-omni-utils` in addition to the serving dependencies, and use a GPU with memory for both implementations:
 
 ```bash
 git clone https://github.com/Tencent-Hunyuan/AuK.git /tmp/AuK
@@ -68,19 +109,8 @@ AUK_PARITY_CHECKPOINT=tencent/AuK \
 python -m pytest tests/test_model/test_auk_parity.py -v
 ```
 
-Repeat with `AUK_PARITY_CHECKPOINT=tencent/AuK-Flash` for the distilled recipe.
-`AUK_QWEN_CHECKPOINT` optionally selects a local encoder checkpoint. The test
-skips unless both required environment variables are set.
-
-Validated on 2026-09-09 with an NVIDIA H200, PyTorch 2.13.0 and Transformers
-5.12.1: all four cases (AuK/AuK-Flash, with/without reference) passed, with
-zero maximum absolute error at every compared boundary. This checks the
-serving port against upstream under the same installed dependency versions.
+Set `AUK_PARITY_CHECKPOINT=tencent/AuK-Flash` to test Flash. `AUK_QWEN_CHECKPOINT` optionally selects a local encoder. The test skips unless both `AUK_UPSTREAM_SOURCE` and `AUK_PARITY_CHECKPOINT` are set.
 
 ## Attribution
 
-The model implementation derives from Tencent-Hunyuan/AuK at the revision above.
-Its MIT copyright and permission notice are preserved in the model directory's
-`LICENSE` file.
-The VAE also retains NVIDIA attribution and the Apache-2.0 attribution for
-alias-free-torch components.
+The implementation derives from [Tencent-Hunyuan/AuK](https://github.com/Tencent-Hunyuan/AuK) at the revision above. Its MIT notice is preserved in `sglang_omni/models/auk/LICENSE`. The VAE source also retains NVIDIA and alias-free-torch attribution.

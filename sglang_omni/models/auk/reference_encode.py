@@ -64,10 +64,9 @@ class AuKConditionEncoder:
             model_path, torch_dtype=dtype
         )
         # Keep the multimodal Thinker (text + audio); drop the unused vision tower.
-        visual = getattr(model, "visual", None)
-        if visual is not None:
-            del model.visual
-            model.visual = None
+        model.visual = None
+        # Only hidden states condition the DiT; vocabulary logits are unused.
+        model.lm_head = torch.nn.Identity()
         model.requires_grad_(False)
         model.eval()
         # AukInfer casts the enclosing CFM (including Qwen) to FP32 and uses
@@ -102,7 +101,7 @@ class AuKConditionEncoder:
         """Encode one request into all-layer ``[L, Nt, H]`` states and its mask."""
         inputs = self._process_one(messages, audio)
         inputs = {k: v.to(self.device) for k, v in inputs.items() if torch.is_tensor(v)}
-        outputs = self.model(**inputs, output_hidden_states=True)
+        outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
         return (
             torch.stack(outputs.hidden_states, dim=1)[0],
             inputs["attention_mask"][0].bool(),

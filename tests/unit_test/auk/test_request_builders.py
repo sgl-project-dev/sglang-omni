@@ -243,3 +243,31 @@ def test_preprocess_payload_round_trips_state(context):
     assert restored.instruction == "Say hello"
     assert restored.gen_frames == 1 * FRAME_RATE
     assert payload.request_id == "req-1"
+
+
+@pytest.mark.parametrize("structured", [False, True])
+def test_speech_estimates_duration_from_reference_transcript(
+    context, tmp_path, structured
+):
+    path = tmp_path / "ref.wav"
+    write_wav(path, seconds=1)
+    kwargs = (
+        {"references": [{"audio_path": str(path), "text": "你好"}]}
+        if structured
+        else {"ref_audio": str(path), "ref_text": "你好"}
+    )
+    state = build_auk_state(speech_payload(input="Hello world!", **kwargs), context)
+    assert state.gen_frames == 2 * FRAME_RATE
+
+
+def test_multiple_references_are_rejected(context):
+    with pytest.raises(ValueError, match="at most one"):
+        build_auk_state(
+            make_payload(
+                {
+                    "text": "Hello",
+                    "references": [{"audio_path": "a.wav"}, {"audio_path": "b.wav"}],
+                }
+            ),
+            context,
+        )

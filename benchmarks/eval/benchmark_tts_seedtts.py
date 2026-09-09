@@ -1064,6 +1064,19 @@ def _validate_args(parser: argparse.ArgumentParser, args: argparse.Namespace) ->
 def main() -> None:
     parser = _build_arg_parser()
     args = parser.parse_args()
+    is_auk = Path(args.model.split("@", 1)[0]).name.lower() in {"auk", "auk-flash"}
+    if is_auk:
+        parser.set_defaults(
+            server_config=str(
+                Path(__file__).resolve().parents[2] / "examples/configs/auk.yaml"
+            ),
+            output_dir="results/auk_seedtts",
+            concurrency=1,
+            warmup=1,
+            seed=1234,
+        )
+        # Reparse so explicit CLI options take precedence over model defaults.
+        args = parser.parse_args()
     _validate_args(parser, args)
     config = _config_from_args(args)
     wait_for_gpu_release = not args.skip_gpu_cleanup
@@ -1105,15 +1118,23 @@ def main() -> None:
     if args.use_existing_server:
         asyncio.run(_run_generate())
     else:
+        engine_overrides = (
+            dict(
+                max_running_requests=config.max_running_requests,
+                max_queued_requests=config.max_queued_requests,
+                cuda_graph_max_bs=config.cuda_graph_max_bs,
+                quantization=config.quantization,
+            )
+            # AuK's serial SimpleScheduler has no SGLang engine settings.
+            if not is_auk
+            else {}
+        )
         with managed_omni_server(
             model_path=config.model,
             port=config.port,
             host=config.host,
             server_config=config.server_config,
-            max_running_requests=config.max_running_requests,
-            max_queued_requests=config.max_queued_requests,
-            cuda_graph_max_bs=config.cuda_graph_max_bs,
-            quantization=config.quantization,
+            **engine_overrides,
             log_file=Path(config.output_dir) / "server_logs" / "tts_server.log",
             timeout=args.server_timeout,
             wait_for_gpu_release=wait_for_gpu_release,

@@ -16,9 +16,7 @@ from sglang_omni.models.auk.dit import AuKDit
 
 def fuse_hidden_states(hidden_states, layer_weights, layer_scale):
     d_llm = hidden_states.shape[-1]
-    stacked = torch.stack(
-        [F.layer_norm(h, [d_llm]) for h in hidden_states[:, 1:].unbind(1)], dim=1
-    )
+    stacked = F.layer_norm(hidden_states[:, 1:], [d_llm])
     weights = F.softmax(layer_weights, dim=0)
     return (stacked * weights[None, :, None, None]).sum(dim=1) * layer_scale
 

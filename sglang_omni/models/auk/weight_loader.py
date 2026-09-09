@@ -98,22 +98,12 @@ def normalize_state_dict(
     return {_strip_prefix(k): v for k, v in state_dict.items()}
 
 
-def describe_keys(path: str | Path, limit: int = 24) -> list[str]:
-    """Top-level key prefixes of a checkpoint, for checkpoint-layout debugging."""
-    state_dict = _read_safetensors(Path(path))
-    prefixes: dict[str, int] = {}
-    for key in state_dict:
-        top = key.split(".", 1)[0]
-        prefixes[top] = prefixes.get(top, 0) + 1
-    summary = sorted(prefixes.items(), key=lambda kv: -kv[1])
-    return [f"{name}: {count}" for name, count in summary[:limit]]
-
-
-def _assign(module: torch.nn.Module, state_dict: dict[str, torch.Tensor]):
-    try:
-        return module.load_state_dict(state_dict, strict=True, assign=True)
-    except TypeError:
-        return module.load_state_dict(state_dict, strict=True)
+def _load_weights(module: torch.nn.Module, path: Path) -> LoadReport:
+    state_dict = normalize_state_dict(_read_safetensors(path))
+    module.load_state_dict(state_dict, strict=True, assign=True)
+    report = LoadReport(loaded=len(state_dict))
+    logger.info("AuK: loaded weights from %s (%s)", path, report)
+    return report
 
 
 def load_dit_weights(
@@ -121,20 +111,7 @@ def load_dit_weights(
     model_path: str,
 ) -> LoadReport:
     """Load the DiT + layer-fusion parameters into an ``AuKFlowMatching``."""
-    weight_file = resolve_weight_file(model_path)
-    state_dict = normalize_state_dict(_read_safetensors(weight_file))
-
-    missing, unexpected = _assign(flow, state_dict)
-    missing_keys = list(missing)
-    report = LoadReport(
-        loaded=len(state_dict) - len(unexpected),
-        missing=len(missing_keys),
-        unexpected=len(unexpected),
-        missing_examples=tuple(missing_keys[:10]),
-        unexpected_examples=tuple(unexpected[:10]),
-    )
-    logger.info("AuK: loaded DiT weights from %s (%s)", weight_file, report)
-    return report
+    return _load_weights(flow, resolve_weight_file(model_path))
 
 
 def load_vae_weights(
@@ -145,15 +122,4 @@ def load_vae_weights(
     vae_file = resolve_vae_file(model_path)
     if vae_file is None:
         raise FileNotFoundError(f"No AuK VAE weights found under {model_path}")
-    state_dict = normalize_state_dict(_read_safetensors(vae_file))
-
-    missing, unexpected = _assign(vae, state_dict)
-    report = LoadReport(
-        loaded=len(state_dict) - len(unexpected),
-        missing=len(missing),
-        unexpected=len(unexpected),
-        missing_examples=tuple(missing[:10]),
-        unexpected_examples=tuple(unexpected[:10]),
-    )
-    logger.info("AuK: loaded VAE weights from %s (%s)", vae_file, report)
-    return report
+    return _load_weights(vae, vae_file)

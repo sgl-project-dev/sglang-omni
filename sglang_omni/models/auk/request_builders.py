@@ -8,7 +8,6 @@ reference clip in, validates them, and loads/resamples the reference on CPU.
 from __future__ import annotations
 
 import io
-import logging
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import unquote, urlparse
@@ -21,8 +20,6 @@ from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.proto import StagePayload
 from sglang_omni.utils.audio import decode_audio_data_uri, load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -45,11 +42,6 @@ def clear_auk_preprocessing_context() -> None:
     _CONTEXT = None
 
 
-def cleanup_prepared_auk_request(request_id: str) -> None:
-    """Abort hook for the preprocessing scheduler (no per-request staging)."""
-    del request_id
-
-
 def _get_context() -> AuKPreprocessingContext:
     if _CONTEXT is None:
         raise RuntimeError("AuK preprocessing context is not initialized")
@@ -68,7 +60,9 @@ def _normalize_inputs(inputs: Any) -> tuple[str, list[dict[str, Any]], Any | Non
         raise ValueError("AuK references must be a list")
     if any(not isinstance(reference, dict) for reference in raw_references):
         raise ValueError("AuK references must be objects")
-    references = [dict(reference) for reference in raw_references]
+    if len(raw_references) > 1:
+        raise ValueError("AuK accepts at most one reference audio clip")
+    references = raw_references
 
     text = str(
         inputs.get("instruction") or inputs.get("text") or inputs.get("input") or ""
@@ -187,8 +181,6 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     if gen_seconds is not None and gen_seconds <= 0:
         raise ValueError(f"AuK gen_seconds must be positive, got {gen_seconds}")
 
-    if gen_seconds is None and is_speech:
-        raise ValueError("AuK speech requires stage_params.auk_engine.gen_seconds")
     clip_seconds = _get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
 
     ref_audio: np.ndarray | None = None
@@ -197,6 +189,20 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     if ref_source is not None:
         ref_audio, qwen_audio = _load_reference(ref_source, config.sample_rate)
         ref_seconds = ref_audio.shape[-1] / float(config.sample_rate)
+
+    if gen_seconds is None and is_speech:
+        ref_text = tts_params.get("ref_text")
+        if references and inline_ref is None:
+            ref_text = references[0].get("text") or ref_text
+        if not ref_text or ref_seconds <= 0:
+            raise ValueError(
+                "AuK speech requires stage_params.auk_engine.gen_seconds "
+                "or reference audio with ref_text"
+            )
+        # Match upstream get_gen_duration: scale by UTF-8 byte length.
+        gen_seconds = (
+            ref_seconds * len(text.encode("utf-8")) / len(ref_text.encode("utf-8"))
+        )
 
     if gen_seconds is None:
         # Raw editing requests retain the upstream source-duration default.
