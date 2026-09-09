@@ -70,7 +70,8 @@ impl Drop for WorkerLoadGuard {
 
 /// Admission and weighted worker load retained through response termination.
 pub(crate) struct RequestLease {
-    _admission: AdmissionLease,
+    _admission: Option<AdmissionLease>,
+    _envelope: Option<EnvelopeLease>,
     _capacity: Option<OwnedSemaphorePermit>,
     load: WorkerLoadGuard,
 }
@@ -79,7 +80,8 @@ impl RequestLease {
     pub(super) fn new(admission: AdmissionLease, registration: Arc<WorkerRecord>) -> Self {
         let weight = admission.credits;
         Self {
-            _admission: admission,
+            _admission: Some(admission),
+            _envelope: None,
             _capacity: None,
             load: WorkerLoadGuard::new(registration, weight),
         }
@@ -92,9 +94,19 @@ impl RequestLease {
     ) -> Self {
         let weight = admission.credits;
         Self {
-            _admission: admission,
+            _admission: Some(admission),
+            _envelope: None,
             _capacity: Some(capacity),
             load: WorkerLoadGuard::new(registration, weight),
+        }
+    }
+
+    pub(super) fn new_owner(envelope: EnvelopeLease, registration: Arc<WorkerRecord>) -> Self {
+        Self {
+            _admission: None,
+            _envelope: Some(envelope),
+            _capacity: None,
+            load: WorkerLoadGuard::new(registration, 1),
         }
     }
 
@@ -113,6 +125,8 @@ impl RequestLease {
 }
 
 pub(super) struct AdmissionController {
+    global_limit: usize,
+    class_limits: [Option<usize>; CAPACITY_CLASS_COUNT],
     global: Arc<Semaphore>,
     classes: [Option<Arc<Semaphore>>; CAPACITY_CLASS_COUNT],
 }
@@ -120,18 +134,11 @@ pub(super) struct AdmissionController {
 impl AdmissionController {
     pub(super) fn new(global: usize, limits: [Option<usize>; CAPACITY_CLASS_COUNT]) -> Self {
         Self {
+            global_limit: global,
+            class_limits: limits,
             global: Arc::new(Semaphore::new(global)),
             classes: limits.map(|limit| limit.map(|value| Arc::new(Semaphore::new(value)))),
         }
-    }
-
-    pub(super) fn try_admit(
-        &self,
-        class: CapacityClass,
-        credits: u32,
-    ) -> Result<AdmissionLease, AdmissionError> {
-        let envelope = self.try_admit_envelope()?;
-        self.try_admit_class(envelope, class, credits)
     }
 
     pub(super) fn try_admit_envelope(&self) -> Result<EnvelopeLease, AdmissionError> {
@@ -167,6 +174,20 @@ impl AdmissionController {
 
     pub(super) fn close(&self) {
         self.global.close();
+    }
+
+    pub(super) fn snapshot(&self) -> [(usize, usize); CAPACITY_CLASS_COUNT + 1] {
+        let mut snapshot = [(0, 0); CAPACITY_CLASS_COUNT + 1];
+        snapshot[0] = (
+            self.global_limit,
+            self.global_limit - self.global.available_permits(),
+        );
+        for (index, (limit, semaphore)) in self.class_limits.iter().zip(&self.classes).enumerate() {
+            if let (Some(limit), Some(semaphore)) = (limit, semaphore) {
+                snapshot[index + 1] = (*limit, *limit - semaphore.available_permits());
+            }
+        }
+        snapshot
     }
 
     #[cfg(test)]

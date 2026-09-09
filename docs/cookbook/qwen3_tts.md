@@ -13,7 +13,7 @@ endpoint.
 Install `sglang-omni` by following [Installation](../get_started/installation.md).
 
 Qwen3-TTS Base uses the upstream `qwen-tts` package. Install it without
-dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.18 stack remains
+dependencies so the SGLang-Omni Transformers 5.12 / SGLang 0.5.19 stack remains
 in place:
 
 ```bash
@@ -42,7 +42,7 @@ factories (`create_causal_mask` and friends), which now spell `input_embeds` as
 `inputs_embeds` and no longer accept `cache_position`. SGLang-Omni patches these
 differences in
 `sglang_omni/models/qwen3_tts/compat.py`, which every Qwen3-TTS entry point
-applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.18
+applies before importing `qwen_tts`. The pinned Transformers 5.12 / SGLang 0.5.19
 stack is therefore the supported configuration, not a workaround.
 
 If you hit a `TypeError` raised from inside `qwen_tts`, do not resolve it by
@@ -386,6 +386,29 @@ single AR step while the playback cushion is rebuilt within four chunks. Pass an
 explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
+
+#### Codec decoding defaults
+
+Streaming decodes run on the stateful incremental codec by default: each
+follow-up chunk decodes only its fresh frames against per-stream state held in
+a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
+is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
+about a minute compiling the steady shapes. The left-context decoder remains
+available as a rollback:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      enable_stateful_codec_decoder: false
+```
+
+`incremental_codec_cuda_graph`, `incremental_codec_compile` and
+`followup_batch_wait_ms` are the individual switches. Measured on one H100
+80GB at 20 requests per second, three client seeds of roughly 1200 requests
+each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
+for the left-context decoder, with first playable audio at 55 to 58 ms
+against 82 to 89 ms.
 
 #### First-audio chunk ramp
 

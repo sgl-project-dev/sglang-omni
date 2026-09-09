@@ -345,6 +345,48 @@ def test_flow_batch_tensorrt_matches_pytorch_serial() -> None:
     batched = _infer_flow(
         _FakeFlow(estimator=_RecordingTRTEstimator(max_batch=2)), items
     )
+    for actual, expected in zip(batched, serial, strict=True):
+        torch.testing.assert_close(actual, expected)
 
+
+def test_flow_causal_batch_uses_streaming_mask_and_strips_lookahead() -> None:
+    flow = _FakeFlow(max_frames=128)
+    items = [
+        _input([1] * 28),
+        _input([2] * 28),
+    ]
+    mels = FunCosyVoice3Flow(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
+    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    assert mels[0].shape == (1, 4, 50)
+    assert mels[1].shape == (1, 4, 50)
+
+
+def test_flow_causal_batch_follow_up_equal_lengths_strip_lookahead() -> None:
+    flow = _FakeFlow(max_frames=256)
+    items = [
+        _input([1] * 78, prompt_token=[3] * 25),
+        _input([2] * 78, prompt_token=[4] * 25),
+    ]
+    mels = FunCosyVoice3Flow(flow).inference_causal(items)
+    assert all(call["streaming"] is True for call in flow.decoder.estimator.calls)
+    assert flow.decoder.estimator.calls[0]["x"].shape[0] == 4
+    # 78 generated tokens minus lookahead 3 = 75; 75 * 2 mel frames
+    assert mels[0].shape == (1, 4, 150)
+    assert mels[1].shape == (1, 4, 150)
+
+
+def test_flow_causal_batch_mixed_prompt_matches_serial() -> None:
+    items = [
+        _input([1] * 78, prompt_token=[3] * 25),
+        _input([2] * 78, prompt_token=[4] * 50),
+    ]
+    serial = [
+        FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal([item])[0]
+        for item in items
+    ]
+    batched = FunCosyVoice3Flow(_FakeFlow(max_frames=512)).inference_causal(items)
+    assert batched[0].shape == serial[0].shape
+    assert batched[1].shape == serial[1].shape
     for actual, expected in zip(batched, serial, strict=True):
         torch.testing.assert_close(actual, expected)

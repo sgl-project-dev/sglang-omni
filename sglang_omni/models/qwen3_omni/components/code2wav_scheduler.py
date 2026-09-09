@@ -974,8 +974,8 @@ def create_code2wav_scheduler(
     """Factory: returns Code2WavScheduler."""
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
-            "Code2Wav CUDA graph requires "
-            "runtime.resources.total_gpu_memory_fraction"
+            "Code2Wav device graph requires gpu_memory_fraction "
+            "on the code2wav stage"
         )
     concrete_device = torch.device(resolve_device_spec(device, gpu_id))
     if concrete_device.type != "cpu" and concrete_device.index is None:
@@ -1018,7 +1018,7 @@ def create_code2wav_scheduler(
             )
             enable_batching = False
         logger.info(
-            "Code2Wav CUDA graph startup stats=%s",
+            "Code2Wav device graph startup stats=%s",
             json.dumps(
                 cuda_graph_runner.stats(),
                 sort_keys=True,

@@ -7,13 +7,14 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::header::{CONTENT_LENGTH, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, Method, Response, StatusCode};
 use bytes::{Bytes, BytesMut};
 use http_body::Body as _;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 use crate::classification::ClassificationExecutor;
 use crate::error::HttpFault;
+use crate::metrics::{ClassificationKind, Rejection, RouterMetrics};
 use crate::request_id::REQUEST_ID_HEADER;
 use crate::worker_pool::{AdmissionError, DispatchError, RequestLease};
 
@@ -22,14 +23,16 @@ pub(crate) use request_body::{SharedUploadState, UploadState};
 use response_body::DirectResponseBody;
 
 pub(crate) use headers::{
-    RequestEnvelope, is_request_media_type, request_content_type, sanitize_response_headers,
-    validate_request_envelope,
+    RequestEnvelope, is_request_media_type, parse_content_length, request_content_type,
+    sanitize_response_headers, validate_request_envelope,
 };
 
 pub(crate) struct HttpRelay {
     client: reqwest::Client,
+    buffered_budget_limit: usize,
     buffered_budget: Arc<Semaphore>,
     classifier: Arc<ClassificationExecutor>,
+    metrics: Arc<RouterMetrics>,
 }
 
 pub(crate) struct BufferedUpload {
@@ -38,11 +41,18 @@ pub(crate) struct BufferedUpload {
 }
 
 pub(crate) struct OutgoingRequest {
-    path: &'static str,
-    content_type: HeaderValue,
-    body: reqwest::Body,
+    method: Method,
+    path: OutgoingPath,
+    query: Option<String>,
+    content_type: Option<HeaderValue>,
+    body: Option<reqwest::Body>,
     content_length: Option<u64>,
     upload: Option<SharedUploadState>,
+}
+
+enum OutgoingPath {
+    Static(&'static str),
+    Segments(Vec<String>),
 }
 
 impl HttpRelay {
@@ -50,23 +60,34 @@ impl HttpRelay {
         client: reqwest::Client,
         buffered_budget: usize,
         classifier: Arc<ClassificationExecutor>,
+        metrics: Arc<RouterMetrics>,
     ) -> Arc<Self> {
         Arc::new(Self {
             client,
+            buffered_budget_limit: buffered_budget,
             buffered_budget: Arc::new(Semaphore::new(buffered_budget)),
             classifier,
+            metrics,
         })
+    }
+
+    pub(crate) fn buffered_usage(&self) -> (usize, usize) {
+        (
+            self.buffered_budget_limit,
+            self.buffered_budget_limit - self.buffered_budget.available_permits(),
+        )
     }
 
     pub(crate) async fn classify<T>(
         &self,
+        kind: ClassificationKind,
         deadline: tokio::time::Instant,
         operation: impl FnOnce() -> Result<T, HttpFault> + Send + 'static,
     ) -> Result<T, HttpFault>
     where
         T: Send + 'static,
     {
-        self.classifier.classify(deadline, operation).await
+        self.classifier.classify(kind, deadline, operation).await
     }
 
     pub(crate) async fn read_buffered(
@@ -77,7 +98,7 @@ impl HttpRelay {
         deadline: tokio::time::Instant,
     ) -> Result<BufferedUpload, HttpFault> {
         let mut budget = match expected {
-            Some(bytes) => reserve_budget(&self.buffered_budget, bytes)?,
+            Some(bytes) => reserve_budget(&self.buffered_budget, bytes, &self.metrics)?,
             None => None,
         };
         let mut output = BytesMut::with_capacity(initial_buffer_capacity(expected));
@@ -107,7 +128,7 @@ impl HttpRelay {
                         if expected.is_none() && length != 0 {
                             merge_budget(
                                 &mut budget,
-                                reserve_budget(&self.buffered_budget, length)?,
+                                reserve_budget(&self.buffered_budget, length, &self.metrics)?,
                             );
                         }
                         output.extend_from_slice(&data);
@@ -141,17 +162,29 @@ impl HttpRelay {
             tokio::time::Instant::now(),
         )?;
         let mut url = lease.target().base_url().clone();
-        url.set_path(outgoing.path);
-        url.set_query(None);
+        match outgoing.path {
+            OutgoingPath::Static(path) => url.set_path(path),
+            OutgoingPath::Segments(segments) => {
+                url.path_segments_mut()
+                    .map_err(|_| HttpFault::InternalError)?
+                    .clear()
+                    .extend(segments);
+            }
+        }
+        url.set_query(outgoing.query.as_deref());
         let mut request = self
             .client
-            .post(url)
-            .header(CONTENT_TYPE, outgoing.content_type)
+            .request(outgoing.method, url)
             .header(REQUEST_ID_HEADER, request_id);
+        if let Some(content_type) = outgoing.content_type {
+            request = request.header(CONTENT_TYPE, content_type);
+        }
         if let Some(length) = outgoing.content_length {
             request = request.header(CONTENT_LENGTH, length);
         }
-        let request = request.body(outgoing.body);
+        if let Some(body) = outgoing.body {
+            request = request.body(body);
+        }
         let sent = tokio::select! {
             biased;
             result = request.send() => result,
@@ -193,7 +226,7 @@ impl HttpRelay {
                 return Err(fault);
             }
         };
-        let relay = DirectResponseBody::new(body, lease);
+        let relay = DirectResponseBody::new(body, lease, Arc::clone(&self.metrics));
         let mut downstream = Response::new(Body::new(relay));
         *downstream.status_mut() = parts.status;
         *downstream.headers_mut() = headers;
@@ -210,9 +243,14 @@ impl OutgoingRequest {
         let content_length =
             u64::try_from(upload.bytes.len()).map_err(|_| HttpFault::InternalError)?;
         Ok(Self {
-            path,
-            content_type,
-            body: reqwest::Body::wrap(BufferedBody::new(upload.bytes, upload.budget)),
+            method: Method::POST,
+            path: OutgoingPath::Static(path),
+            query: None,
+            content_type: Some(content_type),
+            body: Some(reqwest::Body::wrap(BufferedBody::new(
+                upload.bytes,
+                upload.budget,
+            ))),
             content_length: Some(content_length),
             upload: None,
         })
@@ -228,27 +266,60 @@ impl OutgoingRequest {
         let state = SharedUploadState::new(UploadState::Incomplete);
         let direct = DirectRequestBody::new(body, expected, maximum, state.clone());
         Self {
-            path,
-            content_type,
-            body: reqwest::Body::wrap(direct),
+            method: Method::POST,
+            path: OutgoingPath::Static(path),
+            query: None,
+            content_type: Some(content_type),
+            body: Some(reqwest::Body::wrap(direct)),
             content_length: expected,
             upload: Some(state),
         }
+    }
+
+    pub(crate) fn control(
+        method: Method,
+        path: Vec<String>,
+        query: Option<String>,
+        content_type: Option<HeaderValue>,
+        upload: Option<BufferedUpload>,
+    ) -> Result<Self, HttpFault> {
+        let (body, content_length) = match upload {
+            Some(upload) => {
+                let length =
+                    u64::try_from(upload.bytes.len()).map_err(|_| HttpFault::InternalError)?;
+                let body = reqwest::Body::wrap(BufferedBody::new(upload.bytes, upload.budget));
+                (Some(body), Some(length))
+            }
+            None => (None, None),
+        };
+        Ok(Self {
+            method,
+            path: OutgoingPath::Segments(path),
+            query,
+            content_type,
+            body,
+            content_length,
+            upload: None,
+        })
     }
 }
 
 fn reserve_budget(
     semaphore: &Arc<Semaphore>,
     bytes: u64,
+    metrics: &RouterMetrics,
 ) -> Result<Option<OwnedSemaphorePermit>, HttpFault> {
     if bytes == 0 {
         return Ok(None);
     }
     let permits = u32::try_from(bytes).map_err(|_| HttpFault::InternalError)?;
-    Arc::clone(semaphore)
+    let reserved = Arc::clone(semaphore)
         .try_acquire_many_owned(permits)
-        .map(Some)
-        .map_err(|_| HttpFault::RouterOverloaded)
+        .map(Some);
+    if reserved.is_err() {
+        metrics.record_rejection(Rejection::BufferedRequestBytes);
+    }
+    reserved.map_err(|_| HttpFault::RouterOverloaded)
 }
 
 fn merge_budget(
@@ -343,6 +414,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use crate::classification::ClassificationExecutor;
+    use crate::metrics::{ClassificationKind, Rejection};
 
     use super::{
         HttpFault, HttpRelay, SharedUploadState, UploadState, check_precommit_deadline_at,
@@ -368,14 +440,17 @@ mod tests {
             reqwest::Client::new(),
             budget,
             ClassificationExecutor::for_test(1),
+            crate::metrics::RouterMetrics::new(),
         )
     }
 
     fn relay_with_slots(budget: usize, slots: usize) -> Arc<HttpRelay> {
         Arc::new(HttpRelay {
             client: reqwest::Client::new(),
+            buffered_budget_limit: budget,
             buffered_budget: Arc::new(Semaphore::new(budget)),
             classifier: ClassificationExecutor::for_test(slots),
+            metrics: crate::metrics::RouterMetrics::new(),
         })
     }
 
@@ -413,6 +488,7 @@ mod tests {
             )
             .await;
         assert!(matches!(rejected, Err(HttpFault::RouterOverloaded)));
+        assert_eq!(relay.metrics.rejections(Rejection::BufferedRequestBytes), 1);
         drop(held);
 
         let chunked = relay
@@ -472,6 +548,7 @@ mod tests {
         let classifier = tokio::spawn(async move {
             relay
                 .classify(
+                    ClassificationKind::Chat,
                     tokio::time::Instant::now() + Duration::from_secs(1),
                     move || {
                         entered_tx.send(()).expect("announce classifier entry");
@@ -502,6 +579,7 @@ mod tests {
             async move {
                 relay
                     .classify(
+                        ClassificationKind::Chat,
                         tokio::time::Instant::now() + Duration::from_secs(1),
                         move || {
                             entered_tx.send(()).expect("announce classifier entry");
@@ -534,6 +612,7 @@ mod tests {
 
         let result = relay
             .classify(
+                ClassificationKind::Chat,
                 tokio::time::Instant::now() + Duration::from_millis(20),
                 move || {
                     ran_in_task.store(true, Ordering::Relaxed);
@@ -559,6 +638,7 @@ mod tests {
             async move {
                 relay
                     .classify(
+                        ClassificationKind::Chat,
                         tokio::time::Instant::now() + Duration::from_millis(50),
                         move || {
                             let _budget = budget_permit;
@@ -608,6 +688,7 @@ mod tests {
         let classifier = tokio::spawn(async move {
             relay
                 .classify(
+                    ClassificationKind::Chat,
                     tokio::time::Instant::now() + Duration::from_secs(1),
                     move || {
                         let _budget = budget_permit;
