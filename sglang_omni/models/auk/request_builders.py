@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Request mapping helpers for AuK.
-
-Normalizes the several shapes a client can send an instruction + optional
-reference clip in, validates them, and loads/resamples the reference on CPU.
-"""
+"""Request mapping helpers for AuK."""
 
 from __future__ import annotations
 
@@ -126,7 +122,6 @@ def _load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarr
         elif source.startswith("file://"):
             source = unquote(urlparse(source).path)
     vae_audio = load_audio(source, source_name="AuK", target_sample_rate=sample_rate)
-    # Qwen's upstream process_mm_info uses librosa on the original source.
     qwen_audio, _ = librosa.load(
         io.BytesIO(source) if isinstance(source, bytes) else source,
         sr=C.QWEN_AUDIO_SAMPLE_RATE,
@@ -199,13 +194,11 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
                 "AuK speech requires stage_params.auk_engine.gen_seconds "
                 "or reference audio with ref_text"
             )
-        # Match upstream get_gen_duration: scale by UTF-8 byte length.
         gen_seconds = (
             ref_seconds * len(text.encode("utf-8")) / len(ref_text.encode("utf-8"))
         )
 
     if gen_seconds is None:
-        # Raw editing requests retain the upstream source-duration default.
         gen_frames = (
             max(1, ref_audio.shape[-1] // config.downsample_rate)
             if ref_seconds > 0

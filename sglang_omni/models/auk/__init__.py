@@ -1,8 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""AuK: instruction-driven speech generation and editing.
-
-Pipeline: Qwen2.5-Omni conditioning -> flow-matching DiT -> BigVGAN-Flow VAE.
-"""
+"""AuK: instruction-driven speech generation and editing."""
 
 from sglang_omni.models.model_capabilities import ModelCapabilities
 

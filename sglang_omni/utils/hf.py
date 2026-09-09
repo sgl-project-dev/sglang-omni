@@ -155,7 +155,7 @@ def try_resolve_arch_from_cosyvoice3_layout(
 
 
 def _auk_architecture_from_config(path: str) -> str | None:
-    """Return the AuK architecture ifpath names AuK or AuK-Flash."""
+    """Return the AuK architecture if the file names AuK or AuK-Flash."""
     import yaml
 
     try:

@@ -1,12 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Tencent. All rights reserved.
 # Derived from Tencent-Hunyuan/AuK; see LICENSE for the MIT permission notice.
-"""AuK conditioning encoder: frozen Qwen2.5-Omni-3B Thinker.
-
-Turns a chat-style message list (instruction + optional reference audio) into
-the packed all-layer hidden states the sampler fuses. The Thinker runs frozen
-with ``output_hidden_states=True``; the unused vision tower is dropped.
-"""
+"""AuK conditioning encoder: frozen Qwen2.5-Omni-3B Thinker."""
 
 from __future__ import annotations
 
@@ -22,19 +17,13 @@ logger = logging.getLogger(__name__)
 
 
 def build_messages(instruction: str, has_reference_audio: bool) -> list[dict[str, Any]]:
-    """Build the single-turn ChatML message list AuK is trained on.
-
-    The reference-free (instruction-only TTS) path appends the
-    ``|<no_prompt_audio>|`` marker, matching the released inference code.
-    """
+    """Build the single-turn ChatML message list AuK is trained on."""
     text = instruction
     if not has_reference_audio and not text.endswith(NO_PROMPT_AUDIO_MARKER):
         text = text + NO_PROMPT_AUDIO_MARKER
 
     content: list[dict[str, Any]] = [{"type": "text", "text": text}]
     if has_reference_audio:
-        # The placeholder is what the chat template expands to the audio tokens;
-        # the waveform itself is passed through the processor's ``audio=`` arg.
         content.append({"type": "audio", "audio": None})
     return [{"role": "user", "content": content}]
 
@@ -55,7 +44,6 @@ class AuKConditionEncoder:
         )
 
         class AuKThinker(Qwen2_5OmniThinkerForConditionalGeneration):
-            # The full Omni checkpoint also contains speech-generation branches.
             _keys_to_ignore_on_load_unexpected = [
                 *(
                     Qwen2_5OmniThinkerForConditionalGeneration._keys_to_ignore_on_load_unexpected
@@ -75,14 +63,10 @@ class AuKConditionEncoder:
         )
         self.processor = Qwen2_5OmniProcessor.from_pretrained(model_path)
         model = AuKThinker.from_pretrained(model_path, torch_dtype=dtype)
-        # Keep the multimodal Thinker (text + audio); drop the unused vision tower.
         model.visual = None
-        # Only hidden states condition the DiT; vocabulary logits are unused.
         model.lm_head = torch.nn.Identity()
         model.requires_grad_(False)
         model.eval()
-        # AukInfer casts the enclosing CFM (including Qwen) to FP32 and uses
-        # autocast for conditioning and sampling.
         self.model = model.to(device=self.device, dtype=torch.float32)
 
     @property
@@ -110,7 +94,7 @@ class AuKConditionEncoder:
         messages: list[dict[str, Any]],
         audio: np.ndarray | None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode one request into all-layer ``[L, Nt, H]`` states and its mask."""
+        """Encode one request into all-layer hidden states and its mask."""
         inputs = self._process_one(messages, audio)
         inputs = {k: v.to(self.device) for k, v in inputs.items() if torch.is_tensor(v)}
         outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)

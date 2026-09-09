@@ -41,8 +41,6 @@ def models():
     from sglang_omni.utils.checkpoint import resolve_checkpoint
 
     sys.path.insert(0, str(Path(source) / "src"))
-    # The upstream torch backend needs no flash-attn. FA4 installations expose
-    # a namespace called flash_attn without the FA2 functions upstream probes.
     with patch.dict(sys.modules, {"flash_attn": None}):
         from auk.infer.infer_auk import AukInfer
 
@@ -124,7 +122,6 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         argument=True,
     )
 
-    # Observe the serving implementation without replacing any model computation.
     original_encode = BigVGANFlowVAE.encoding_and_normalization
     original_fuse = AuKFlowMatching.fuse
     original_denormalize = BigVGANFlowVAE.denormalize
@@ -146,8 +143,6 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
     monkeypatch.setattr(AuKFlowMatching, "fuse", fuse)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
-    # Upstream's request seed resets target noise only. Equal initial RNG state
-    # is also needed to compare stochastic reference posterior samples.
     torch.manual_seed(42)
     expected["waveform"], sample_rate = upstream.generate(
         messages,

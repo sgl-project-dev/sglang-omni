@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""AuK checkpoint configuration.
-
-Normalizes the release layout (OmegaConf ``config.yaml`` next to the weights,
-with the Qwen2.5-Omni encoder and VAE as separate snapshots) into one runtime
-config so no other module needs to know where the values came from.
-"""
+"""AuK checkpoint configuration."""
 
 from __future__ import annotations
 
@@ -80,7 +75,7 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def load_auk_config(model_path: str) -> AuKRuntimeConfig:
-    """Read ``config.yaml`` (preferred) or ``config.json`` from a checkpoint."""
+    """Read config.yaml or config.json from a checkpoint."""
     root = Path(model_path)
     raw: dict[str, Any] = {}
     for name in CONFIG_YAML_NAMES:

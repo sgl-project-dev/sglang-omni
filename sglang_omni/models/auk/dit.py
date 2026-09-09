@@ -1,14 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Copyright (C) 2026 Tencent. All rights reserved.
 # Derived from Tencent-Hunyuan/AuK; see LICENSE for the MIT permission notice.
-"""AuK generation backbone: a Flux-style MMDiT over VAE latents.
-
-Ported from the reference ``src/auk/model/flux2_edit.py`` and ``modules.py``
-(AuK, MIT). The module tree is preserved so released checkpoints load without
-renaming. Two phases: ``num_layers`` double-stream ``MMDiTBlock`` (joint
-text/audio attention), then ``num_single_layers`` single-stream ``DiTBlock``
-over the concatenated ``[text | audio]`` sequence.
-"""
+"""AuK generation backbone."""
 
 from __future__ import annotations
 
@@ -58,8 +51,8 @@ class ConvPositionEmbedding(nn.Module):
         self, x: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
         if mask is not None:
-            mask = mask.unsqueeze(1)  # [B, 1, N]
-        x = x.permute(0, 2, 1)  # [B, D, N]
+            mask = mask.unsqueeze(1)
+        x = x.permute(0, 2, 1)
 
         if mask is not None:
             x = x.masked_fill(~mask, 0.0)
@@ -68,7 +61,7 @@ class ConvPositionEmbedding(nn.Module):
             if mask is not None and i in self.layer_need_mask_idx:
                 x = x.masked_fill(~mask, 0.0)
 
-        return x.permute(0, 2, 1)  # [B, N, D]
+        return x.permute(0, 2, 1)
 
 
 class TimestepEmbedding(nn.Module):
@@ -81,15 +74,11 @@ class TimestepEmbedding(nn.Module):
 
     def forward(self, timestep: torch.Tensor) -> torch.Tensor:
         time_hidden = self.time_embed(timestep).to(timestep.dtype)
-        return self.time_mlp(time_hidden)  # [B, D]
+        return self.time_mlp(time_hidden)
 
 
 class AdaLayerNorm(nn.Module):
-    """Timestep-conditioned LayerNorm returning modulation params.
-
-    Returns the modulated tensor plus gates for the attention and MLP residual
-    branches (six-way split, as in Flux / SD3).
-    """
+    """Timestep-conditioned LayerNorm returning modulation params."""
 
     def __init__(self, dim: int):
         super().__init__()
@@ -139,7 +128,6 @@ class SwiGLUFeedForward(nn.Module):
         super().__init__()
         inner_dim = int(dim * mult)
         dim_out = dim_out or dim
-        # SwiGLU halves the inner dimension again.
         self.linear_in = nn.Linear(dim, inner_dim * 2, bias=False)
         self.act_fn = SwiGLU()
         self.linear_out = nn.Linear(inner_dim, dim_out, bias=False)
@@ -149,11 +137,7 @@ class SwiGLUFeedForward(nn.Module):
 
 
 class Attention(nn.Module):
-    """Self-attention (``context_dim=None``) or joint text/audio attention.
-
-    Both branches share one SDPA call: joint attention concatenates Q/K/V along
-    the sequence axis and splits the output back, exactly as the reference does.
-    """
+    """Self-attention or joint text/audio attention."""
 
     def __init__(
         self,
@@ -186,7 +170,6 @@ class Attention(nn.Module):
             [nn.Linear(self.inner_dim, dim), nn.Dropout(dropout)]
         )
 
-    # -- helpers ----------------------------------------------------------- #
     @staticmethod
     def _split_heads(t: torch.Tensor, heads: int, head_dim: int) -> torch.Tensor:
         batch = t.shape[0]
@@ -209,7 +192,7 @@ class Attention(nn.Module):
         """SDPA with an optional broadcast key mask, then merge heads."""
         batch, heads = q.shape[0], q.shape[1]
         if self.attn_mask_enabled and mask is not None:
-            attn_mask = mask.unsqueeze(1).unsqueeze(1)  # b n -> b 1 1 n
+            attn_mask = mask.unsqueeze(1).unsqueeze(1)
             attn_mask = attn_mask.expand(batch, heads, q.shape[-2], k.shape[-2])
         else:
             attn_mask = None
@@ -218,7 +201,6 @@ class Attention(nn.Module):
         )
         return out.transpose(1, 2).reshape(batch, -1, q.shape[1] * q.shape[3])
 
-    # -- forward ------------------------------------------------------------ #
     def forward(
         self,
         x: torch.Tensor,
@@ -231,7 +213,6 @@ class Attention(nn.Module):
         if c is None:
             return self._forward_self(x, mask=mask, rope=rope)
 
-        # ---- joint (text + audio) attention ----
         audio_mask = mask
         query, key, value = self.to_qkv(x).chunk(3, dim=-1)
         c_query, c_key, c_value = self.to_qkv_c(c).chunk(3, dim=-1)
@@ -251,7 +232,6 @@ class Attention(nn.Module):
         if c_rope is not None:
             c_query, c_key = self._apply_rope(c_query, c_key, c_rope)
 
-        # Audio queries attend over [audio, text] keys.
         if self.attn_mask_enabled and mask is not None:
             joint_mask = (
                 torch.cat([mask, c_mask], dim=1)
@@ -337,11 +317,7 @@ class DiTBlock(nn.Module):
 
 
 class MMDiTBlock(nn.Module):
-    """Double-stream block: separate audio/text streams, joint attention.
-
-    https://arxiv.org/abs/2403.03206 (SD3). ``_c`` marks the context (text)
-    stream, ``_x`` the noised audio stream.
-    """
+    """Double-stream block: separate audio/text streams, joint attention."""
 
     def __init__(
         self,
@@ -432,7 +408,7 @@ class AudioPromptEmbedding(nn.Module):
 
 @dataclass
 class AuKDitConfig:
-    """Backbone hyperparameters (``config.yaml::model.arch`` in the release)."""
+    """Backbone hyperparameters."""
 
     dim: int = 1024
     heads: int = 16
@@ -440,11 +416,10 @@ class AuKDitConfig:
     dropout: float = 0.1
     ff_mult: float = 2.0
     text_hidden_dim: int = 2048
-    num_layers: int = 8  # double-stream MMDiT blocks
-    num_single_layers: int = 24  # single-stream DiT blocks
+    num_layers: int = 8
+    num_single_layers: int = 24
     latent_dim: int = 64
     attn_mask_enabled: bool = True
-    # Kept for config compatibility with the reference dataclass; unused here.
     depth: int = 8
 
     @classmethod
@@ -454,7 +429,7 @@ class AuKDitConfig:
 
 
 class AuKDit(nn.Module):
-    """Flux2Edit backbone: reference audio is prepended to the noised latent."""
+    """Flux2Edit backbone."""
 
     def __init__(
         self,
@@ -508,7 +483,6 @@ class AuKDit(nn.Module):
         self.norm_out = AdaLayerNormFinal(dim)
         self.proj_out = nn.Linear(dim, latent_dim)
 
-        # Cached projected text for the cond/uncond CFG branches.
         self.text_cond: torch.Tensor | None = None
         self.text_uncond: torch.Tensor | None = None
 
@@ -532,7 +506,6 @@ class AuKDit(nn.Module):
         self.text_cond, self.text_uncond = None, None
 
     def project_text(self, text: torch.Tensor, drop_text: bool = False) -> torch.Tensor:
-        """Project LLM hidden states to the model width: Linear -> RMSNorm."""
         c = self.txt_norm(self.txt_proj(text))
         return torch.zeros_like(c) if drop_text else c
 
@@ -576,25 +549,23 @@ class AuKDit(nn.Module):
 
     def forward(
         self,
-        x: torch.Tensor,  # noised target latent [B, N, D]
-        text: torch.Tensor,  # LLM hidden states [B, Nt, H]
-        time: torch.Tensor,  # flow-matching timestep [B] or scalar
+        x: torch.Tensor,
+        text: torch.Tensor,
+        time: torch.Tensor,
         mask: torch.Tensor | None = None,
         c_mask: torch.Tensor | None = None,
         drop_audio_cond: bool = False,
         drop_text: bool = False,
         cfg_infer: bool = False,
         cache: bool = False,
-        ref: torch.Tensor | None = None,  # prompt audio latent [B, Np, D]
+        ref: torch.Tensor | None = None,
         ref_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
             time = time.repeat(batch)
-        t = self.time_embed(time)  # [B, D]
+        t = self.time_embed(time)
 
-        # Padding rows are all-zero in the LLM output, so this doubles as the
-        # text attention mask when the caller does not supply one.
         if c_mask is None:
             c_mask = text.abs().sum(-1) > 0
 
@@ -634,12 +605,11 @@ class AuKDit(nn.Module):
                 x, ref, drop_audio_cond=drop_audio_cond, mask=mask, ref_mask=ref_mask
             )
 
-        seq_len = x.shape[1]  # [prompt | noised target]
+        seq_len = x.shape[1]
         text_len = c.shape[1]
         rope_audio = self.rotary_embed.forward_from_seq_len(seq_len)
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
 
-        # Phase 1: double stream.
         for block in self.transformer_blocks:
             c, x = block(
                 x,
@@ -651,7 +621,6 @@ class AuKDit(nn.Module):
                 c_mask=c_mask,
             )
 
-        # Phase 2: single stream over [text | audio].
         x = torch.cat([c, x], dim=1)
         rope = self.rotary_embed.forward_from_seq_len(text_len + seq_len)
         single_mask = (
@@ -660,7 +629,5 @@ class AuKDit(nn.Module):
         for block in self.single_transformer_blocks:
             x = block(x, t, mask=single_mask, rope=rope)
 
-        # Drop the text prefix and the prompt-audio prefix: only the noised
-        # target is part of the ODE state.
         x = x[:, text_len + prompt_len :]
         return self.proj_out(self.norm_out(x, t))

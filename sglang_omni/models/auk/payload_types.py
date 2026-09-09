@@ -17,9 +17,7 @@ class AuKState(DeclarativeStateBase):
     sample_rate: int = wire(C.SAMPLE_RATE, codec="int")
 
     instruction: str = wire("", codec="str")
-    # 24 kHz mono reference waveform, kept as numpy until the GPU stage.
     ref_audio: Any | None = None
-    # Independently resampled from the original source, as in qwen_omni_utils.
     qwen_audio: Any | None = None
     ref_seconds: float = wire(0.0, codec="float")
 

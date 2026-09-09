@@ -3,13 +3,7 @@
 # Copyright (c) 2022 NVIDIA CORPORATION.
 # Derived from Tencent-Hunyuan/AuK; see LICENSE for the MIT permission notice.
 # Alias-free activation code adapts junjun3518/alias-free-torch (Apache-2.0).
-"""AuK audio VAE: BigVGAN decoder + convolutional encoder + normalizing flow.
-
-Ported from ``src/auk/model/vae/`` (AuK, MIT; adapts HiFi-GAN / BigVGAN / VITS).
-The module tree and weight-norm scheme are preserved so ``vae.safetensors`` loads
-without renaming. Encoder: 24 kHz mono -> 50 Hz 64-channel latent (480x); decoder
-(causal BigVGAN): latent -> waveform.
-"""
+"""AuK audio VAE: BigVGAN decoder, convolutional encoder, and normalizing flow."""
 
 from __future__ import annotations
 
@@ -49,7 +43,6 @@ def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int):
         filter_ = torch.zeros_like(time)
     else:
         filter_ = 2 * cutoff * window * torch.sinc(2 * cutoff * time)
-        # Normalize so the constant component is preserved.
         filter_ = filter_ / filter_.sum()
     return filter_.view(1, 1, kernel_size)
 
@@ -180,7 +173,7 @@ class Activation1d(nn.Module):
 
 
 class SnakeBeta(nn.Module):
-    """Periodic activation: ``x + 1/beta * sin^2(alpha * x)``."""
+    """Periodic activation: x + 1/beta * sin^2(alpha * x)."""
 
     def __init__(self, in_features: int, alpha_logscale: bool = True):
         super().__init__()
@@ -192,7 +185,7 @@ class SnakeBeta(nn.Module):
         self.no_div_by_zero = 0.000000001
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        alpha = self.alpha.unsqueeze(0).unsqueeze(-1)  # [1, C, 1]
+        alpha = self.alpha.unsqueeze(0).unsqueeze(-1)
         beta = self.beta.unsqueeze(0).unsqueeze(-1)
         if self.alpha_logscale:
             alpha = torch.exp(alpha)
@@ -822,12 +815,7 @@ class BigVGANFlowVAE(nn.Module):
     def encoding_and_normalization(
         self, sample: torch.Tensor, sample_lengths: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode waveform [B, 1, T] -> normalized latent [B, T', D].
-
-        The reference runs the encoder in fp32. Autocast is disabled for the
-        input tensor's own device type (rather than a hard-coded ``"cuda"``) so
-        the same path is correct on CUDA, NPU, XPU, and CPU.
-        """
+        """Encode waveform [B, 1, T] to a normalized latent [B, T, D]."""
         with torch.autocast(device_type=sample.device.type, enabled=False):
             latent_stats = self.audio_encoder(sample.float())
             if sample_lengths is None:
@@ -835,9 +823,9 @@ class BigVGANFlowVAE(nn.Module):
                     [sample.size(-1)] * sample.size(0)
                 ).to(sample.device)
             latent_lens = sample_lengths // self.hop_size
-            mean, log_std = latent_stats.chunk(2, 1)  # [B, D, T]
+            mean, log_std = latent_stats.chunk(2, 1)
             latents = mean + torch.randn_like(mean) * torch.exp(log_std)
-            latents = latents.transpose(1, 2).float()  # [B, T, D]
+            latents = latents.transpose(1, 2).float()
             latents = (latents - self.global_mean.float()) / torch.sqrt(
                 self.global_log_std.float()
             )

@@ -42,16 +42,16 @@ def build_time_grid(
 
 @dataclass
 class AuKSampleItem:
-    hidden_states: torch.Tensor  # [L, Nt, H], including the embedding layer
-    text_mask: torch.Tensor  # [Nt]
+    hidden_states: torch.Tensor
+    text_mask: torch.Tensor
     target_frames: int
-    ref_latent: torch.Tensor | None = None  # [Np, D], including padded frames
+    ref_latent: torch.Tensor | None = None
     seed: int | None = None
     ref_length: int = 0
 
 
 class AuKFlowMatching(nn.Module):
-    """Serial velocity-field integration for AuK latent generation."""
+    """Serial velocity-field integration."""
 
     def __init__(self, transformer: AuKDit, num_llm_layers: int):
         super().__init__()

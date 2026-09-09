@@ -1,13 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0 AND MIT
 # Inference recipe adapted from Tencent-Hunyuan/AuK, Copyright (C) 2026 Tencent.
 # See LICENSE for the upstream MIT permission notice.
-"""Stage factories for the AuK pipeline.
-
-    preprocessing (CPU)  -> validate request, decode/resample reference audio
-    auk_engine    (GPU)  -> Qwen + VAE reference encode + DiT + same VAE decode
-
-The terminal engine uses a serial ``SimpleScheduler``.
-"""
+"""Stage factories for the AuK pipeline."""
 
 from __future__ import annotations
 
@@ -116,8 +110,6 @@ def _reference_latent(
         )
         latent, latent_lengths = ctx.vae.encoding_and_normalization(tensor, lengths)
     length = int(latent_lengths[0])
-    # Preserve padded frames, valid length and strides. Trimming shifts rotary
-    # positions; making this contiguous changes the BF16 GEMM rounding.
     return latent[0], length
 
 
@@ -196,7 +188,6 @@ def create_auk_engine_executor(
     )
     flow = AuKFlowMatching(dit, num_llm_layers=encoder.num_hidden_layers)
     load_dit_weights(flow, checkpoint)
-    # The reference runs the DiT in fp32 under bf16 autocast.
     flow = flow.to(device=resolved_device, dtype=torch.float32).eval()
 
     vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
@@ -205,8 +196,6 @@ def create_auk_engine_executor(
     vae.requires_grad_(False)
 
     if config.is_flash:
-        # AuK-Flash is a DMD student: the 4-step grid is baked in and re-adding
-        # CFG drives the amplitude into clipping.
         nfe, cfg_strength, sway_sampling_coef = (
             C.FLASH_NFE,
             C.FLASH_CFG_STRENGTH,

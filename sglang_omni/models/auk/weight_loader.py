@@ -1,10 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Direct weight loading for the AuK DiT and VAE.
-
-The DiT ships as a weights-only safetensors export (plus the two layer-fusion
-params); the Qwen encoder and VAE are separate snapshots. Training checkpoints
-(EMA weights, ``ema_model.`` prefix) are also accepted.
-"""
+"""Direct weight loading for the AuK DiT and VAE."""
 
 from __future__ import annotations
 
@@ -29,7 +24,6 @@ VAE_FILE_CANDIDATES = (
     "audio_vae.safetensors",
 )
 
-# Prefixes that wrap the real module names depending on how the export was made.
 _STRIPPABLE_PREFIXES = ("ema_model.", "module.", "model.", "net.")
 
 
@@ -56,7 +50,7 @@ def _first_existing(root: Path, names: tuple[str, ...]) -> Path | None:
 
 
 def resolve_weight_file(model_path: str) -> Path:
-    """Locate the DiT checkpoint inside ``model_path``."""
+    """Locate the DiT checkpoint inside model_path."""
     root = Path(model_path)
     if root.is_file():
         return root
@@ -94,7 +88,7 @@ def _strip_prefix(key: str) -> str:
 def normalize_state_dict(
     state_dict: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
-    """Drop EMA/DDP wrappers so keys match the ``transformer.*`` module tree."""
+    """Drop EMA/DDP wrappers so keys match the transformer module tree."""
     return {_strip_prefix(k): v for k, v in state_dict.items()}
 
 
@@ -110,7 +104,7 @@ def load_dit_weights(
     flow: torch.nn.Module,
     model_path: str,
 ) -> LoadReport:
-    """Load the DiT + layer-fusion parameters into an ``AuKFlowMatching``."""
+    """Load the DiT and layer-fusion parameters into AuKFlowMatching."""
     return _load_weights(flow, resolve_weight_file(model_path))
 
 
@@ -118,7 +112,7 @@ def load_vae_weights(
     vae: torch.nn.Module,
     model_path: str,
 ) -> LoadReport:
-    """Load ``vae.safetensors`` into a ``BigVGANFlowVAE``."""
+    """Load vae.safetensors into a BigVGANFlowVAE."""
     vae_file = resolve_vae_file(model_path)
     if vae_file is None:
         raise FileNotFoundError(f"No AuK VAE weights found under {model_path}")
