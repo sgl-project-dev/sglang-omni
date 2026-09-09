@@ -29,6 +29,7 @@ from torch import nn
 import sglang_omni.models.qwen3_tts.sglang_model as sglang_model_module
 from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
 from sglang_omni.vendor.sglang.layers import RMSNorm
+from sglang_omni.vendor.sglang.models import apply_qk_norm
 
 
 @pytest.fixture(autouse=True)
@@ -1317,14 +1318,15 @@ def test_sglang_gemm_overrides_keep_the_eager_gemm_on_both_paths(
     assert torch.equal(graph_embeds, eager_embeds)
 
 
-ROPE_HEAD_DIM = 64
-ROPE_NUM_HEADS = 2
-ROPE_NUM_KV_HEADS = 1
-ROPE_HIDDEN = ROPE_NUM_HEADS * ROPE_HEAD_DIM
+ROPE_HEAD_DIM = 128
+ROPE_NUM_HEADS = 16
+ROPE_NUM_KV_HEADS = 8
+ROPE_HIDDEN = 1024
+ROPE_PREDICTOR_LEN = 17
 
 
 def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
-    predictor_len = NUM_CODE_GROUPS + 1
+    predictor_len = ROPE_PREDICTOR_LEN
     talker = object.__new__(Qwen3TTSTalker)
     positions = torch.arange(predictor_len, device=device, dtype=torch.long)
     talker._predictor_position_rows = (
@@ -1354,6 +1356,38 @@ def _rope_store_talker(device: torch.device, *, stores: bool) -> Qwen3TTSTalker:
     return talker
 
 
+def _rope_copy_reference(
+    attn: SimpleNamespace,
+    hidden: torch.Tensor,
+    positions: torch.Tensor,
+    k_cache: torch.Tensor,
+    v_cache: torch.Tensor,
+    cache_len: int,
+) -> torch.Tensor:
+    """Plain RoPE followed by the former [batch, head, slot, dim] cache writes."""
+    batch_size = hidden.shape[0]
+    qkv, _ = attn.qkv_proj(hidden.reshape(batch_size, -1))
+    q, k, v = qkv.split([attn.q_size, attn.kv_size, attn.kv_size], dim=-1)
+    q, k = apply_qk_norm(
+        q, k, attn.q_norm, attn.k_norm, attn.head_dim, alt_stream=attn.alt_stream
+    )
+    q, k = attn.rotary_emb(positions, q, k, fused_set_kv_buffer_arg=None)
+    k_cache[:batch_size, :, cache_len : cache_len + 1].copy_(
+        k.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+    )
+    v_cache[:batch_size, :, cache_len : cache_len + 1].copy_(
+        v.reshape(batch_size, 1, attn.num_kv_heads, attn.head_dim).transpose(1, 2)
+    )
+    output = torch.nn.functional.scaled_dot_product_attention(
+        q.reshape(batch_size, 1, attn.num_heads, attn.head_dim).transpose(1, 2),
+        k_cache[:batch_size, :, : cache_len + 1],
+        v_cache[:batch_size, :, : cache_len + 1],
+        is_causal=False,
+        enable_gqa=True,
+    )
+    return output.transpose(1, 2).reshape(batch_size, -1)
+
+
 @pytest.fixture(params=["cuda", "torch"])
 def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
     from sglang.srt.runtime_context import get_context
@@ -1373,15 +1407,17 @@ def predictor_rope_dispatch(request: pytest.FixtureRequest) -> Iterator[str]:
 @pytest.mark.accelerator
 @pytest.mark.parametrize("batch_size", [1, 16])
 def test_rope_store_writes_the_cache_the_copy_path_writes(
-    batch_size: int, predictor_rope_dispatch: str
+    batch_size: int,
+    predictor_rope_dispatch: str,
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """sglang's rope kernel with the store argument leaves the same bits in the
-    predictor cache as the plain rope followed by the two copies, and the
-    attention over that cache is the same bits too. The rotary reads the
-    process wide config the engine publishes at bootstrap, so the test
-    publishes one."""
+    """Compare cache rows and attention against the former layout, then replay
+    the fused path with fresh inputs to check that captured stores overwrite."""
     device = torch.device("cuda")
     torch.manual_seed(11)
+    # Other tests isolate the graph machinery with a stub; this test covers
+    # the actual normalized Q/K tensors handed to the upstream rotary.
+    monkeypatch.setattr(sglang_model_module, "apply_qk_norm", apply_qk_norm)
     attn = SimpleNamespace(
         q_size=ROPE_NUM_HEADS * ROPE_HEAD_DIM,
         kv_size=ROPE_NUM_KV_HEADS * ROPE_HEAD_DIM,
@@ -1404,31 +1440,83 @@ def test_rope_store_writes_the_cache_the_copy_path_writes(
     stores = Qwen3TTSTalker._resolve_predictor_rope_store(attn, device=device)
     stored = _rope_store_talker(device, stores=stores)
     copied = _rope_store_talker(device, stores=False)
+    # Allocate the old layout independently, not as another view of the new cache.
+    reference_k = torch.zeros(
+        MAX_BS,
+        ROPE_NUM_KV_HEADS,
+        ROPE_PREDICTOR_LEN,
+        ROPE_HEAD_DIM,
+        device=device,
+        dtype=DTYPE,
+    )
+    reference_v = torch.zeros_like(reference_k)
+    hidden_steps = torch.randn(
+        ROPE_PREDICTOR_LEN, batch_size, 1, ROPE_HIDDEN, device=device, dtype=DTYPE
+    )
 
-    predictor_len = NUM_CODE_GROUPS + 1
-    for cache_len in range(predictor_len):
-        hidden = torch.randn(batch_size, 1, ROPE_HIDDEN, device=device).to(DTYPE)
-        positions = stored._predictor_position_rows[cache_len, :batch_size]
-        outputs = [
-            talker._predictor_cached_self_attention(
-                layer_idx=0,
-                attn=attn,
-                hidden_states=hidden,
-                positions=positions,
-                batch_size=batch_size,
-                cache_len=cache_len,
-            )
-            for talker in (stored, copied)
-        ]
+    def run_attention(talker: Qwen3TTSTalker) -> torch.Tensor:
+        return torch.stack(
+            [
+                talker._predictor_cached_self_attention(
+                    layer_idx=0,
+                    attn=attn,
+                    hidden_states=hidden_steps[slot],
+                    positions=talker._predictor_position_rows[slot, :batch_size],
+                    batch_size=batch_size,
+                    cache_len=slot,
+                )
+                for slot in range(ROPE_PREDICTOR_LEN)
+            ]
+        )
+
+    def run_reference() -> torch.Tensor:
+        return torch.stack(
+            [
+                _rope_copy_reference(
+                    attn,
+                    hidden_steps[slot],
+                    stored._predictor_position_rows[slot, :batch_size],
+                    reference_k,
+                    reference_v,
+                    slot,
+                )
+                for slot in range(ROPE_PREDICTOR_LEN)
+            ]
+        )
+
+    def assert_matches_reference(output: torch.Tensor) -> None:
+        expected = run_reference()
         torch.cuda.synchronize()
-        assert torch.equal(outputs[0], outputs[1]), cache_len
+        assert torch.equal(output, expected)
+        assert torch.equal(stored._predictor_k_cache[0].transpose(1, 2), reference_k)
+        assert torch.equal(stored._predictor_v_cache[0].transpose(1, 2), reference_v)
+
+    with torch.no_grad():
+        output = run_attention(stored)
+        assert torch.equal(output, run_attention(copied))
         assert torch.equal(stored._predictor_k_cache, copied._predictor_k_cache)
         assert torch.equal(stored._predictor_v_cache, copied._predictor_v_cache)
+        assert_matches_reference(output)
+        assert stores == (predictor_rope_dispatch == "cuda")
+        if not stores:
+            return
 
-    written = stored._predictor_k_cache[0, :batch_size]
-    assert stores == (predictor_rope_dispatch == "cuda")
-    assert bool(written.abs().sum() > 0)
-    assert bool(stored._predictor_k_cache[0, batch_size:].abs().sum() == 0)
+        stream = torch.cuda.Stream(device=device)
+        current_stream = torch.cuda.current_stream(device)
+        stream.wait_stream(current_stream)
+        with torch.cuda.stream(stream):
+            for _ in range(2):
+                run_attention(stored)
+        current_stream.wait_stream(stream)
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph, stream=stream):
+            replay_output = run_attention(stored)
+
+        # The same graph must consume changed inputs and replace the prior frame.
+        for _ in range(2):
+            hidden_steps.normal_()
+            graph.replay()
+            assert_matches_reference(replay_output)
 
 
 if __name__ == "__main__":
