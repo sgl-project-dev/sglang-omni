@@ -12,7 +12,7 @@ CLI plus :func:`run_asr_realtime_once` for CI reuse.
 Author:
 
     Jeffro https://github.com/0xjeffro
-    
+
 
 Usage:
 
@@ -39,7 +39,6 @@ Usage:
 """
 
 from __future__ import annotations
-
 
 import argparse
 import asyncio

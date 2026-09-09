@@ -2,7 +2,7 @@
 """One realtime transcription session: push audio, collect events, record time.
 
 This module only records. For computing any metric, see
-benchmarks.realtime_asr.metrics for datails. 
+benchmarks.realtime_asr.metrics for datails.
 
 The event flow:
 
