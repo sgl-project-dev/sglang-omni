@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Select padded aux graphs and extend their per-row inputs.
+"""Select padded aux graphs.
 
 Callers must isolate filler writes from live state and slice outputs back to
 the real row count. Positional captures require gather-mode replacements.
@@ -8,8 +8,6 @@ the real row count. Positional captures require gather-mode replacements.
 from __future__ import annotations
 
 from typing import TypeVar
-
-import torch
 
 GraphT = TypeVar("GraphT")
 
@@ -21,6 +19,7 @@ def select_padded_graph(
     *,
     skip_batch: int | None = None,
     extra: dict[tuple[int, int], GraphT] | None = None,
+    max_batch_ratio: float | None = None,
 ) -> tuple[GraphT | None, int]:
     """Pick the smallest captured graph a ``rows``-row batch can pad up to.
 
@@ -28,7 +27,8 @@ def select_padded_graph(
     ties resolve to the smallest batch then the smallest capacity. Entries in
     ``graphs`` whose batch equals ``skip_batch`` are ignored (captures that
     read state positionally instead of via the slot-index input buffer);
-    ``extra`` supplies gather-mode replacements for such batches. Returns
+    ``extra`` supplies gather-mode replacements for such batches.
+    ``max_batch_ratio`` optionally bounds captured rows / real rows. Returns
     ``(graph, filler_row_count)`` or ``(None, 0)``.
     """
     pool = [
@@ -47,27 +47,6 @@ def select_padded_graph(
     if not pool:
         return None, 0
     batch_size, bucket_capacity, source = min(pool, key=lambda item: (item[0], item[1]))
+    if max_batch_ratio is not None and batch_size > rows * max_batch_ratio:
+        return None, 0
     return source[(batch_size, bucket_capacity)], batch_size - rows
-
-
-def pad_rows(
-    tensor: torch.Tensor,
-    pad: int,
-    *,
-    fill_value: int | float | None = None,
-) -> torch.Tensor:
-    """Append ``pad`` filler rows to a per-row input tensor.
-
-    Filler rows are zeros unless ``fill_value`` is given (e.g. the sacrificial
-    slot index for the slot-id tensor). The result matches the captured input
-    buffer's batch dimension, so a plain ``copy_`` stages it for replay.
-    """
-    if pad <= 0:
-        return tensor
-    shape = (pad, *tensor.shape[1:])
-    filler = (
-        tensor.new_zeros(shape)
-        if fill_value is None
-        else tensor.new_full(shape, fill_value)
-    )
-    return torch.cat([tensor, filler])

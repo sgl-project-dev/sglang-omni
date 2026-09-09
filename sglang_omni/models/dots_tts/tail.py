@@ -22,12 +22,12 @@ from dots_tts.modules.backbone.dit_inference import FusedAdaLNDiT
 from dots_tts.modules.backbone.inference_utils import fuse_qkv_projection
 from dots_tts.modules.backbone.layers import rotate_half
 
-from sglang_omni.utils.graph_padding import pad_rows, select_padded_graph
+from sglang_omni.utils.graph_padding import select_padded_graph
 
 logger = logging.getLogger(__name__)
 
 _TAIL_SDPA_BACKENDS = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
-_GRAPH_BATCH_BUCKETS = (1, 8, 16)
+_GRAPH_BATCH_BUCKETS = (1, 4, 8, 16)
 _GRAPH_CONTEXT_PATCH_BUCKETS = (16, 32, 64, 128)
 _TAIL_STEP_LOG_INTERVAL = 50
 
@@ -255,9 +255,7 @@ def estimate_acoustic_pool_bytes(
 ) -> AcousticPoolMemoryEstimate:
     """Sum pool tensor bytes; excludes weights, backbone KV, and graph workspace.
 
-    ``reserved_rows`` extends the persistent pools (not scratch/masks) with
-    sacrificial rows for padded graph replays — the sglang "padded slot 0"
-    idiom; see utils/graph_padding.py.
+    ``reserved_rows`` adds isolated filler state, not scratch or masks.
     """
     elem = _dtype_nbytes(dtype)
     bool_elem = _dtype_nbytes(torch.bool)
@@ -472,7 +470,7 @@ class DotsTtsAcousticTail:
             padding_graphs_requested
             and _has_batch_padding_gap(self._graph_batch_buckets)
         )
-        # Reserved sacrificial pool row for padded replays; never allocatable.
+        # note (0xtoward): Filler writes must never reach an allocatable slot.
         self._pad_bin_slot = spec.num_slots
         self._mods_width = int(dit.fused_adaln[-1].out_features)
         self._allocate_pools(self._mods_width)
@@ -566,9 +564,8 @@ class DotsTtsAcousticTail:
         validate_acoustic_pool_memory(estimate, device=self.device)
 
         zeros = partial(torch.zeros, device=self.device, dtype=self.dtype)
-        # Persistent pools get one sacrificial row beyond the slot range when
-        # padded replays are enabled (the sglang "padded slot 0" idiom); the
-        # positional scratch/mask buffers never address it and stay slot-sized.
+        # note (0xtoward): Only persistent state needs a reserved row;
+        # scratch and masks are indexed by batch position, not slot ID.
         pool_rows = spec.num_slots + (1 if self._pad_to_bucket else 0)
         self._dit_k = zeros(
             spec.nfe,
@@ -665,7 +662,9 @@ class DotsTtsAcousticTail:
 
     @property
     def has_captured_graphs(self) -> bool:
-        return bool(self._meanflow_graphs or self._encoder_graphs)
+        return bool(
+            self._meanflow_graphs or self._meanflow_pad_graphs or self._encoder_graphs
+        )
 
     def log_graph_counters(self) -> None:
         self._log_graph_counters(logging.INFO)
@@ -680,12 +679,16 @@ class DotsTtsAcousticTail:
             level,
             "dots.tts tail graph counters: steps=%d meanflow_replays=%d "
             "meanflow_misses=%d semantic_encoder_replays=%d "
-            "semantic_encoder_misses=%d",
+            "semantic_encoder_misses=%d meanflow_padded_replays=%d "
+            "semantic_encoder_padded_replays=%d",
             self._tail_steps,
             self._graph_replays["meanflow"],
             self._graph_misses["meanflow"],
             self._graph_replays["semantic_encoder"],
             self._graph_misses["semantic_encoder"],
+            # note (0xtoward): Padded replays are a subset of total replays.
+            self._graph_padded_replays["meanflow"],
+            self._graph_padded_replays["semantic_encoder"],
         )
 
     def note_decode_cycle(self) -> None:
@@ -880,23 +883,23 @@ class DotsTtsAcousticTail:
         else:
             if pad:
                 bin_slot = self._pad_bin_slot
-                work_slots = pad_rows(work_slots, pad, fill_value=bin_slot)
-                work_persistent = pad_rows(work_persistent, pad)
-                work_hidden = pad_rows(work_hidden, pad)
-                work_noise = pad_rows(work_noise, pad)
                 self._graph_padded_replays["meanflow"] += 1
-                if self._graph_padded_replays["meanflow"] == 1:
-                    logger.info(
-                        "dots.tts padded MeanFlow replay is active "
-                        "(rows=%d pad=%d bin=%d)",
-                        len(slots),
-                        pad,
-                        bin_slot,
-                    )
-            graph.inputs["slots"].copy_(work_slots)
-            graph.inputs["starts"].copy_(work_persistent)
-            graph.inputs["hidden"].copy_(work_hidden)
-            graph.inputs["noise"].copy_(work_noise)
+                # note (0xtoward): Refresh filler inputs in place; do not
+                # allocate and concatenate temporary padded tensors.
+                real_rows = len(slots)
+                graph.inputs["slots"][:real_rows].copy_(work_slots)
+                graph.inputs["slots"][real_rows:].fill_(bin_slot)
+                graph.inputs["starts"][:real_rows].copy_(work_persistent)
+                graph.inputs["starts"][real_rows:].fill_(0)
+                graph.inputs["hidden"][:real_rows].copy_(work_hidden)
+                graph.inputs["hidden"][real_rows:].fill_(0)
+                graph.inputs["noise"][:real_rows].copy_(work_noise)
+                graph.inputs["noise"][real_rows:].fill_(0)
+            else:
+                graph.inputs["slots"].copy_(work_slots)
+                graph.inputs["starts"].copy_(work_persistent)
+                graph.inputs["hidden"].copy_(work_hidden)
+                graph.inputs["noise"].copy_(work_noise)
             graph.graph.replay()
             latent = graph.output[: len(slots)].clone() if pad else graph.output.clone()
             self._graph_replays["meanflow"] += 1
@@ -1097,26 +1100,19 @@ class DotsTtsAcousticTail:
                 latent_patches,
             )
         else:
-            work_index = slot_index
-            work_starts = start_index
-            work_latent = latent_patches
             if pad:
                 bin_slot = self._pad_bin_slot
-                work_index = pad_rows(slot_index, pad, fill_value=bin_slot)
-                work_starts = pad_rows(start_index, pad)
-                work_latent = pad_rows(latent_patches, pad)
                 self._graph_padded_replays["semantic_encoder"] += 1
-                if self._graph_padded_replays["semantic_encoder"] == 1:
-                    logger.info(
-                        "dots.tts padded semantic-encoder replay is active "
-                        "(rows=%d pad=%d bin=%d)",
-                        rows,
-                        pad,
-                        bin_slot,
-                    )
-            graph.inputs["slots"].copy_(work_index)
-            graph.inputs["starts"].copy_(work_starts)
-            graph.inputs["latent"].copy_(work_latent)
+                graph.inputs["slots"][:rows].copy_(slot_index)
+                graph.inputs["slots"][rows:].fill_(bin_slot)
+                graph.inputs["starts"][:rows].copy_(start_index)
+                graph.inputs["starts"][rows:].fill_(0)
+                graph.inputs["latent"][:rows].copy_(latent_patches)
+                graph.inputs["latent"][rows:].fill_(0)
+            else:
+                graph.inputs["slots"].copy_(slot_index)
+                graph.inputs["starts"].copy_(start_index)
+                graph.inputs["latent"].copy_(latent_patches)
             graph.graph.replay()
             embeddings = graph.output[:rows].clone() if pad else graph.output.clone()
             self._graph_replays["semantic_encoder"] += 1
@@ -1207,16 +1203,17 @@ class DotsTtsAcousticTail:
         skip_batch: int | None = None,
         extra: dict[tuple[int, int], _CapturedTailGraph] | None = None,
     ) -> tuple[_CapturedTailGraph | None, int]:
-        # Pad a bucket-miss batch up to the next captured bucket. Filler rows
-        # all point at the reserved pool row past the slot range: it backs no
-        # request, ever, so their writes are quarantined by construction.
-        # Only slot-index-driven graphs are eligible: the batch == num_slots
-        # meanflow graph is captured over contiguous positional views
-        # (direct_kv) and must be skipped in favor of its gather-mode twin.
+        # note (0xtoward): Positional captures cannot follow filler slot IDs;
+        # use their gather twins. Cap row expansion, not context capacity.
         if not self._pad_to_bucket:
             return None, 0
         return select_padded_graph(
-            graphs, rows, capacity, skip_batch=skip_batch, extra=extra
+            graphs,
+            rows,
+            capacity,
+            skip_batch=skip_batch,
+            extra=extra,
+            max_batch_ratio=2,
         )
 
     @torch.no_grad()
@@ -1256,8 +1253,8 @@ class DotsTtsAcousticTail:
                         kind="semantic_encoder",
                     )
             if self._pad_to_bucket and self.spec.num_slots in batch_buckets:
-                # The batch == num_slots meanflow graph above is positional
-                # (direct_kv); padded replays need a gather-mode twin.
+                # note (0xtoward): Keep the exact full-batch positional path;
+                # padding to this bucket needs a slot-indexed gather capture.
                 for patches in reversed(context_buckets):
                     self._capture_graph(
                         self._meanflow_pad_graphs,
