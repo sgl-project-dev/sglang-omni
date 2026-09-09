@@ -43,7 +43,7 @@ curl http://localhost:8000/v1/audio/speech \
   }' --output speech.wav
 ```
 
-For voice cloning, provide `ref_audio` or one structured reference. The model uses a same-voice instruction and ignores the voice description. Local paths are resolved on the server; HTTP(S), file URLs, and audio data URLs are also accepted.
+For voice cloning, provide `ref_audio` or one structured reference. The model uses a same-voice instruction and ignores the voice description. HTTP(S) URLs, audio data URLs, and server-local paths are accepted. To use a `file://` URL, start the server with `--allowed-local-media-path /abs/reference-dir` and reference a file within that directory, such as `file:///abs/reference-dir/reference.wav`. Without this flag, `file://` references return HTTP 400.
 
 ```bash
 curl http://localhost:8000/v1/audio/speech \
