@@ -279,7 +279,7 @@ class Attention(nn.Module):
 
 
 class DiTBlock(nn.Module):
-    """Single-stream block over the concatenated [text | audio] sequence."""
+    """Single-stream block over the concatenated text and audio sequence."""
 
     def __init__(
         self,

@@ -38,7 +38,6 @@ def context():
 @pytest.fixture
 def reference(tmp_path):
     path = tmp_path / "ref.wav"
-    # The extra half-frame distinguishes raw editing from explicit duration rounding.
     torchaudio.save(str(path), torch.zeros(1, 24240), SAMPLE_RATE)
     return str(path)
 
@@ -122,7 +121,6 @@ def test_reference_speech_duration(context, reference, structured):
     )
     state = build_auk_state(speech_payload(input="Hello world!", **kwargs), context)
     assert state.instruction == 'Say the following with the same voice: "Hello world!"'
-    # 12 UTF-8 bytes / 6 bytes * 1.01 seconds = 101 frames.
     assert state.gen_frames == 101
     assert state.ref_seconds == pytest.approx(1.01)
     assert state.ref_audio.dtype == np.float32

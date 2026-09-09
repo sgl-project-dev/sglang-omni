@@ -39,7 +39,6 @@ def test_batch_matches_individual_sampling_with_different_lengths(cfg_strength):
         ),
         num_llm_layers=2,
     ).eval()
-    # Default DiT output weights are zero: randomize them so padding bugs are visible.
     for parameter in flow.parameters():
         torch.nn.init.uniform_(parameter, -0.2, 0.2)
     items = [

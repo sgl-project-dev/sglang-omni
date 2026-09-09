@@ -21,7 +21,7 @@ LRELU_SLOPE = 0.1
 
 
 def kaiser_sinc_filter1d(cutoff: float, half_width: float, kernel_size: int):
-    """Kaiser-windowed sinc low-pass kernel of shape [1, 1, kernel_size]."""
+    """Kaiser-windowed sinc low-pass kernel."""
     even = kernel_size % 2 == 0
     half_size = kernel_size // 2
 
@@ -150,7 +150,7 @@ class DownSample1d(nn.Module):
 
 
 class Activation1d(nn.Module):
-    """Activation wrapped in upsample -> act -> (anti-aliased) downsample."""
+    """Activation wrapped in anti-aliased upsample and downsample."""
 
     def __init__(
         self,
@@ -173,7 +173,7 @@ class Activation1d(nn.Module):
 
 
 class SnakeBeta(nn.Module):
-    """Periodic activation: x + 1/beta * sin^2(alpha * x)."""
+    """Periodic snake activation."""
 
     def __init__(self, in_features: int, alpha_logscale: bool = True):
         super().__init__()
@@ -553,9 +553,6 @@ class ResidualCouplingBlock(nn.Module):
         return x
 
 
-# encoder / decoder blocks
-
-
 class ResStack(nn.Module):
     def __init__(
         self, channel: int, kernel_size: int = 3, base: int = 3, nums: int = 4
@@ -690,9 +687,6 @@ class AMPBlock1(nn.Module):
             remove_weight_norm(layer)
 
 
-# VAE
-
-
 @dataclass
 class AuKVAEConfig:
     upsample_rates: list = field(default_factory=lambda: [5, 4, 3, 2, 2, 2])
@@ -818,7 +812,7 @@ class BigVGANFlowVAE(nn.Module):
         sample_lengths: torch.Tensor | None = None,
         generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode waveform [B, 1, T] to a normalized latent [B, T, D]."""
+        """Encode a waveform to a normalized latent."""
         with torch.autocast(device_type=sample.device.type, enabled=False):
             latent_stats = self.audio_encoder(sample.float())
             if sample_lengths is None:
@@ -848,7 +842,7 @@ class BigVGANFlowVAE(nn.Module):
         )
 
     def inference_from_latents(self, x: torch.Tensor) -> torch.Tensor:
-        """Decode latent [B, D, T] -> waveform [B, 1, T * hop_size]."""
+        """Decode a channel-first latent to a waveform."""
         assert (
             x.size(1) == self.h.latent_dim
         ), f"Input must be [B, D, T], got {tuple(x.shape)}"
@@ -867,7 +861,7 @@ class BigVGANFlowVAE(nn.Module):
         return torch.clamp(x, min=-1.0, max=1.0)
 
     def decode(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode normalized latent [B, T, D] -> waveform [B, T * hop_size]."""
+        """Decode a normalized latent to a waveform."""
         latents = self.denormalize(latents).permute(0, 2, 1)
         return self.inference_from_latents(latents).squeeze(1)
 
