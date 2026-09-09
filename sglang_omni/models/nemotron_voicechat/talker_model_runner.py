@@ -129,20 +129,40 @@ class NemotronVoiceChatTalkerModelRunner(ModelRunner):
             inputs["codes_rows"] = []
             inputs["prev_codes"] = self._pad_codes()
 
+    @staticmethod
+    def _is_terminating(req) -> bool:
+        return req.to_finish is not None or req.finished()
+
     def is_decode_batch_ready(self, schedule_batch) -> bool:
+        # An aborted request still needs one forward: sglang turns to_finish
+        # into finished_reason during the step, and only then releases the
+        # slot and its KV. Holding the batch back until a text token arrives
+        # would strand a request whose thinker has already stopped.
         return all(
-            len(req._omni_data.pending_text_queue) > 0 for req in schedule_batch.reqs
+            len(req._omni_data.pending_text_queue) > 0 or self._is_terminating(req)
+            for req in schedule_batch.reqs
         )
 
     def before_decode(
         self, forward_batch, schedule_batch, requests, *, is_lookahead=False
     ) -> None:
-        del forward_batch, schedule_batch, is_lookahead
+        del forward_batch, is_lookahead
         model = self.model
         rows = []
-        for request in requests:
+        for request, req in zip(requests, schedule_batch.reqs, strict=True):
             data = request.data
-            token = data.pending_text_queue.popleft()
+            queue = data.pending_text_queue
+            if queue:
+                token = queue.popleft()
+            elif self._is_terminating(req):
+                # Carries the forward that retires the request; its codes go
+                # nowhere.
+                token = self.text_pad_id
+            else:
+                raise RuntimeError(
+                    f"talker request {request.request_id} reached decode with no "
+                    "text token and no finish reason"
+                )
             rows.append(
                 self._step_row(
                     data.talker_model_inputs["prev_codes"],
