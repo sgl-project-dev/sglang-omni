@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from sglang_omni.config import (
     EngineStageConfig,
@@ -14,6 +14,20 @@ from sglang_omni.config import (
 from sglang_omni.platforms import current_platform
 
 _PKG = "sglang_omni.models.fun_cosyvoice3"
+
+_DIT_ACCELERATOR_CONFLICT = (
+    "enable_flow_estimator_trt and enable_dit_torch_compile both "
+    "target flow.decoder.estimator; enable only one"
+)
+
+
+def reject_conflicting_dit_accelerators(
+    *,
+    enable_dit_torch_compile: bool,
+    enable_flow_estimator_trt: bool,
+) -> None:
+    if enable_flow_estimator_trt and enable_dit_torch_compile:
+        raise ValueError(_DIT_ACCELERATOR_CONFLICT)
 
 
 class FunCosyVoice3PipelineConfig(PipelineConfig):
@@ -78,6 +92,15 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             can_accept_stream_before_payload=True,
         ),
     ]
+
+    def model_post_init(self, __context: Any = None) -> None:
+        super().model_post_init(__context)
+        vocoder = next(stage for stage in self.stages if stage.name == "vocoder")
+        extras = vocoder.factory.model_extra
+        reject_conflicting_dit_accelerators(
+            enable_dit_torch_compile=bool(extras.get("enable_dit_torch_compile")),
+            enable_flow_estimator_trt=bool(extras.get("enable_flow_estimator_trt")),
+        )
 
 
 EntryClass = FunCosyVoice3PipelineConfig

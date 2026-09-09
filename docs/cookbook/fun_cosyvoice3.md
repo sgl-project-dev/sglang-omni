@@ -247,7 +247,7 @@ Do not enable it together with TensorRT.
 
 ### TensorRT for the DiT backbone
 
-TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive. TensorRT 10 still enables FP16 tactics on the fp32 ONNX; TensorRT 11 removed that flag, so the engine follows the ONNX dtypes (fp32 for the preferred checkpoint).
+TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive. 
 
 ```bash
 uv pip install tensorrt
@@ -262,6 +262,8 @@ sgl-omni serve \
   --vocoder.factory.enable_flow_estimator_trt true \
   --port 8000
 ```
+
+The first launch compiles a cached `.plan` (reuse via `COSYVOICE3_TRT_CACHE` or `~/.cache/sglang-omni/cosyvoice3_trt`). The builder needs about 8 GiB workspace; TensorRT 11 fails if the pool is only 4 GiB.
 
 On one H200, Flow latency and vocoder RTF comparisons:
 

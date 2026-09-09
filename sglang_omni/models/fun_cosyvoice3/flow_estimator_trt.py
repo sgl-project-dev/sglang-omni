@@ -173,7 +173,7 @@ def _convert_onnx_to_trt(
             raise ValueError(f"Failed to parse {onnx_path}: {errs}")
 
     config = builder.create_builder_config()
-    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 32)
+    config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 33)
     if not strongly_typed:
         _try_enable_fp16_tactics(config, trt)
 
