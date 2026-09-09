@@ -494,7 +494,10 @@
             <nav aria-label="Page">
                 <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-vocoder-cuda-graphs">Streaming vocoder CUDA graphs</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-speech">Basic Speech</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice Cloning</a><ul class="nav section-nav flex-column">
@@ -585,6 +588,35 @@ download the model (public, no token required):</p>
 <p>Speech input admission follows the text backbone’s context metadata rather than
 the generic 4,096-character precheck. Requests that exceed the effective model
 context are rejected with an OpenAI-compatible HTTP 400 error.</p>
+<section id="streaming-vocoder-cuda-graphs">
+<h3>Streaming vocoder CUDA graphs<a class="headerlink" href="#streaming-vocoder-cuda-graphs" title="Link to this heading">#</a></h3>
+<p>The <code class="docutils literal notranslate"><span class="pre">vocoder_cuda_graph</span></code> pipeline setting controls CUDA graphs for MOSS-Audio-Tokenizer streaming decode. AR engine graph settings are configured separately under <code class="docutils literal notranslate"><span class="pre">tts_engine.engine</span></code>.</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Pipeline setting</p></th>
+<th class="head"><p>Default</p></th>
+<th class="head"><p>Purpose</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vocoder_cuda_graph</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Use the platform default: enabled except on ROCm WSL/DXG. Set <code class="docutils literal notranslate"><span class="pre">false</span></code> for eager streaming vocoder decode.</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">vocoder_cuda_graph_frames</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">null</span></code></p></td>
+<td><p>Override the audio-code frame counts captured by the streaming vocoder.</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">vocoder_cuda_graph_min_free_gb</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">3.0</span></code></p></td>
+<td><p>Minimum free GPU memory before vocoder graph capture; <code class="docutils literal notranslate"><span class="pre">0</span></code> disables this check.</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>For non-streaming workloads, set <code class="docutils literal notranslate"><span class="pre">vocoder_cuda_graph:</span> <span class="pre">false</span></code> in YAML or pass <code class="docutils literal notranslate"><span class="pre">--vocoder_cuda_graph</span> <span class="pre">false</span></code> to leave more GPU memory available for decoding. A complete example is available at <code class="docutils literal notranslate"><span class="pre">examples/configs/moss_tts_local_non_streaming.yaml</span></code>.</p>
+<p>The same names are used by the pipeline configuration and the vocoder factory/scheduler APIs. Replace the former <code class="docutils literal notranslate"><span class="pre">cuda_graph</span></code>, <code class="docutils literal notranslate"><span class="pre">cuda_graph_frames</span></code>, and <code class="docutils literal notranslate"><span class="pre">cuda_graph_min_free_gb</span></code> spellings in YAML, CLI overrides, and direct Python calls with the <code class="docutils literal notranslate"><span class="pre">vocoder_</span></code> prefix.</p>
+</section>
 </section>
 <section id="synthesizing-speech">
 <h2>Synthesizing Speech<a class="headerlink" href="#synthesizing-speech" title="Link to this heading">#</a></h2>
@@ -985,7 +1017,10 @@ configuration and GPU; see <a class="reference internal" href="#seed-reproducibi
   <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
     <ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#prerequisites">Prerequisites</a></li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#server-configuration">Server Configuration</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#streaming-vocoder-cuda-graphs">Streaming vocoder CUDA graphs</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#synthesizing-speech">Synthesizing Speech</a><ul class="pst-show_toc_level nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#basic-speech">Basic Speech</a></li>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#voice-cloning">Voice Cloning</a><ul class="nav section-nav flex-column">
