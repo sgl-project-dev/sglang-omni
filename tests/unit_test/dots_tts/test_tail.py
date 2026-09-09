@@ -174,9 +174,8 @@ def _fill_reserved_state(acoustic_tail, value: float) -> None:
     slot = acoustic_tail.spec.num_slots
     for name, slot_dim in SLOT_DIMS.items():
         tensor = getattr(acoustic_tail, name)
-        reserved = [slice(None)] * tensor.ndim
-        reserved[slot_dim] = slot
-        tensor[tuple(reserved)].fill_(value)
+        if tensor.size(slot_dim) > slot:
+            tensor.select(slot_dim, slot).fill_(value)
 
 
 @pytest.mark.parametrize(
@@ -625,7 +624,13 @@ def test_padded_tail_replay_matches_eager_and_bin_slot_stays_reusable(
 
     # note (0xtoward): Filler writes stay outside every allocatable slot.
     assert graph._pad_bin_slot == slots
-    assert graph._dit_k.shape[2] == slots + 1
+    for name, slot_dim in SLOT_DIMS.items():
+        expected_rows = (
+            slots
+            if name in {"_dit_k", "_dit_v", "_encoder_k", "_encoder_v"}
+            else slots + 1
+        )
+        assert getattr(graph, name).size(slot_dim) == expected_rows
     assert eager._window.shape[0] == slots
     estimate = graph._pool_memory_estimate(graph._mods_width)
     assert estimate.num_slots == slots

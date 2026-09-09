@@ -252,15 +252,20 @@ def estimate_acoustic_pool_bytes(
     mods_width: int,
     dtype: torch.dtype,
     reserved_rows: int = 0,
+    reserved_kv_rows: int | None = None,
 ) -> AcousticPoolMemoryEstimate:
     """Sum pool tensor bytes; excludes weights, backbone KV, and graph workspace.
 
     ``reserved_rows`` adds isolated filler state, not scratch or masks.
+    ``reserved_kv_rows`` overrides its KV portion for masked dummy copies.
     """
     elem = _dtype_nbytes(dtype)
     bool_elem = _dtype_nbytes(torch.bool)
     slots = int(spec.num_slots)
     pool_rows = slots + int(reserved_rows)
+    kv_rows = slots + int(
+        reserved_rows if reserved_kv_rows is None else reserved_kv_rows
+    )
     nfe = int(spec.nfe)
     dit_tokens = int(spec.dit_cache_tokens) + int(spec.unit_len)
     dit_query = 2 * int(spec.unit_len)
@@ -271,7 +276,7 @@ def estimate_acoustic_pool_bytes(
         2
         * nfe
         * int(dit_layers)
-        * pool_rows
+        * kv_rows
         * int(dit_heads)
         * dit_tokens
         * int(dit_head_dim)
@@ -280,7 +285,7 @@ def estimate_acoustic_pool_bytes(
     encoder_kv = (
         2
         * int(encoder_layers)
-        * pool_rows
+        * kv_rows
         * int(encoder_heads)
         * encoder_tokens
         * int(encoder_head_dim)
@@ -470,6 +475,11 @@ class DotsTtsAcousticTail:
             padding_graphs_requested
             and _has_batch_padding_gap(self._graph_batch_buckets)
         )
+        if self._pad_to_bucket:
+            from sglang_omni.models.dots_tts.tail_kv import gather_kv, scatter_kv
+
+            self._gather_kv = gather_kv
+            self._scatter_kv = scatter_kv
         # note (0xtoward): Filler writes must never reach an allocatable slot.
         self._pad_bin_slot = spec.num_slots
         self._mods_width = int(dit.fused_adaln[-1].out_features)
@@ -526,6 +536,7 @@ class DotsTtsAcousticTail:
             mods_width=int(mods_width),
             dtype=self.dtype,
             reserved_rows=1 if self._pad_to_bucket else 0,
+            reserved_kv_rows=0,
         )
 
     def _allocated_pool_bytes(self) -> int:
@@ -564,13 +575,13 @@ class DotsTtsAcousticTail:
         validate_acoustic_pool_memory(estimate, device=self.device)
 
         zeros = partial(torch.zeros, device=self.device, dtype=self.dtype)
-        # note (0xtoward): Only persistent state needs a reserved row;
-        # scratch and masks are indexed by batch position, not slot ID.
+        # note (0xtoward): Dummy history is invisible; only its small auxiliary
+        # state needs a reserved row. Masked copies never access dummy KV.
         pool_rows = spec.num_slots + (1 if self._pad_to_bucket else 0)
         self._dit_k = zeros(
             spec.nfe,
             self._dit_layers,
-            pool_rows,
+            spec.num_slots,
             self._dit_heads,
             spec.dit_cache_tokens + spec.unit_len,
             self._dit_head_dim,
@@ -578,7 +589,7 @@ class DotsTtsAcousticTail:
         self._dit_v = torch.zeros_like(self._dit_k)
         self._encoder_k = zeros(
             self._encoder_layers,
-            pool_rows,
+            spec.num_slots,
             self._encoder_heads,
             spec.patch_capacity * self._encoder_block,
             self._encoder_head_dim,
@@ -989,18 +1000,27 @@ class DotsTtsAcousticTail:
                 else:
                     keys = self._dit_scratch_k[:, :rows, :, : capacity + query_len]
                     values = self._dit_scratch_v[:, :rows, :, : capacity + query_len]
-                    torch.index_select(
-                        self._dit_k[ode_index, :, :, :, :capacity],
-                        1,
-                        slot_index,
-                        out=keys[:, :, :, :capacity],
-                    )
-                    torch.index_select(
-                        self._dit_v[ode_index, :, :, :, :capacity],
-                        1,
-                        slot_index,
-                        out=values[:, :, :, :capacity],
-                    )
+                    if self._pad_to_bucket:
+                        self._gather_kv(
+                            self._dit_k[ode_index],
+                            self._dit_v[ode_index],
+                            slot_index,
+                            keys[:, :, :, :capacity],
+                            values[:, :, :, :capacity],
+                        )
+                    else:
+                        torch.index_select(
+                            self._dit_k[ode_index, :, :, :, :capacity],
+                            1,
+                            slot_index,
+                            out=keys[:, :, :, :capacity],
+                        )
+                        torch.index_select(
+                            self._dit_v[ode_index, :, :, :, :capacity],
+                            1,
+                            slot_index,
+                            out=values[:, :, :, :capacity],
+                        )
 
                 def cached_attention(
                     layer: int, block: nn.Module, value: torch.Tensor
@@ -1031,12 +1051,22 @@ class DotsTtsAcousticTail:
                 )
                 duration = self._times[ode_index + 1] - self._times[ode_index]
                 latent = (latent + duration * velocity).clone()
-                self._dit_k[ode_index][layer_index, batch_index, :, token_index] = keys[
-                    :, :, :, promote
-                ].permute(0, 1, 3, 2, 4)
-                self._dit_v[ode_index][layer_index, batch_index, :, token_index] = (
-                    values[:, :, :, promote].permute(0, 1, 3, 2, 4)
-                )
+                if self._pad_to_bucket and not direct_kv:
+                    self._scatter_kv(
+                        keys[:, :, :, promote],
+                        values[:, :, :, promote],
+                        slot_index,
+                        persistent_index,
+                        self._dit_k[ode_index],
+                        self._dit_v[ode_index],
+                    )
+                else:
+                    self._dit_k[ode_index][layer_index, batch_index, :, token_index] = (
+                        keys[:, :, :, promote].permute(0, 1, 3, 2, 4)
+                    )
+                    self._dit_v[ode_index][layer_index, batch_index, :, token_index] = (
+                        values[:, :, :, promote].permute(0, 1, 3, 2, 4)
+                    )
         return latent
 
     @staticmethod
@@ -1141,18 +1171,27 @@ class DotsTtsAcousticTail:
             cos, sin = _rotary_cos_sin(self._encoder_rotary, start_index, block)
         keys = self._encoder_scratch_k[:, :rows, :, : capacity + block]
         values = self._encoder_scratch_v[:, :rows, :, : capacity + block]
-        torch.index_select(
-            self._encoder_k[:, :, :, :capacity],
-            1,
-            slot_index,
-            out=keys[:, :, :, :capacity],
-        )
-        torch.index_select(
-            self._encoder_v[:, :, :, :capacity],
-            1,
-            slot_index,
-            out=values[:, :, :, :capacity],
-        )
+        if self._pad_to_bucket:
+            self._gather_kv(
+                self._encoder_k,
+                self._encoder_v,
+                slot_index,
+                keys[:, :, :, :capacity],
+                values[:, :, :, :capacity],
+            )
+        else:
+            torch.index_select(
+                self._encoder_k[:, :, :, :capacity],
+                1,
+                slot_index,
+                out=keys[:, :, :, :capacity],
+            )
+            torch.index_select(
+                self._encoder_v[:, :, :, :capacity],
+                1,
+                slot_index,
+                out=values[:, :, :, :capacity],
+            )
         with sdpa_kernel(_TAIL_SDPA_BACKENDS):
             embeddings, conv_tail = self._encoder_step(
                 latent_patches.to(self.dtype),
@@ -1169,12 +1208,22 @@ class DotsTtsAcousticTail:
         layer_index = self._encoder_layer_index.reshape(self._encoder_layers, 1, 1)
         batch_index = slot_index.reshape(1, rows, 1)
         promote = slice(capacity, capacity + block)
-        self._encoder_k[layer_index, batch_index, :, token_index] = keys[
-            :, :, :, promote
-        ].permute(0, 1, 3, 2, 4)
-        self._encoder_v[layer_index, batch_index, :, token_index] = values[
-            :, :, :, promote
-        ].permute(0, 1, 3, 2, 4)
+        if self._pad_to_bucket:
+            self._scatter_kv(
+                keys[:, :, :, promote],
+                values[:, :, :, promote],
+                slot_index,
+                start_index,
+                self._encoder_k,
+                self._encoder_v,
+            )
+        else:
+            self._encoder_k[layer_index, batch_index, :, token_index] = keys[
+                :, :, :, promote
+            ].permute(0, 1, 3, 2, 4)
+            self._encoder_v[layer_index, batch_index, :, token_index] = values[
+                :, :, :, promote
+            ].permute(0, 1, 3, 2, 4)
         self._encoder_conv_tail[slot_index] = conv_tail
         return embeddings.reshape(rows, -1)
 
