@@ -104,7 +104,6 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
             factory=FunCosyVoice3VocoderFactoryArgs(
                 flow_batch_bucket_frames=50,
                 flow_batch_admission_frames=8000,
-                max_batch_size=16,
                 max_batch_wait_ms=30,
                 # note (guozhihao-224, chenyang):
                 # torch.compile is opt-in via enable_dit_torch_compile.
