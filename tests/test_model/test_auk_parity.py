@@ -153,7 +153,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
     monkeypatch.setattr(BigVGANFlowVAE, "encoding_and_normalization", encode)
     monkeypatch.setattr(AuKFlowMatching, "fuse", fuse)
     monkeypatch.setattr(BigVGANFlowVAE, "denormalize", denormalize)
-    torch.manual_seed(42)
+    torch.manual_seed(request.seed)
     expected["waveform"], sample_rate = upstream.generate(
         messages,
         audio=ref_path,
@@ -162,16 +162,13 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         nfe=32,
         cfg_strength=2.0,
     )
-    torch.manual_seed(42)
+    torch.manual_seed(request.seed)
     result = engine(payload)
     actual["waveform"] = torch.frombuffer(
         bytearray(result.data["audio_waveform"]), dtype=torch.float32
     ).reshape(1, -1)
     assert result.data["sample_rate"] == sample_rate == 24000
-    skip = {"reference", "latent", "waveform"} if reference else set()
     for key in expected:
-        if key in skip:
-            continue
         print(
             f"{key}: shape={tuple(expected[key].shape)}, max_abs_error={(actual[key] - expected[key]).abs().max().item():.8g}"
         )
@@ -182,3 +179,12 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
             atol=1e-5,
             msg=lambda message: f"{key}: {message}",
         )
+
+    if reference:
+        waveform = result.data["audio_waveform"]
+        torch.rand(17, device="cuda:0")
+        rng = torch.cuda.get_rng_state()
+        payload.data = state.to_dict()
+        repeated = engine(payload)
+        assert repeated.data["audio_waveform"] == waveform
+        assert torch.equal(torch.cuda.get_rng_state(), rng)

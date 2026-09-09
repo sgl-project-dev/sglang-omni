@@ -19,7 +19,6 @@ _BAD_REQUEST_MARKERS = (
     "disallowed special token",
     "stop strings are allowed",
     "stop_regex patterns are allowed",
-    "is a server-level setting",
     "AuK speech requires",
     "AuK gen_seconds must be",
     "AuK seed must be",
@@ -29,6 +28,9 @@ _BAD_REQUEST_MARKERS = (
     "AuK references must be",
 )
 _BAD_REQUEST_PATTERNS = (
+    re.compile(
+        r"\bAuK (?:nfe|cfg_strength|sway_sampling_coef|max_seconds) is a server-level setting"
+    ),
     re.compile(r"^Request\s+\S+\s+exceeds the maximum number of tokens:"),
     re.compile(r"^Request\s+\S+\s+requires too many SWA KV tokens for"),
     re.compile(r"^stop_regex is \d+ bytes, over the \d+-byte limit"),

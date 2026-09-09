@@ -8,7 +8,6 @@ import pytest
 import torch
 
 from sglang_omni.models.auk import constants as C
-from sglang_omni.models.auk.flow_matching import request_generator
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.stages import (
@@ -24,15 +23,24 @@ from sglang_omni.proto import CompleteMessage, OmniRequest, StagePayload
 
 def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
     device = torch.device("cpu")
-    vae = Mock(hop_size=480)
-    vae.encoding_and_normalization.return_value = (
-        torch.arange(64 * 51, dtype=torch.float32).reshape(1, 64, 51).transpose(1, 2),
-        torch.tensor([50]),
-    )
-    vae.denormalize.side_effect = lambda latent: latent
-    vae.inference_from_latents.side_effect = lambda latent: torch.full(
-        (latent.shape[0], 1, latent.shape[-1] * 480), 0.25
-    )
+
+    class PosteriorVAE(torch.nn.Module):
+        encoding_and_normalization = BigVGANFlowVAE.encoding_and_normalization
+
+        def __init__(self):
+            super().__init__()
+            self.hop_size = 480
+            self.audio_encoder = torch.nn.Conv1d(1, 128, 1, stride=self.hop_size)
+            self.register_buffer("global_mean", torch.zeros(64))
+            self.register_buffer("global_log_std", torch.ones(64))
+            self.denormalize = lambda latent: latent
+            self.inference_from_latents = Mock(
+                side_effect=lambda latent: torch.full(
+                    (latent.shape[0], 1, latent.shape[-1] * 480), 0.25
+                )
+            )
+
+    vae = PosteriorVAE()
     encoder = Mock()
     encoder.encode_batch.return_value = [
         (torch.zeros(3, 6, 16), torch.ones(6, dtype=torch.bool)) for _ in range(3)
@@ -49,22 +57,21 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
             data=AuKState(
                 instruction="Say hello",
                 gen_frames=frames,
-                seed=11,
+                seed=11 if index < 2 else 12,
                 ref_audio=np.zeros(24001, dtype=np.float32),
             ).to_dict(),
         )
         for index, frames in enumerate((151, 75, 151))
     ]
 
+    rng = torch.random.get_rng_state()
     conditioned = _condition_batch(payloads, encoder, vae, flow, device, "float32")
-    assert vae.encoding_and_normalization.call_args.args[1].tolist() == [24000]
-    assert torch.equal(
-        vae.encoding_and_normalization.call_args.kwargs["generator"].get_state(),
-        request_generator(11, device).get_state(),
-    )
-    state = AuKState.from_dict(conditioned[0].data)
-    assert state.ref_length == 50
-    assert state.ref_latent.stride() == (1, 51)
+    states = [AuKState.from_dict(payload.data) for payload in conditioned]
+    assert torch.equal(states[0].ref_latent, states[1].ref_latent)
+    assert not torch.equal(states[0].ref_latent, states[2].ref_latent)
+    assert torch.equal(torch.random.get_rng_state(), rng)
+    assert states[0].ref_length == 50
+    assert states[0].ref_latent.stride() == (1, 51)
     sampled = _sample_batch(conditioned, flow, device, "float32", 1500, {})
     assert len(flow.sample_batch.call_args.args[0]) == 3
     results = _decode_batch(sampled, vae, device)
@@ -88,37 +95,6 @@ def test_batched_generation_preserves_request_boundaries_and_serializes_audio():
         waveform = np.frombuffer(restored.result["audio_waveform"], dtype=np.float32)
         np.testing.assert_array_equal(waveform, np.full(frames * 480, 0.25))
         assert restored.result["usage"]["completion_tokens"] == frames
-
-
-def test_reference_posterior_is_seeded_and_leaves_process_rng():
-    vae = BigVGANFlowVAE.__new__(BigVGANFlowVAE)
-    vae.hop_size = 4
-    vae.global_mean = torch.zeros(1, 2)
-    vae.global_log_std = torch.ones(1, 2)
-
-    def audio_encoder(sample):
-        frames = sample.size(-1) // vae.hop_size
-        stats = torch.zeros(sample.size(0), 4, frames)
-        stats[:, 2:] = -1.0
-        return stats
-
-    vae.audio_encoder = audio_encoder
-    waveform = torch.zeros(1, 1, 16)
-    lengths = torch.tensor([16])
-    torch.manual_seed(0)
-    before = torch.random.get_rng_state()
-    first, _ = vae.encoding_and_normalization(
-        waveform, lengths, generator=request_generator(123, waveform.device)
-    )
-    second, _ = vae.encoding_and_normalization(
-        waveform, lengths, generator=request_generator(123, waveform.device)
-    )
-    other, _ = vae.encoding_and_normalization(
-        waveform, lengths, generator=request_generator(456, waveform.device)
-    )
-    assert torch.equal(first, second)
-    assert not torch.equal(first, other)
-    assert torch.equal(torch.random.get_rng_state(), before)
 
 
 @pytest.mark.parametrize("flash", [False, True])

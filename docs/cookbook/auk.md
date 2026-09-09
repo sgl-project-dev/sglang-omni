@@ -86,7 +86,7 @@ Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing
 
 Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on `tencent/AuK-Flash`. Request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
 
-`seed` selects a request-local random generator shared by target noise and reference VAE posterior sampling, so two identical seeded requests are deterministic, including voice cloning. Multiple structured references are rejected.
+`seed` initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.
 
 Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
@@ -105,7 +105,7 @@ Add `--concurrency 16` to evaluate with 16 in-flight requests. Use `--max-sample
 
 ## Upstream Parity
 
-The checkpoint test compares fused Qwen conditioning, generated latents, and waveforms with upstream on an instruction-only request. With reference audio it only checks Qwen conditioning, because posterior sampling is request-local. It aligns both process RNG and request seed. Install `torchdiffeq` and `qwen-omni-utils` in addition to the serving dependencies, and use a GPU with memory for both implementations:
+The checkpoint test compares reference latents, fused Qwen conditioning, generated latents, and waveforms with upstream, with and without reference audio. It aligns the upstream process RNG with the request seed to compare the same random inputs. Install `torchdiffeq` and `qwen-omni-utils` in addition to the serving dependencies, and use a GPU with memory for both implementations:
 
 ```bash
 git clone https://github.com/Tencent-Hunyuan/AuK.git /tmp/AuK

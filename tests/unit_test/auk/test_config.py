@@ -40,8 +40,15 @@ def test_registered_pipeline_is_connected(architecture):
 
 @pytest.mark.parametrize("name", ["AuK", "AuK-Flash"])
 def test_local_checkpoint_yaml_resolves_pipeline(tmp_path, name):
-    (tmp_path / "config.yaml").write_text(f"model:\n  name: {name}\n")
+    from sglang_omni.models.auk.hf_config import load_auk_config
+
+    (tmp_path / "config.yaml").write_text(
+        f"model:\n  name: {name}\n"
+        "  vae:\n    latent_dim: 64\n    model_init_kwargs:\n"
+        "      latent_dim: ${model.vae.latent_dim}\n"
+    )
     assert manager.resolve_config_cls_for_model_path(str(tmp_path)) is AuKPipelineConfig
+    assert load_auk_config(str(tmp_path)).vae_init_kwargs["latent_dim"] == 64
 
 
 def test_unrelated_omegaconf_yaml_is_not_auk(tmp_path):
@@ -53,16 +60,6 @@ def test_unrelated_omegaconf_yaml_is_not_auk(tmp_path):
 def test_local_weight_marker_resolves_without_yaml(tmp_path):
     (tmp_path / "auk_base.safetensors").write_bytes(b"")
     assert manager.resolve_config_cls_for_model_path(str(tmp_path)) is AuKPipelineConfig
-
-
-def test_checkpoint_yaml_resolves_interpolation(tmp_path):
-    from sglang_omni.models.auk.hf_config import load_auk_config
-
-    (tmp_path / "config.yaml").write_text(
-        "model:\n  name: AuK\n  arch:\n    dim: 16\n    heads: ${model.arch.dim}\n"
-    )
-    config = load_auk_config(str(tmp_path))
-    assert config.arch["heads"] == 16
 
 
 def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
