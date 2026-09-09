@@ -136,6 +136,74 @@ def test_create_sglang_infrastructure_runs_0515_initialization_phases(
     assert infrastructure[0].model_runner.model is FakeRunner.model
 
 
+def test_before_memory_pool_runs_after_the_weights_and_before_the_pool(
+    monkeypatch,
+) -> None:
+    events: list[object] = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_describe_sglang_runtime_configuration",
+        lambda *_args: "runtime configuration",
+    )
+
+    class FakeRunner:
+        model = object()
+
+        def alloc_memory_pool(self) -> None:
+            events.append("alloc_memory_pool")
+
+        def init_attention_backends(self) -> None:
+            events.append("init_attention_backends")
+
+        def init_cuda_graphs(self) -> None:
+            events.append("init_cuda_graphs")
+
+    class FakeWorker:
+        model_config = SimpleNamespace(is_multimodal=False)
+        enable_prefill_input_embeds = False
+
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            events.append("model_worker")
+            self.model_runner = FakeRunner()
+
+        def get_memory_pool(self):
+            return "req_pool", "kv_pool"
+
+    monkeypatch.setattr(model_worker_module, "ModelWorker", FakeWorker)
+    monkeypatch.setattr(
+        sglang_backend,
+        "create_tree_cache",
+        lambda *args: ("tree_cache", args),
+    )
+    server_args = SimpleNamespace(
+        attention_backend=None,
+        decode_attention_backend=None,
+        prefill_attention_backend=None,
+        sampling_backend=None,
+        page_size=1,
+        disable_overlap_schedule=False,
+        chunked_prefill_size=8,
+        max_prefill_tokens=16,
+    )
+
+    bootstrap.create_sglang_infrastructure(
+        server_args,
+        0,
+        defer_cuda_graph_capture=True,
+        before_memory_pool=lambda worker: events.append(
+            ("before_memory_pool", worker.model_runner.model)
+        ),
+    )
+
+    assert events == [
+        "model_worker",
+        ("before_memory_pool", FakeRunner.model),
+        "alloc_memory_pool",
+        "init_attention_backends",
+    ]
+
+
 def test_an_engine_is_refused_in_a_process_with_a_published_context(
     monkeypatch,
 ) -> None:

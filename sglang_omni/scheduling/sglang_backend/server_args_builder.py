@@ -90,6 +90,14 @@ def build_sglang_server_args(
     # chunked prefill stays allowed (the bridge handles it natively).
     if server_args.enable_dp_attention:
         raise ValueError("sglang-omni does not support enable_dp_attention")
+    # note (ratish): NVLS is controlled through the process environment and
+    # symmetric memory is never set up, so either flag would run without effect.
+    if server_args.enable_nccl_nvls or server_args.enable_symm_mem:
+        raise ValueError(
+            "enable_nccl_nvls and enable_symm_mem are not supported; remove them. "
+            "NVLS is enabled with NCCL_NVLS_ENABLE=1 in the shell or the stage "
+            "env. Symmetric memory is not available."
+        )
     # Overlapped startup weight load leaves sentinel weights until the scheduler
     # calls finalize_startup_weight_load after capture; omni's bootstrap never
     # does, so profiling, weight sharing and capture would run on the sentinels.

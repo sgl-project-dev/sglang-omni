@@ -145,24 +145,23 @@ incompatible Flow structure fails directly instead of using a fallback implement
 ### torch.compile for the DiT backbone
 
 The flow decoder's DiT backbone (`flow.decoder.estimator`, a 22-layer DiT invoked
-once per Euler step) can be compiled with `torch.compile` to reduce per-step
-kernel-launch overhead. It is opt-in because it pays a one-time compile cost at
-startup and is most beneficial under sustained throughput load. The compile uses
-`dynamic=True`, so one symbolic-sequence-length graph serves every utterance
-length.
+once per Euler step) is compiled with `torch.compile` to reduce per-step
+kernel-launch overhead. It is on by default unless the TensorRT estimator below
+is enabled. The compile pays a one-time cost of about 100 s at startup with an
+empty inductor cache and uses `dynamic=True`, so one symbolic-sequence-length
+graph serves every utterance length.
 
-Enable it by overriding the vocoder stage's `factory` args (the `stages.`
-prefix is implied in the CLI dotted path):
+Run the estimator eager instead by overriding the vocoder stage's `factory` args
+(the `stages.` prefix is implied in the CLI dotted path), for example to shorten
+startup during development:
 
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
   --config examples/configs/fun_cosyvoice3_0_5b.yaml \
-  --vocoder.factory.enable_dit_torch_compile true \
+  --vocoder.factory.enable_dit_torch_compile false \
   --port 8000
 ```
-
-Do not enable this together with TensorRT for the same DiT (see below).
 
 ### TensorRT for the DiT backbone
 
@@ -172,11 +171,15 @@ preferred). This is opt-in: TensorRT is not a `sglang-omni` extra, first
 startup builds and caches a `.plan` under `COSYVOICE3_TRT_CACHE` or
 `~/.cache/sglang-omni/cosyvoice3_trt`, and the official CosyVoice ONNX freezes
 CFG batch at 2 (t and spks are static; only the mel time dim is dynamic).
-Packed Flow (CFG batch = `2 * request_batch`) still works by chunking
-request-wise cond/uncond pairs into that CFG=2 engine.
+The engine is attached as an `nn.Module` wrapper (`FlowEstimatorTRTModule`)
+so CosyVoice does not take its raw `execute_async_v3` path. Packed Flow
+(CFG batch = `2 * request_batch`) still works by chunking request-wise
+cond/uncond pairs into that CFG=2 engine; out-of-profile `T` falls back to
+the original PyTorch DiT.
 
 TensorRT and `torch.compile` both replace the same DiT, so they are mutually
-exclusive. Enable only one:
+exclusive. Enabling TensorRT skips the default compile on its own, setting both
+flags to true is rejected:
 
 ```bash
 sgl-omni serve \
@@ -308,11 +311,30 @@ curl -X POST http://localhost:8000/v1/audio/speech \
   --output output.wav
 ```
 
-### Streaming (Planned)
+### Streaming
 
-Incremental Flow + HiFT decoding is planned but is not enabled in the current implementation.
-The current vocoder buffers the generated speech tokens and returns one complete waveform.
-Do not rely on `stream=true` for time-to-first-audio until the streaming decoder is wired.
+Incremental Flow + HiFT decoding is enabled. Set `stream: true` and use
+`response_format: "pcm"` so the server can emit audio before speech-token
+generation finishes.
+
+The vocoder follows CosyVoice3's causal chunk loop: 25 speech tokens per hop
+(`pre_lookahead_len=3`, 25 Hz → about 1 s of audio per chunk). The first PCM
+chunk is emitted once the AR stage has produced `28 + prompt_pad` tokens,
+where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
+multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
+`CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
+one hop per request so a backlogged stream cannot monopolize the GPU.
+Non-streaming requests still decode the whole utterance in one Flow + HiFT
+pass.
+
+Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
+in sync if you change the hop):
+
+| Factory arg | Default | Notes |
+|---|---|---|
+| `token_hop_len` | `25` | Base hop / AR follow-up flush; must match training chunk size |
+| `token_max_hop_len` | `100` | Cap for `25 → 50 → 100` growth |
+| `disable_hop_growth` | `false` | Leave off unless A/B'ing; growth ON was better at c=16 |
 
 ```bash
 curl -X POST http://localhost:8000/v1/audio/speech \
@@ -322,13 +344,11 @@ curl -X POST http://localhost:8000/v1/audio/speech \
     "input": "Get the trust fund to the bank early.",
     "ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav",
     "ref_text": "We asked over twenty different people, and they all said it was his.",
-    "response_format": "wav"
+    "stream": true,
+    "response_format": "pcm"
   }' \
-  --output output.wav
+  --output output.pcm
 ```
-
-The request above uses the supported buffered response path. A future streaming implementation
-will use `response_format="pcm"` and emit audio before speech-token generation completes.
 
 ## Generation Parameters
 
@@ -343,10 +363,25 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 | `temperature` | `0.7` | Sampling temperature |
 | `top_p` | `0.8` | Top-p sampling |
 | `top_k` | `20` | Top-k sampling |
-| `repetition_penalty` | `1.1` | Repetition penalty |
+| `repetition_penalty` | `1.21` | Repetition penalty |
 | `max_new_tokens` | `min(2048, 20x target text tokens)` | Maximum number of generated speech tokens. If omitted, derived from the target text length (capped at 2048); stop tokens are also suppressed until at least `2x` that length has been generated |
 | `seed` | `null` | Random seed for reproducibility |
-| `stream` | `false` | Reserved for the planned incremental decoder; current decode is buffered |
+| `stream` | `false` | Incremental causal Flow + HiFT; first PCM chunk after `28 + prompt_pad` speech tokens (`prompt_pad` rounds the prompt length to a multiple of 25) |
+
+## Benchmarking
+
+Measure causal streaming with Seed-TTS-Eval against a running server:
+
+```bash
+python -m benchmarks.eval.benchmark_tts_seedtts \
+  --model FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --port 8000 --lang en --max-concurrency 16 \
+  --use-existing-server --generate-only --stream \
+  --output-dir results/fun_cosyvoice3_en
+```
+
+Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
+`benchmarks/README.md` for the full workflow.
 
 ## Model Architecture
 
@@ -377,14 +412,19 @@ will use `response_format="pcm"` and emit audio before speech-token generation c
 - **Speed control.** Applied once, on the decoded waveform, by the shared
   `/v1/audio/speech` response-encoding path.
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
-- **Streaming decode.** The current implementation buffers all speech tokens before Flow + HiFT
-  decoding. Incremental PCM output is planned but is not yet available.
+- **Streaming decode.** Causal Flow + HiFT emit PCM after each hop
+  (`pre_lookahead_len=3`; hop grows 25 → 50 → 100 by default). Quality can
+  differ slightly from the buffered whole-utterance path. Opt-in TensorRT
+  (`enable_flow_estimator_trt`) also accelerates streaming hops; do not enable
+  it together with `enable_dit_torch_compile`. TRT freezes DiT attention, so
+  streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT
+  wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with
+  packed hop-batch CFG shapes.
 - **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator
-  and the opt-in TensorRT estimator (`enable_flow_estimator_trt`). Do not enable
-  TensorRT together with `enable_dit_torch_compile`. HiFT batches only the mels
-  produced by one Flow bucket while padding waste stays within
-  `hift_max_padding_waste`. Streaming Flow/HiFT batching is outside the current
-  buffered decoder.
+  and the opt-in TensorRT estimator. HiFT batches only the mels produced by one
+  Flow bucket while padding waste stays within `hift_max_padding_waste`.
+  Streaming coalesces first/follow-up hops across requests
+  (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
 - **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be
   installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
-  only the CosyVoice Flow and HiFT paths are used by the buffered decoder.
+  only the CosyVoice Flow and HiFT paths are used by the vocoder.

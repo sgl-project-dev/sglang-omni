@@ -11,6 +11,7 @@ from typing import Any
 import torch
 
 from sglang_omni.models.fun_cosyvoice3 import request_builders
+from sglang_omni.models.fun_cosyvoice3.streaming import TOKEN_HOP_LEN
 from sglang_omni.models.fun_cosyvoice3.utils import (
     CosyVoice3Tokenizer,
     SpeakerEncoder,
@@ -27,8 +28,17 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
     context_length = 4096
     model_arch_override = "FunCosyVoice3SGLangModel"
 
-    def __init__(self, onnx_intra_op_threads: int = 16) -> None:
+    def __init__(
+        self,
+        *,
+        token_hop_len: int = TOKEN_HOP_LEN,
+        onnx_intra_op_threads: int = 16,
+    ) -> None:
         super().__init__()
+        hop = int(token_hop_len)
+        if hop <= 0:
+            raise ValueError(f"token_hop_len must be positive, got {token_hop_len}")
+        self._token_hop_len = hop
         self._checkpoint_root: str | None = None
 
         # note (Dayuxiaoshui): both ONNX sessions get a pool of this size, so
@@ -117,10 +127,17 @@ class FunCosyVoice3EngineBuilder(TtsEngineBuilder):
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.fun_cosyvoice3.model_runner"
         )
-        return model_runner_mod.FunCosyVoice3ModelRunner(model_worker, output_proc)
+        return model_runner_mod.FunCosyVoice3ModelRunner(
+            model_worker,
+            output_proc,
+            token_hop_len=self._token_hop_len,
+        )
 
     def make_adapters(self, model: Any) -> tuple[Any, Any]:
         return request_builders.make_cosyvoice3_scheduler_adapters(model=model)
 
     def make_abort_callback(self) -> Any | None:
         return request_builders.cleanup_prepared_cosyvoice3_request
+
+    def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
+        model_runner.set_stream_outbox(scheduler.outbox)

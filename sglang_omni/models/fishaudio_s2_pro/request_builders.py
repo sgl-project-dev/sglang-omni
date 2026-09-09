@@ -131,7 +131,8 @@ def build_sglang_tts_request(
         temperature=state.temperature,
         top_p=state.top_p,
         top_k=state.top_k,
-        repetition_penalty=state.repetition_penalty,
+        # note (Junnan Li): the in-model sampler already penalizes semantic history.
+        repetition_penalty=1.0,
         stop_token_ids=[im_end_token_id],
     )
     sampling_params.normalize(tokenizer)

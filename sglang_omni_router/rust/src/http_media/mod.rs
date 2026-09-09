@@ -14,11 +14,13 @@ use crate::error::{HttpFault, RouterError};
 use crate::http_relay::{
     HttpRelay, OutgoingRequest, map_admission, map_dispatch, sanitize_response_headers,
 };
+use crate::metrics::ClassificationKind;
 use crate::request_id::CanonicalRequestId;
 use crate::worker_pool::{CapacityClass, TrustDomain, WorkerPool};
 
 use classify::Classified;
 use headers::RequestKind;
+pub(crate) use headers::validate_bodyless_request;
 
 const SPEECH_PATH: &str = "/v1/audio/speech";
 const BATCH_PATH: &str = "/v1/audio/speech/batch";
@@ -57,6 +59,15 @@ impl HttpMediaRoute {
         match self {
             Self::Speech | Self::SpeechBatch => RequestKind::Json,
             Self::Transcription | Self::Translation => RequestKind::Multipart,
+        }
+    }
+
+    const fn classification_kind(self) -> ClassificationKind {
+        match self {
+            Self::Speech => ClassificationKind::Speech,
+            Self::SpeechBatch => ClassificationKind::SpeechBatch,
+            Self::Transcription => ClassificationKind::Transcription,
+            Self::Translation => ClassificationKind::Translation,
         }
     }
 }
@@ -240,7 +251,7 @@ async fn handle(
     let classify_trust = trust.clone();
     let (upload, classified) = media
         .relay
-        .classify(deadline, move || {
+        .classify(route.classification_kind(), deadline, move || {
             let classified = classify(
                 route,
                 &upload.bytes,

@@ -10,6 +10,9 @@ import torch
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     _CFG_BATCH,
     _MEL_DIM,
+    _PROFILE_MAX_TIME,
+    _PROFILE_MIN_TIME,
+    FlowEstimatorTRTModule,
     _cfg_pair_shapes,
     _dynamic_shapes,
     _require_cfg_pair_inputs,
@@ -52,7 +55,7 @@ def test_resolve_flow_estimator_onnx_missing(tmp_path: Path) -> None:
 
 
 def test_dynamic_shapes_keep_official_cfg_batch() -> None:
-    for time in (4, 500, 3000):
+    for time in (_PROFILE_MIN_TIME, 500, _PROFILE_MAX_TIME):
         shapes = _dynamic_shapes(time)
         assert list(shapes) == ["x", "mask", "mu", "cond"]
         assert all(shape[0] == _CFG_BATCH for shape in shapes.values())
@@ -183,6 +186,85 @@ def test_is_flow_estimator_trt_accepts_execute_wrapper() -> None:
     assert is_flow_estimator_trt(_Execute()) is True
     assert is_flow_estimator_trt(object()) is False
     assert is_flow_estimator_trt(torch.nn.Linear(1, 1)) is False
+
+
+class _FakeTRTEngine:
+    max_batch = 2
+
+
+class _FallbackDiT(torch.nn.Module):
+    def forward(self, x, mask, mu, t, spks, cond, streaming=False):
+        del mask, mu, t, spks, cond, streaming
+        return x * 2.0
+
+
+def test_is_flow_estimator_trt_accepts_module_wrapper() -> None:
+    module = FlowEstimatorTRTModule(_FakeTRTEngine())
+    assert is_flow_estimator_trt(module) is True
+    assert isinstance(module, torch.nn.Module)
+
+
+def test_flow_estimator_trt_module_forwards_in_profile(monkeypatch) -> None:
+    import sglang_omni.models.fun_cosyvoice3.flow_estimator_trt as trt_mod
+
+    seen: dict[str, object] = {}
+
+    def fake_execute(estimator, x, mask, mu, t, spks, cond):
+        seen["estimator"] = estimator
+        del mask, mu, t, spks, cond
+        return x + 1.0
+
+    monkeypatch.setattr(trt_mod, "execute_flow_estimator", fake_execute)
+    engine = _FakeTRTEngine()
+    module = FlowEstimatorTRTModule(engine)
+    frames = 16
+    x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
+    mask = torch.ones(_CFG_BATCH, 1, frames)
+    mu = torch.zeros_like(x)
+    t = torch.zeros(_CFG_BATCH)
+    spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
+    cond = torch.zeros_like(x)
+
+    out = module(x, mask, mu, t, spks, cond, streaming=True)
+
+    assert seen["estimator"] is engine
+    torch.testing.assert_close(out, x + 1.0)
+
+
+def test_flow_estimator_trt_module_falls_back_outside_profile() -> None:
+    module = FlowEstimatorTRTModule(
+        _FakeTRTEngine(),
+        fallback=_FallbackDiT(),
+        min_time=4,
+        max_time=10,
+    )
+    frames = 20
+    x = torch.ones(_CFG_BATCH, _MEL_DIM, frames)
+    mask = torch.ones(_CFG_BATCH, 1, frames)
+    mu = torch.zeros_like(x)
+    t = torch.zeros(_CFG_BATCH)
+    spks = torch.zeros(_CFG_BATCH, _MEL_DIM)
+    cond = torch.zeros_like(x)
+
+    out = module(x, mask, mu, t, spks, cond)
+
+    torch.testing.assert_close(out, x * 2.0)
+
+
+def test_flow_estimator_trt_module_raises_without_fallback() -> None:
+    module = FlowEstimatorTRTModule(_FakeTRTEngine(), min_time=4, max_time=10)
+    frames = 20
+    x = torch.zeros(_CFG_BATCH, _MEL_DIM, frames)
+    mask = torch.ones(_CFG_BATCH, 1, frames)
+    with pytest.raises(ValueError, match="outside the engine profile"):
+        module(
+            x,
+            mask,
+            torch.zeros_like(x),
+            torch.zeros(_CFG_BATCH),
+            torch.zeros(_CFG_BATCH, _MEL_DIM),
+            torch.zeros_like(x),
+        )
 
 
 def test_execute_flow_estimator_requires_max_batch() -> None:
