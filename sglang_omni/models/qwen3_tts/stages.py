@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+import threading
 from collections.abc import Sequence
 from typing import Any
 
@@ -31,6 +32,9 @@ from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoi
 from sglang_omni.utils.device import resolve_device_spec
 
 logger = logging.getLogger(__name__)
+
+_SPEECH_TOKENIZERS: dict[tuple[str, str, str, str | None], Any] = {}
+_SPEECH_TOKENIZERS_LOCK = threading.Lock()
 
 _QWEN_TTS_INSTALL_HINT = (
     "Qwen3-TTS support requires the official `qwen-tts` package:\n"
@@ -59,15 +63,29 @@ def _load_qwen3_tts_tokenizer(
     checkpoint_dir = _resolve_checkpoint(model_path)
     tokenizer_path = os.path.join(checkpoint_dir, "speech_tokenizer")
     torch_dtype = getattr(torch, dtype) if isinstance(dtype, str) else dtype
-    kwargs: dict[str, Any] = {
-        "device_map": device,
-        "dtype": torch_dtype,
-    }
-    if attn_implementation is not None:
-        kwargs["attn_implementation"] = attn_implementation
+    # note(ratish): one copy per process. The vocoder loads it first and the
+    # engine attaches the same object, so it is resident before the KV pool is sized.
+    key = (tokenizer_path, str(device), str(torch_dtype), attn_implementation)
+    with _SPEECH_TOKENIZERS_LOCK:
+        tokenizer = _SPEECH_TOKENIZERS.get(key)
+        if tokenizer is not None:
+            logger.info(
+                f"Reusing the Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
+            )
+            return tokenizer
+        kwargs: dict[str, Any] = {
+            "device_map": device,
+            "dtype": torch_dtype,
+        }
+        if attn_implementation is not None:
+            kwargs["attn_implementation"] = attn_implementation
 
-    logger.info(f"Loading Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}")
-    return Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        logger.info(
+            f"Loading Qwen3-TTS speech tokenizer from {tokenizer_path} on {device}"
+        )
+        tokenizer = Qwen3TTSTokenizer.from_pretrained(tokenizer_path, **kwargs)
+        _SPEECH_TOKENIZERS[key] = tokenizer
+        return tokenizer
 
 
 def _register_qwen3_tts_hf_config() -> None:

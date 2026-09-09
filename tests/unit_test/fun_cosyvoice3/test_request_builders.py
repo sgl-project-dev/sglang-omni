@@ -309,7 +309,7 @@ def test_generation_kwargs_omit_implicit_sampling_defaults_but_keep_explicit_val
         "temperature": 0.7,
         "top_p": 0.8,
         "top_k": 20,
-        "repetition_penalty": 1.1,
+        "repetition_penalty": 1.21,
         "do_sample": False,
         "max_new_tokens": 12,
     }
@@ -363,8 +363,10 @@ class _FakeModel(torch.nn.Module):
         )
 
 
+@pytest.mark.parametrize("repetition_penalty", [None, 1.1, 1.21])
 def test_preprocess_and_build_request_share_prepared_state(
     monkeypatch: pytest.MonkeyPatch,
+    repetition_penalty: float | None,
 ) -> None:
     monkeypatch.setattr(
         request_builders,
@@ -390,7 +392,21 @@ def test_preprocess_and_build_request_share_prepared_state(
     )
     payload = _payload(
         {"text": "hello", "ref_audio": "reference.wav"},
-        params={"max_new_tokens": 5, "do_sample": False, "seed": 7},
+        params={
+            "max_new_tokens": 5,
+            "do_sample": False,
+            "seed": 7,
+            **(
+                {}
+                if repetition_penalty is None
+                else {"repetition_penalty": repetition_penalty}
+            ),
+        },
+        tts_params=(
+            {}
+            if repetition_penalty is None
+            else {"explicit_generation_params": ["repetition_penalty"]}
+        ),
     )
 
     prepared_payload = preprocess_cosyvoice3_payload(payload)
@@ -413,6 +429,9 @@ def test_preprocess_and_build_request_share_prepared_state(
     request_data = build_sglang_cosyvoice3_request(prepared_payload, model=model)
     assert request_data.max_new_tokens == 5
     assert request_data.temperature == 0.0
+    assert request_data.req.sampling_params.repetition_penalty == (
+        1.21 if repetition_penalty is None else repetition_penalty
+    )
     assert request_data.req.sampling_params.sampling_seed == 7
     # Stop on the full 200-id control range, not only EOS_ID.
     assert request_data.req.sampling_params.stop_token_ids == set(
