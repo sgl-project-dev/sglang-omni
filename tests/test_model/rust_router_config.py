@@ -6,7 +6,9 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 
+CI_ROUTER_MAX_INFLIGHT = 256
 TTS_SERVING_WORKER_BATCH_LIMIT = 32
+TTS_SERVING_BATCH_ADMISSION = CI_ROUTER_MAX_INFLIGHT * TTS_SERVING_WORKER_BATCH_LIMIT
 
 
 class CiRouterTopology(StrEnum):
@@ -44,16 +46,28 @@ def render_router_config(
 def _router_preamble(topology: CiRouterTopology, router_port: int) -> str:
     strategy = "round_robin" if topology is CiRouterTopology.ASR else "least_requests"
     admission = {
-        CiRouterTopology.ASR: ("global = 64", "transcription_http = 32"),
-        CiRouterTopology.TTS: ("global = 64", "speech_http = 32"),
-        CiRouterTopology.TTS_SERVING: (
-            "global = 128",
-            "speech_http = 128",
-            "speech_batch = 64",
-            "speech_websocket = 128",
+        CiRouterTopology.ASR: (
+            f"global = {CI_ROUTER_MAX_INFLIGHT}",
+            f"transcription_http = {CI_ROUTER_MAX_INFLIGHT}",
         ),
-        CiRouterTopology.OMNI_TEXT: ("global = 128", "generation_http = 64"),
-        CiRouterTopology.OMNI_AUDIO: ("global = 128", "generation_http = 64"),
+        CiRouterTopology.TTS: (
+            f"global = {CI_ROUTER_MAX_INFLIGHT}",
+            f"speech_http = {CI_ROUTER_MAX_INFLIGHT}",
+        ),
+        CiRouterTopology.TTS_SERVING: (
+            f"global = {CI_ROUTER_MAX_INFLIGHT}",
+            f"speech_http = {CI_ROUTER_MAX_INFLIGHT}",
+            f"speech_batch = {TTS_SERVING_BATCH_ADMISSION}",
+            f"speech_websocket = {CI_ROUTER_MAX_INFLIGHT}",
+        ),
+        CiRouterTopology.OMNI_TEXT: (
+            f"global = {CI_ROUTER_MAX_INFLIGHT}",
+            f"generation_http = {CI_ROUTER_MAX_INFLIGHT}",
+        ),
+        CiRouterTopology.OMNI_AUDIO: (
+            f"global = {CI_ROUTER_MAX_INFLIGHT}",
+            f"generation_http = {CI_ROUTER_MAX_INFLIGHT}",
+        ),
     }[topology]
     lines = [
         "schema_version = 1",
@@ -137,7 +151,7 @@ def _worker_block(
             [
                 "",
                 "[workers.capacity]",
-                "speech_websocket = 64",
+                f"speech_websocket = {CI_ROUTER_MAX_INFLIGHT}",
             ]
         )
     lines.extend(["", _service_profiles(topology, model_name)])
