@@ -87,3 +87,50 @@ def test_stage_capacity_is_aggregate_and_unknown_commands_fail():
         invoke("one", "invalid")
     scheduler.stop()
     assert not scheduler._sessions
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_ordinary_request_uses_handler_or_reports_scoped_error(configured):
+    import queue
+    import threading
+
+    from sglang_omni.proto import StagePayload
+    from sglang_omni.scheduling.messages import IncomingMessage
+
+    def compute(payload):
+        payload.data = {"ordinary": True}
+        return payload
+
+    kwargs = {"compute_fn": compute} if configured else {}
+    scheduler = SessionScheduler(Hooks("source", queue.Queue()), **kwargs)
+    worker = threading.Thread(target=scheduler.start)
+    worker.start()
+    try:
+        payload = StagePayload("ordinary", OmniRequest(None), {})
+        scheduler.inbox.put(IncomingMessage("ordinary", "new_request", payload))
+        output = scheduler.outbox.get(timeout=5)
+        assert output.request_id == "ordinary"
+        if configured:
+            assert output.type == "result"
+            assert output.data.data == {"ordinary": True}
+        else:
+            assert output.type == "error"
+            assert isinstance(output.data, ValueError)
+            assert "ordinary requests" in str(output.data)
+        request = OmniRequest(
+            None,
+            metadata={
+                "omni_session": {
+                    "op": "open",
+                    "ref": asdict(SessionRef("after-ordinary")),
+                }
+            },
+        )
+        scheduler.inbox.put(
+            IncomingMessage("open", "new_request", StagePayload("open", request, {}))
+        )
+        assert scheduler.outbox.get(timeout=5).type == "result"
+    finally:
+        scheduler.stop()
+        worker.join(timeout=5)
+    assert not worker.is_alive()

@@ -83,6 +83,7 @@ class SessionScheduler(SimpleScheduler):
         self,
         hooks: SessionHooks,
         *,
+        compute_fn: Callable[[StagePayload], StagePayload] | None = None,
         max_sessions: int = 64,
         max_concurrency: int = 4,
         max_state_bytes: int = 1 << 30,
@@ -90,6 +91,7 @@ class SessionScheduler(SimpleScheduler):
         if max_sessions <= 0 or max_state_bytes <= 0:
             raise ValueError("session capacity must be positive")
         self.hooks = hooks
+        self._ordinary_compute = compute_fn
         self.max_sessions = max_sessions
         self.max_state_bytes = max_state_bytes
         self._sessions: dict[tuple[str, int], _StageSession] = {}
@@ -107,7 +109,10 @@ class SessionScheduler(SimpleScheduler):
         self.inbox = _SessionInbox(self._register_command)
 
     def _register_command(self, message) -> None:
-        ref = message.data.request.metadata[SESSION_METADATA_KEY]["ref"]
+        command = message.data.request.metadata.get(SESSION_METADATA_KEY)
+        if command is None:
+            return
+        ref = command["ref"]
         key = (ref["session_id"], ref["incarnation"])
         with self._session_lock:
             done = threading.Event()
@@ -135,7 +140,12 @@ class SessionScheduler(SimpleScheduler):
         return aborted
 
     def _compute(self, payload: StagePayload) -> StagePayload:
-        ref = payload.request.metadata[SESSION_METADATA_KEY]["ref"]
+        command = payload.request.metadata.get(SESSION_METADATA_KEY)
+        if command is None:
+            if self._ordinary_compute is None:
+                raise ValueError("this stage has no compute_fn for ordinary requests")
+            return self._ordinary_compute(payload)
+        ref = command["ref"]
         key = (ref["session_id"], ref["incarnation"])
         with self._session_lock:
             ticket = self._tickets.get(payload.request_id)
