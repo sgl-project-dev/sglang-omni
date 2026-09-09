@@ -19,8 +19,8 @@ def _workflow(path: Path) -> dict:
 
 def _select_step_script() -> str:
     jobs = _workflow(OMNI_WORKFLOW)["jobs"]
-    pick = jobs["pick-tts-model"]
-    step = next(s for s in pick["steps"] if s.get("id") == "tts")
+    preflight = jobs["preflight"]
+    step = next(s for s in preflight["steps"] if s.get("id") == "tts")
     return step["run"]
 
 
@@ -56,7 +56,7 @@ def test_every_rotation_model_resolves_an_mps_pool() -> None:
     """
     script = _select_step_script()
     assert 'resolved_config=""' not in script, "a rotation model still skips stage 5"
-    assert 'mps_model="moss"' in script, "no fallback pool in pick-tts-model"
+    assert 'mps_model="moss"' in script, "no fallback pool in preflight"
 
     mps = _workflow(TTS_WORKFLOW)["jobs"]["stage-5-mps"]
     condition = mps["if"]
