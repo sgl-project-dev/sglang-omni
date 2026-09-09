@@ -105,9 +105,10 @@ Add `--concurrency 16` to evaluate with 16 in-flight requests. Use `--max-sample
 
 ## Upstream Parity
 
-The checkpoint test compares reference latents, fused Qwen conditioning, generated latents, and waveforms with upstream, with and without reference audio. It aligns the upstream process RNG with the request seed to compare the same random inputs. Install `torchdiffeq` and `qwen-omni-utils` in addition to the serving dependencies, and use a GPU with memory for both implementations:
+The checkpoint test compares reference latents, fused Qwen conditioning, generated latents, and waveforms with upstream, with and without reference audio. It aligns the upstream process RNG with the request seed to compare the same random inputs. Install `torchdiffeq`, `qwen-omni-utils`, and `audioread` in addition to the serving dependencies, and use a GPU with memory for both implementations:
 
 ```bash
+pip install torchdiffeq qwen-omni-utils audioread
 git clone https://github.com/Tencent-Hunyuan/AuK.git /tmp/AuK
 git -C /tmp/AuK checkout d9f30ffe4231dbc90b48cc83a35d310fece0b060
 AUK_UPSTREAM_SOURCE=/tmp/AuK \
