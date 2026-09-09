@@ -140,11 +140,11 @@ class ConfigManager:
         """
         Load the configuration from the file path.
 
-        The file's ``stages:`` mapping entries are folded into the
-        configuration that comes back, so callers holding a ``ConfigManager``
+        The file's stages: mapping entries are folded into the
+        configuration that comes back, so callers holding a ConfigManager
         see one settled config rather than a config plus a pile of pending
-        overrides. ``sgl-omni config explain`` wants the opposite and calls
-        ``sources_from_config_file`` directly.
+        overrides. sgl-omni config explain wants the opposite and calls
+        sources_from_config_file directly.
         """
         config, patches = sources_from_config_file(file_path)
         if not patches:
