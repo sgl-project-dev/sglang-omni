@@ -373,10 +373,6 @@ class OmniScheduler:
         self.model_worker = tp_worker
 
         # Cache / memory management
-        if getattr(server_args, "enable_streaming_session", False):
-            from sglang.srt.session.streaming_session import StreamingSession
-
-            tree_cache = StreamingSession(tree_cache)
         self.tree_cache = tree_cache
         self.req_to_token_pool = req_to_token_pool
         self.token_to_kv_pool_allocator = token_to_kv_pool_allocator
