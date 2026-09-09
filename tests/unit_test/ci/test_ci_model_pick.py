@@ -30,7 +30,9 @@ def _pick_scripts() -> tuple[str, str]:
         "jobs"
     ]
     tts = next(
-        step["run"] for step in jobs["pick-tts-model"]["steps"] if step.get("id") == "tts"
+        step["run"]
+        for step in jobs["pick-tts-model"]["steps"]
+        if step.get("id") == "tts"
     )
     return jobs["pick-asr-model"]["steps"][0]["run"], tts
 
@@ -97,17 +99,13 @@ def _assert_tts_random(result: subprocess.CompletedProcess[str]) -> None:
     assert "Selected TTS CI model:" in result.stdout
 
 
-def _assert_asr_specified(
-    result: subprocess.CompletedProcess[str], model: str
-) -> None:
+def _assert_asr_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"Selected ASR CI model: {model}" in result.stdout
     assert "Random seed for ASR CI model:" not in result.stdout
 
 
-def _assert_tts_specified(
-    result: subprocess.CompletedProcess[str], model: str
-) -> None:
+def _assert_tts_specified(result: subprocess.CompletedProcess[str], model: str) -> None:
     assert result.returncode == 0, result.stderr + result.stdout
     assert f"Selected TTS CI model: {model}" in result.stdout
     assert "Selection digest for TTS CI model:" not in result.stdout
