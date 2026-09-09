@@ -110,7 +110,7 @@ attach_log() {
     filter_cmd="cat"
   else
     # Drop the lines that blow the IDE terminal budget in seconds.
-    filter_cmd="grep -E -v 'scheduler_metrics_mixin: (Decode|Prefill) batch'"
+    filter_cmd="grep -E -v '(scheduler_metrics_mixin|scheduler_components[.]metrics_reporter): (Decode|Prefill) batch'"
   fi
   # New session so stop_tail can kill the whole group.
   # Line-buffer everything; tee durable full/filtered stream for operators.
