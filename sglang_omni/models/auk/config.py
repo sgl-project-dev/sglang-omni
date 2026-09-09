@@ -1,9 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Pipeline configuration for AuK: preprocessing -> auk_engine -> vocoder.
-
-Neither the engine (Qwen2.5-Omni conditioning + flow-matching DiT) nor the
-vocoder (BigVGAN-Flow VAE) is autoregressive, so neither needs an AR scheduler.
-"""
+"""AuK: CPU preprocessing followed by serial conditioning, sampling and decode."""
 
 from __future__ import annotations
 
@@ -17,7 +13,6 @@ _PKG = "sglang_omni.models.auk"
 
 PREPROCESSING_STAGE = "preprocessing"
 ENGINE_STAGE = "auk_engine"
-VOCODER_STAGE = "vocoder"
 
 
 class AuKPipelineConfig(PipelineConfig):
@@ -46,24 +41,11 @@ class AuKPipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 device=current_platform.device_type,
                 dtype="bfloat16",
+                text_encoder_path=C.DEFAULT_TEXT_ENCODER,
                 nfe=C.DEFAULT_NFE,
                 cfg_strength=C.DEFAULT_CFG_STRENGTH,
                 sway_sampling_coef=C.DEFAULT_SWAY_SAMPLING_COEF,
                 max_seconds=C.MAX_SECONDS,
-                max_batch_size=1,
-                max_batch_wait_ms=0,
-            ),
-            gpu=0,
-            next=VOCODER_STAGE,
-        ),
-        StageConfig(
-            name=VOCODER_STAGE,
-            process="pipeline",
-            factory_path=f"{_PKG}.stages.create_vocoder_executor",
-            factory=FactoryArgs(
-                dtype="bfloat16",
-                max_batch_size=8,
-                max_batch_wait_ms=5,
             ),
             gpu=0,
             terminal=True,

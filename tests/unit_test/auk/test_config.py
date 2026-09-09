@@ -10,7 +10,6 @@ import pytest
 from sglang_omni.models.auk.config import (
     ENGINE_STAGE,
     PREPROCESSING_STAGE,
-    VOCODER_STAGE,
     AuKPipelineConfig,
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
@@ -33,18 +32,16 @@ def test_stage_topology():
     assert [stage.name for stage in config.stages] == [
         PREPROCESSING_STAGE,
         ENGINE_STAGE,
-        VOCODER_STAGE,
     ]
     assert config.resolved_entry_stage == PREPROCESSING_STAGE
-    assert config.terminal_stages == [VOCODER_STAGE]
+    assert config.terminal_stages == [ENGINE_STAGE]
 
 
 def test_stage_graph_is_connected():
     config = AuKPipelineConfig(model_path="tencent/AuK")
     stages = {stage.name: stage for stage in config.stages}
     assert stages[PREPROCESSING_STAGE].next == ENGINE_STAGE
-    assert stages[ENGINE_STAGE].next == VOCODER_STAGE
-    assert stages[VOCODER_STAGE].terminal is True
+    assert stages[ENGINE_STAGE].terminal is True
 
 
 def test_factory_paths_resolve():

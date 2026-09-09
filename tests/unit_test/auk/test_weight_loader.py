@@ -94,17 +94,28 @@ def test_load_dit_weights_strips_ema_prefix(tmp_path):
     assert report.unexpected == 0
 
 
-def test_load_dit_weights_reports_missing_and_unexpected(tmp_path):
+def test_load_dit_weights_rejects_missing_and_unexpected(tmp_path):
     flow = _tiny_flow()
     state_dict = dict(flow.state_dict())
     del state_dict["layer_weights"]
     state_dict["stale.key"] = torch.zeros(1)
     _save(state_dict, tmp_path / "auk_base.safetensors")
 
-    report = load_dit_weights(flow, str(tmp_path))
-    assert report.missing == 1
-    assert report.missing_examples == ("layer_weights",)
-    assert report.unexpected == 1
+    with pytest.raises(RuntimeError, match="layer_weights"):
+        load_dit_weights(flow, str(tmp_path))
+
+
+@pytest.mark.parametrize("kind", ["missing", "unexpected"])
+def test_load_vae_weights_rejects_mismatch(tmp_path, kind):
+    vae = torch.nn.Linear(2, 2)
+    state = dict(vae.state_dict())
+    if kind == "missing":
+        del state["bias"]
+    else:
+        state["stale"] = torch.zeros(1)
+    _save(state, tmp_path / "vae.safetensors")
+    with pytest.raises(RuntimeError):
+        load_vae_weights(vae, str(tmp_path))
 
 
 def test_load_vae_weights(tmp_path):

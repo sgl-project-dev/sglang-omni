@@ -9,6 +9,7 @@ config so no other module needs to know where the values came from.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -29,7 +30,7 @@ class AuKRuntimeConfig:
     arch: dict[str, Any] = field(default_factory=dict)
     vae: dict[str, Any] = field(default_factory=dict)
     schedule: dict[str, Any] = field(default_factory=dict)
-    text_encoder_path: str | None = None
+    text_encoder_path: str = C.DEFAULT_TEXT_ENCODER
 
     @property
     def is_flash(self) -> bool:
@@ -53,7 +54,7 @@ class AuKRuntimeConfig:
         return dict(kwargs)
 
     def seconds_to_frames(self, seconds: float) -> int:
-        return max(1, int(seconds * self.sample_rate / self.downsample_rate))
+        return max(1, math.ceil(seconds * self.sample_rate / self.downsample_rate))
 
     def frames_to_seconds(self, frames: int) -> float:
         return frames * self.downsample_rate / self.sample_rate
@@ -118,7 +119,9 @@ def load_auk_config(model_path: str) -> AuKRuntimeConfig:
         arch=arch,
         vae=vae,
         schedule=schedule,
-        text_encoder_path=str(text_encoder_path) if text_encoder_path else None,
+        text_encoder_path=(
+            str(text_encoder_path) if text_encoder_path else C.DEFAULT_TEXT_ENCODER
+        ),
     )
 
 

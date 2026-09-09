@@ -11,6 +11,8 @@ LATENT_DIM: int = 64
 
 # --- conditioning ---
 TEXT_HIDDEN_DIM: int = 2048
+DEFAULT_TEXT_ENCODER: str = "Qwen/Qwen2.5-Omni-3B"
+DEFAULT_VOICE_DESCRIPTION: str = "A clear, natural voice."
 QWEN_AUDIO_SAMPLE_RATE: int = 16000
 NO_PROMPT_AUDIO_MARKER: str = "|<no_prompt_audio>|"
 
@@ -32,6 +34,5 @@ FLASH_T_GRID: tuple[float, ...] = (
 )
 
 # --- request limits ---
-MIN_SECONDS: float = 0.1
 MAX_SECONDS: float = 30.0
 DEFAULT_SECONDS: float = 5.0

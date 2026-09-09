@@ -1,4 +1,6 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+# Copyright (C) 2026 Tencent. All rights reserved.
+# Derived from Tencent-Hunyuan/AuK; see LICENSE for the MIT permission notice.
 """AuK generation backbone: a Flux-style MMDiT over VAE latents.
 
 Ported from the reference ``src/auk/model/flux2_edit.py`` and ``modules.py``

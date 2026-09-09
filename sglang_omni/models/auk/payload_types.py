@@ -12,26 +12,20 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 @dataclass
 class AuKState(DeclarativeStateBase):
-    """Per-request state for AuK generation/editing.
-
-    Preprocessing fills the request fields, the engine fills ``latent``, and the
-    vocoder replaces it with ``audio_samples`` on the way out.
-    """
+    """Request fields passed from preprocessing to the terminal AuK engine."""
 
     sample_rate: int = wire(C.SAMPLE_RATE, codec="int")
 
     instruction: str = wire("", codec="str")
     # 24 kHz mono reference waveform, kept as numpy until the GPU stage.
     ref_audio: Any | None = None
+    # Independently resampled from the original source, as in qwen_omni_utils.
+    qwen_audio: Any | None = None
     ref_seconds: float = wire(0.0, codec="float")
 
     gen_frames: int = wire(0, codec="int")
-    nfe: int = wire(C.DEFAULT_NFE, codec="int")
-    cfg_strength: float = wire(C.DEFAULT_CFG_STRENGTH, codec="float")
-    sway_sampling_coef: float | None = None
     seed: int | None = None
 
-    latent: Any | None = wire(None, codec="tensor_cpu")
     audio_samples: Any | None = wire(None, codec="tensor_cpu")
 
     @property

@@ -1,4 +1,8 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT AND Apache-2.0
+# Copyright (C) 2026 Tencent. All rights reserved.
+# Copyright (c) 2022 NVIDIA CORPORATION.
+# Derived from Tencent-Hunyuan/AuK; see LICENSE for the MIT permission notice.
+# Alias-free activation code adapts junjun3518/alias-free-torch (Apache-2.0).
 """AuK audio VAE: BigVGAN decoder + convolutional encoder + normalizing flow.
 
 Ported from ``src/auk/model/vae/`` (AuK, MIT; adapts HiFi-GAN / BigVGAN / VITS).
@@ -850,19 +854,6 @@ class BigVGANFlowVAE(nn.Module):
             )
             latent_lens = torch.clamp(latent_lens, max=latents.size(1))
         return latents, latent_lens
-
-    @torch.no_grad()
-    def encode(self, waveform: torch.Tensor) -> torch.Tensor:
-        """Encode to normalized latent [B, T, D] without reparameterization."""
-        was_1d = waveform.ndim == 2
-        if was_1d:
-            waveform = waveform.unsqueeze(1)
-        stats = self.audio_encoder(waveform.float())
-        mean, _ = stats.chunk(2, dim=1)
-        latents = mean.transpose(1, 2).float()
-        return (latents - self.global_mean.float()) / torch.sqrt(
-            self.global_log_std.float()
-        )
 
     def denormalize(self, latents: torch.Tensor) -> torch.Tensor:
         latents = latents.float()

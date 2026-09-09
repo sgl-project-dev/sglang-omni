@@ -7,9 +7,11 @@ reference clip in, validates them, and loads/resamples the reference on CPU.
 
 from __future__ import annotations
 
+import io
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import numpy as np
 
@@ -17,7 +19,7 @@ from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.hf_config import AuKRuntimeConfig
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.proto import StagePayload
-from sglang_omni.utils.audio import load_audio
+from sglang_omni.utils.audio import decode_audio_data_uri, load_audio
 from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,31 @@ def _resolve_seed(raw: Any) -> int | None:
         raise ValueError(f"AuK seed must be an integer, got {raw!r}") from exc
 
 
+def _load_reference(source: Any, sample_rate: int) -> tuple[np.ndarray, np.ndarray]:
+    import librosa
+
+    if isinstance(source, str):
+        decoded = decode_audio_data_uri(source)
+        if decoded is not None:
+            source = decoded
+        elif source.startswith(("http://", "https://")):
+            import httpx
+
+            response = httpx.get(source, timeout=5, follow_redirects=True)
+            response.raise_for_status()
+            source = response.content
+        elif source.startswith("file://"):
+            source = unquote(urlparse(source).path)
+    vae_audio = load_audio(source, source_name="AuK", target_sample_rate=sample_rate)
+    # Qwen's upstream process_mm_info uses librosa on the original source.
+    qwen_audio, _ = librosa.load(
+        io.BytesIO(source) if isinstance(source, bytes) else source,
+        sr=C.QWEN_AUDIO_SAMPLE_RATE,
+        mono=True,
+    )
+    return np.asarray(vae_audio, dtype=np.float32).reshape(-1), qwen_audio
+
+
 def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState:
     """Build the AuK state from an incoming request."""
     inputs = payload.request.inputs or {}
@@ -122,67 +149,75 @@ def build_auk_state(payload: StagePayload, config: AuKRuntimeConfig) -> AuKState
     tts_params = metadata.get("tts_params")
     if not isinstance(tts_params, dict):
         tts_params = {}
+    stage_params = params.get("stage_params") or {}
+    engine_params = stage_params.get("auk_engine") or {}
+    for source in (tts_params, params, engine_params):
+        for name in ("nfe", "cfg_strength", "sway_sampling_coef", "max_seconds"):
+            if source.get(name) is not None:
+                raise ValueError(f"AuK {name} is a server-level setting")
 
     text, references, inline_ref = _normalize_inputs(inputs)
-    instruction = str(
-        tts_params.get("instruction") or params.get("instruction") or text
-    ).strip()
-    if not instruction:
-        raise ValueError("AuK requires a natural-language instruction")
-
     ref_source = _resolve_reference(references, inline_ref) or tts_params.get(
         "ref_audio"
     )
+    is_speech = metadata.get("task") == "tts"
+    if is_speech:
+        if not text.strip():
+            raise ValueError("AuK speech requires nonempty input text")
+        if ref_source is not None:
+            instruction = f'Say the following with the same voice: "{text}"'
+        else:
+            description = str(tts_params.get("instructions") or "").strip()
+            description = description or C.DEFAULT_VOICE_DESCRIPTION
+            instruction = (
+                f'Generate speech based on the following description: "{description}". '
+                f'The content to speak is: "{text}".'
+            )
+    else:
+        instruction = str(params.get("instruction") or text).strip()
+        if not instruction:
+            raise ValueError("AuK requires a natural-language instruction")
 
     gen_seconds = _resolve_float(
-        tts_params.get("gen_seconds", params.get("gen_seconds")), None
+        engine_params.get(
+            "gen_seconds", tts_params.get("gen_seconds", params.get("gen_seconds"))
+        ),
+        None,
     )
     if gen_seconds is not None and gen_seconds <= 0:
         raise ValueError(f"AuK gen_seconds must be positive, got {gen_seconds}")
 
-    clip_seconds = _resolve_float(
-        tts_params.get("max_seconds", params.get("max_seconds")),
-        _get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS,
-    )
+    if gen_seconds is None and is_speech:
+        raise ValueError("AuK speech requires stage_params.auk_engine.gen_seconds")
+    clip_seconds = _get_context().max_seconds if _CONTEXT is not None else C.MAX_SECONDS
 
     ref_audio: np.ndarray | None = None
+    qwen_audio: np.ndarray | None = None
     ref_seconds = 0.0
     if ref_source is not None:
-        ref_audio = np.asarray(
-            load_audio(
-                ref_source, source_name="AuK", target_sample_rate=config.sample_rate
-            ),
-            dtype=np.float32,
-        ).reshape(-1)
+        ref_audio, qwen_audio = _load_reference(ref_source, config.sample_rate)
         ref_seconds = ref_audio.shape[-1] / float(config.sample_rate)
 
     if gen_seconds is None:
-        # Default to the source length, or a short default when reference-free.
-        gen_seconds = (
-            ref_seconds
+        # Raw editing requests retain the upstream source-duration default.
+        gen_frames = (
+            max(1, ref_audio.shape[-1] // config.downsample_rate)
             if ref_seconds > 0
-            else (_get_context().default_seconds if _CONTEXT else C.DEFAULT_SECONDS)
+            else config.seconds_to_frames(
+                _get_context().default_seconds if _CONTEXT else C.DEFAULT_SECONDS
+            )
         )
-    gen_seconds = float(min(max(gen_seconds, C.MIN_SECONDS), clip_seconds))
+    else:
+        gen_frames = config.seconds_to_frames(gen_seconds)
+    gen_frames = min(gen_frames, config.seconds_to_frames(clip_seconds))
 
     return AuKState(
         sample_rate=config.sample_rate,
         instruction=instruction,
         ref_audio=ref_audio,
+        qwen_audio=qwen_audio,
         ref_seconds=float(ref_seconds),
-        gen_frames=config.seconds_to_frames(gen_seconds),
-        nfe=int(
-            tts_params.get("nfe", params.get("nfe", C.DEFAULT_NFE)) or C.DEFAULT_NFE
-        ),
-        cfg_strength=float(
-            tts_params.get(
-                "cfg_strength", params.get("cfg_strength", C.DEFAULT_CFG_STRENGTH)
-            )
-        ),
-        sway_sampling_coef=_resolve_float(
-            tts_params.get("sway_sampling_coef", params.get("sway_sampling_coef")),
-            C.DEFAULT_SWAY_SAMPLING_COEF,
-        ),
+        gen_frames=gen_frames,
         seed=_resolve_seed(tts_params.get("seed", params.get("seed"))),
     )
 

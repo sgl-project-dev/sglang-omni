@@ -1,12 +1,12 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: Apache-2.0 AND MIT
+# Inference recipe adapted from Tencent-Hunyuan/AuK, Copyright (C) 2026 Tencent.
+# See LICENSE for the upstream MIT permission notice.
 """Stage factories for the AuK pipeline.
 
     preprocessing (CPU)  -> validate request, decode/resample reference audio
-    auk_engine    (GPU)  -> Qwen2.5-Omni conditioning + flow-matching DiT
-    vocoder       (GPU)  -> BigVGAN-Flow VAE decode to 24 kHz waveform
+    auk_engine    (GPU)  -> Qwen + VAE reference encode + DiT + same VAE decode
 
-The engine and vocoder are plain batched ``SimpleScheduler`` stages (AuK is not
-autoregressive).
+The terminal engine uses a serial ``SimpleScheduler``.
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.reference_encode import (
     AuKConditionEncoder,
     build_messages,
-    resample_to_qwen_rate,
 )
 from sglang_omni.models.auk.request_builders import (
     AuKPreprocessingContext,
@@ -97,7 +96,6 @@ class _EngineContext:
     sway_sampling_coef: float | None
     t_grid: tuple[float, ...] | None
     max_frames: int
-    deterministic_reference_encode: bool = True
 
 
 def _autocast(ctx: _EngineContext):
@@ -112,98 +110,76 @@ def _autocast(ctx: _EngineContext):
     )
 
 
-def _reference_latent(ctx: _EngineContext, ref_audio: Any) -> torch.Tensor | None:
+def _reference_latent(
+    ctx: _EngineContext, ref_audio: Any
+) -> tuple[torch.Tensor | None, int]:
     """VAE-encode the 24 kHz reference clip into the DiT's prompt latent."""
     if ref_audio is None:
-        return None
+        return None, 0
     waveform = np.asarray(ref_audio, dtype=np.float32).reshape(1, 1, -1)
     tensor = torch.from_numpy(waveform).to(ctx.device)
     with torch.autocast(device_type=current_platform.device_type, enabled=False):
-        if ctx.deterministic_reference_encode:
-            latent = ctx.vae.encode(tensor)
-        else:
-            latent, _ = ctx.vae.encoding_and_normalization(tensor)
-    length = min(latent.shape[1], waveform.shape[-1] // ctx.vae.hop_size)
-    return latent[:, :length][0].contiguous()
+        lengths = torch.tensor(
+            [waveform.shape[-1] // ctx.vae.hop_size * ctx.vae.hop_size],
+            device=ctx.device,
+        )
+        latent, latent_lengths = ctx.vae.encoding_and_normalization(tensor, lengths)
+    length = int(latent_lengths[0])
+    # Preserve padded frames, valid length and strides. Trimming shifts rotary
+    # positions; making this contiguous changes the BF16 GEMM rounding.
+    return latent[0], length
 
 
 def _prepare_item(ctx: _EngineContext, state: AuKState):
     has_reference = state.ref_audio is not None and np.asarray(state.ref_audio).size > 0
     messages = build_messages(state.instruction, has_reference_audio=has_reference)
-    audio_16k = (
-        resample_to_qwen_rate(
-            np.asarray(state.ref_audio, dtype=np.float32), state.sample_rate
-        )
-        if has_reference
-        else None
-    )
     target_frames = int(min(max(int(state.gen_frames), 1), ctx.max_frames))
-    return messages, audio_16k, _reference_latent(ctx, state.ref_audio), target_frames
+    return (
+        messages,
+        state.qwen_audio,
+        _reference_latent(ctx, state.ref_audio),
+        target_frames,
+    )
 
 
-def _generate(ctx: _EngineContext, payloads: list[StagePayload]) -> list[StagePayload]:
-    states = [load_state_auk(payload) for payload in payloads]
-
-    messages: list[list[dict[str, Any]]] = []
-    audios: list[np.ndarray | None] = []
-    ref_latents: list[torch.Tensor | None] = []
-    target_frames: list[int] = []
-    for state in states:
-        message, audio, ref_latent, frames = _prepare_item(ctx, state)
-        messages.append(message)
-        audios.append(audio)
-        ref_latents.append(ref_latent)
-        target_frames.append(frames)
-
+@torch.inference_mode()
+def _generate_one(ctx: _EngineContext, payload: StagePayload) -> StagePayload:
+    state = load_state_auk(payload)
     started = time.perf_counter()
-    hidden_states, text_masks = ctx.encoder.encode(messages, audios)
-    encode_s = time.perf_counter() - started
-
-    items = [
-        AuKSampleItem(
-            hidden_states=hidden,
-            text_mask=mask,
-            target_frames=frames,
-            ref_latent=ref_latent,
-            seed=state.seed,
-        )
-        for hidden, mask, frames, ref_latent, state in zip(
-            hidden_states, text_masks, target_frames, ref_latents, states, strict=True
-        )
-    ]
-
-    started = time.perf_counter()
+    messages, audio, (ref_latent, ref_length), frames = _prepare_item(ctx, state)
     with _autocast(ctx):
-        latents = ctx.flow.sample_batch(
-            items,
+        hidden, mask = ctx.encoder.encode(messages, audio)
+        latent = ctx.flow.sample(
+            AuKSampleItem(hidden, mask, frames, ref_latent, state.seed, ref_length),
             steps=ctx.nfe,
             cfg_strength=ctx.cfg_strength,
             sway_sampling_coef=ctx.sway_sampling_coef,
             t_grid=ctx.t_grid,
         )
-    sample_s = time.perf_counter() - started
-
-    results: list[StagePayload] = []
-    for payload, state, latent, mask in zip(
-        payloads, states, latents, text_masks, strict=True
-    ):
-        state.latent = latent.detach().to(torch.float32).cpu()
-        state.prompt_tokens = int(mask.shape[0])
-        state.completion_tokens = int(latent.shape[0])
-        # Per-request attribution of the batch wall time (encode + ODE solve).
-        state.engine_time_s = encode_s + sample_s
-        results.append(store_state(payload, state))
-    return results
-
-
-async def _generate_one(ctx: _EngineContext, payload: StagePayload) -> StagePayload:
-    return _generate(ctx, [payload])[0]
-
-
-async def _generate_batch(
-    ctx: _EngineContext, payloads: list[StagePayload]
-) -> list[StagePayload]:
-    return _generate(ctx, payloads)
+    if not torch.isfinite(latent).all():
+        raise RuntimeError("AuK generated latent contains NaN/Inf")
+    with torch.autocast(device_type=ctx.device.type, enabled=False):
+        denormalized = ctx.vae.denormalize(latent.unsqueeze(0)).permute(0, 2, 1)
+        wav = ctx.vae.inference_from_latents(denormalized)[0]
+    if not torch.isfinite(wav).all():
+        raise RuntimeError("AuK generated audio contains NaN/Inf")
+    wav = wav.float().cpu()
+    state.audio_samples = wav
+    state.ref_audio = None
+    state.qwen_audio = None
+    state.prompt_tokens = int(mask.sum())
+    state.completion_tokens = int(latent.shape[0])
+    state.engine_time_s = time.perf_counter() - started
+    payload = store_state(payload, state)
+    payload.data.update(
+        audio_waveform_payload(wav, sample_rate=state.sample_rate, source_hint="AuK")
+    )
+    payload.data["sample_rate"] = state.sample_rate
+    payload.data["modality"] = "audio"
+    usage = build_usage(state)
+    if usage is not None:
+        payload.data["usage"] = usage
+    return payload
 
 
 def create_auk_engine_executor(
@@ -212,16 +188,13 @@ def create_auk_engine_executor(
     device: str | None = None,
     gpu_id: int | None = None,
     dtype: str = "bfloat16",
-    text_encoder_path: str | None = None,
+    text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     nfe: int | None = None,
     cfg_strength: float | None = None,
     sway_sampling_coef: float | None = C.DEFAULT_SWAY_SAMPLING_COEF,
     max_seconds: float = C.MAX_SECONDS,
-    deterministic_reference_encode: bool = True,
-    max_batch_size: int = 1,
-    max_batch_wait_ms: float = 0,
 ) -> SimpleScheduler:
-    """Build the conditioning + flow-matching DiT stage."""
+    """Build the serial terminal engine, sharing one VAE for encode and decode."""
     if dtype not in _AUTOCAST_DTYPES:
         raise ValueError(
             f"Unsupported AuK engine dtype {dtype!r}; expected one of {sorted(_AUTOCAST_DTYPES)}"
@@ -231,7 +204,7 @@ def create_auk_engine_executor(
     resolved_device = torch.device(resolve_device_spec(device, gpu_id))
 
     encoder = AuKConditionEncoder(
-        config.text_encoder_path or checkpoint,
+        config.text_encoder_path,
         device=resolved_device,
         dtype=torch.bfloat16,
     )
@@ -277,110 +250,6 @@ def create_auk_engine_executor(
         sway_sampling_coef=sway_sampling_coef,
         t_grid=t_grid,
         max_frames=config.seconds_to_frames(max_seconds),
-        deterministic_reference_encode=deterministic_reference_encode,
     )
 
-    return SimpleScheduler(
-        lambda payload: _generate_one(ctx, payload),
-        batch_compute_fn=lambda payloads: _generate_batch(ctx, payloads),
-        max_batch_size=max_batch_size,
-        max_batch_wait_ms=max_batch_wait_ms,
-    )
-
-
-@dataclass
-class _VocoderContext:
-    vae: BigVGANFlowVAE
-    device: torch.device
-
-
-def _decode(ctx: _VocoderContext, payloads: list[StagePayload]) -> list[StagePayload]:
-    states = [load_state_auk(payload) for payload in payloads]
-    latents: list[torch.Tensor] = []
-    for state in states:
-        if state.latent is None:
-            raise RuntimeError("AuK vocoder requires a latent from the engine stage")
-        latent = torch.as_tensor(state.latent, dtype=torch.float32)
-        if latent.ndim != 2:
-            raise ValueError(
-                f"AuK latent must be [frames, channels], got {tuple(latent.shape)}"
-            )
-        latents.append(latent)
-
-    lengths = [int(latent.shape[0]) for latent in latents]
-    max_length = max(lengths)
-    channels = int(latents[0].shape[1])
-    padded = torch.zeros(
-        len(latents), max_length, channels, device=ctx.device, dtype=torch.float32
-    )
-    for index, latent in enumerate(latents):
-        padded[index, : latent.shape[0]] = latent.to(ctx.device)
-
-    denormalized = ctx.vae.denormalize(padded).permute(0, 2, 1)  # [B, D, T]
-    with torch.autocast(device_type=current_platform.device_type, enabled=False):
-        waveforms = ctx.vae.inference_from_latents(denormalized)  # [B, 1, T * hop]
-
-    results: list[StagePayload] = []
-    for index, (payload, state, length) in enumerate(
-        zip(payloads, states, lengths, strict=True)
-    ):
-        samples = length * ctx.vae.hop_size
-        wav = waveforms[index][:, :samples].detach().float().cpu()
-        state.audio_samples = wav
-        state.latent = None
-        payload = store_state(payload, state)
-        payload.data.update(
-            audio_waveform_payload(
-                wav, sample_rate=state.sample_rate, source_hint="AuK"
-            )
-        )
-        payload.data["sample_rate"] = int(state.sample_rate)
-        payload.data["modality"] = "audio"
-        usage = build_usage(state)
-        if usage is not None:
-            payload.data["usage"] = usage
-        results.append(payload)
-    return results
-
-
-async def _decode_one(ctx: _VocoderContext, payload: StagePayload) -> StagePayload:
-    return _decode(ctx, [payload])[0]
-
-
-async def _decode_batch(
-    ctx: _VocoderContext, payloads: list[StagePayload]
-) -> list[StagePayload]:
-    return _decode(ctx, payloads)
-
-
-def create_vocoder_executor(
-    model_path: str,
-    *,
-    device: str | None = None,
-    gpu_id: int | None = None,
-    dtype: str = "bfloat16",
-    max_batch_size: int = 8,
-    max_batch_wait_ms: float = 5,
-) -> SimpleScheduler:
-    """Build the terminal VAE-decode stage."""
-    if dtype not in _AUTOCAST_DTYPES:
-        raise ValueError(
-            f"Unsupported AuK vocoder dtype {dtype!r}; expected one of {sorted(_AUTOCAST_DTYPES)}"
-        )
-    checkpoint = resolve_checkpoint(model_path)
-    config = make_runtime_config(checkpoint)
-    resolved_device = torch.device(resolve_device_spec(device, gpu_id))
-
-    vae = BigVGANFlowVAE(AuKVAEConfig.from_dict(config.vae_init_kwargs))
-    load_vae_weights(vae, checkpoint)
-    # The reference decodes in fp32; the VAE is causal so right padding is safe.
-    vae = vae.to(device=resolved_device).eval()
-    vae.requires_grad_(False)
-
-    ctx = _VocoderContext(vae=vae, device=resolved_device)
-    return SimpleScheduler(
-        lambda payload: _decode_one(ctx, payload),
-        batch_compute_fn=lambda payloads: _decode_batch(ctx, payloads),
-        max_batch_size=max_batch_size,
-        max_batch_wait_ms=max_batch_wait_ms,
-    )
+    return SimpleScheduler(lambda payload: _generate_one(ctx, payload))

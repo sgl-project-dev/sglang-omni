@@ -1,7 +1,6 @@
 config_cls: AuKPipelineConfig
 # AuK weights (auk_base.safetensors + vae.safetensors + config.yaml). The
-# Qwen2.5-Omni-3B encoder is a separate snapshot; point text_encoder_path at it
-# if it is not bundled next to the checkpoint.
+# Qwen2.5-Omni-3B encoder is downloaded as a separate checkpoint.
 model_path: tencent/AuK
 
 stages:
@@ -11,16 +10,10 @@ stages:
   auk_engine:
     factory:
       dtype: bfloat16
+      text_encoder_path: Qwen/Qwen2.5-Omni-3B
       # Base recipe. AuK-Flash checkpoints ignore these and force NFE=4/CFG=0.
       nfe: 32
       cfg_strength: 2.0
       sway_sampling_coef: -1.0
       max_seconds: 30
-      max_batch_size: 1
-      max_batch_wait_ms: 0
-    gpu: 0
-  vocoder:
-    factory:
-      max_batch_size: 8
-      max_batch_wait_ms: 5
     gpu: 0

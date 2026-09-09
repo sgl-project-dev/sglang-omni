@@ -10,7 +10,7 @@ from . import config
 
 CAPABILITIES = ModelCapabilities(
     supports_reference_audio=True,
-    supports_batch_vocoder=True,
+    supports_batch_vocoder=False,
     # The DiT produces the whole latent before decoding, so there is no
     # chunk-level streaming path.
     supports_streaming_vocoder=False,

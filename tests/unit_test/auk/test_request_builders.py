@@ -87,6 +87,11 @@ def test_gen_seconds_overrides_default(context):
     assert state.gen_frames == 2 * FRAME_RATE
 
 
+def test_short_duration_rounds_up_to_one_frame(context):
+    state = build_auk_state(make_payload("Say hello", {"gen_seconds": 0.001}), context)
+    assert state.gen_frames == 1
+
+
 def test_gen_seconds_is_clamped_to_max_seconds(context):
     state = build_auk_state(make_payload("Say hello", {"gen_seconds": 999.0}), context)
     assert state.gen_frames == MAX_SECONDS * FRAME_RATE
@@ -127,12 +132,109 @@ def test_structured_reference_is_accepted(context, tmp_path):
     assert state.gen_frames == 1 * FRAME_RATE
 
 
-def test_sampling_parameters_are_forwarded(context):
+def test_raw_editing_duration_uses_complete_reference_frames(context, tmp_path):
+    path = tmp_path / "ref.wav"
+    write_wav(path, seconds=1.01)
     state = build_auk_state(
-        make_payload("Say hello", {"nfe": 8, "cfg_strength": 1.5, "seed": 42}),
+        make_payload({"instruction": "Remove noise", "audio": str(path)}), context
+    )
+    assert state.gen_frames == 50
+
+
+def test_seed_is_forwarded(context):
+    state = build_auk_state(
+        make_payload("Say hello", {"seed": 42}),
         context,
     )
-    assert (state.nfe, state.cfg_strength, state.seed) == (8, 1.5, 42)
+    assert state.seed == 42
+
+
+@pytest.mark.parametrize("name", ["nfe", "cfg_strength", "sway_sampling_coef"])
+def test_request_sampling_knobs_are_rejected(context, name):
+    with pytest.raises(ValueError, match="server-level"):
+        build_auk_state(make_payload("Say hello", {name: 1}), context)
+
+
+def speech_payload(**kwargs):
+    from sglang_omni.client.client import Client
+    from sglang_omni.serve.protocol import CreateSpeechRequest
+    from sglang_omni.serve.speech_service import SpeechRequestValidator
+
+    request = CreateSpeechRequest(**kwargs)
+    service = SpeechRequestValidator(default_model="tencent/AuK")
+    generated = service.build_generate_request(request)
+    return StagePayload(
+        request_id="speech", request=Client._build_omni_request(generated), data={}
+    )
+
+
+def test_speech_instruct_tts_combines_instructions_and_input(context):
+    payload = speech_payload(
+        input="Welcome home.",
+        instructions="warm, relaxed female voice",
+        stage_params={"auk_engine": {"gen_seconds": 3.01}},
+    )
+    state = AuKState.from_dict(preprocess_auk_payload(payload).data)
+    assert state.instruction == (
+        'Generate speech based on the following description: "warm, relaxed female voice". '
+        'The content to speak is: "Welcome home.".'
+    )
+    assert state.gen_frames == 151
+
+
+def test_speech_zero_shot_tts_builds_auk_instruction(context, tmp_path):
+    path = tmp_path / "ref.wav"
+    write_wav(path, seconds=1)
+    payload = speech_payload(
+        input="Welcome home.",
+        ref_audio=str(path),
+        stage_params={"auk_engine": {"gen_seconds": 3}},
+    )
+    state = AuKState.from_dict(preprocess_auk_payload(payload).data)
+    assert state.instruction == 'Say the following with the same voice: "Welcome home."'
+    assert state.gen_frames == 3 * FRAME_RATE
+    assert state.ref_seconds == pytest.approx(1)
+
+
+def test_reference_tts_does_not_assume_reference_duration_equals_target_duration(
+    context, tmp_path
+):
+    path = tmp_path / "ref.wav"
+    write_wav(path, seconds=1)
+    with pytest.raises(ValueError, match="gen_seconds"):
+        preprocess_auk_payload(
+            speech_payload(input="Welcome home.", ref_audio=str(path))
+        )
+
+
+def test_speech_without_description_uses_default_voice(context):
+    state = build_auk_state(
+        speech_payload(input="Hello.", stage_params={"auk_engine": {"gen_seconds": 2}}),
+        context,
+    )
+    assert '"A clear, natural voice."' in state.instruction
+    assert 'The content to speak is: "Hello.".' in state.instruction
+
+
+def test_generate_preserves_raw_editing_instruction(context, tmp_path):
+    from sglang_omni.client.client import Client
+    from sglang_omni.serve.openai_api import _build_rollout_generate_request
+    from sglang_omni.serve.protocol import RolloutGenerateRequest
+
+    path = tmp_path / "ref.wav"
+    write_wav(path, seconds=1.01)
+    request = RolloutGenerateRequest(
+        prompt="Remove the background noise.",
+        metadata={"tts_params": {"ref_audio": str(path)}},
+        output_modalities=["audio"],
+    )
+    generated = _build_rollout_generate_request(request)
+    payload = StagePayload(
+        request_id="editing", request=Client._build_omni_request(generated), data={}
+    )
+    state = AuKState.from_dict(preprocess_auk_payload(payload).data)
+    assert state.instruction == request.prompt
+    assert state.gen_frames == 50
 
 
 def test_preprocess_payload_round_trips_state(context):

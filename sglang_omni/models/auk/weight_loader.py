@@ -92,7 +92,7 @@ def _strip_prefix(key: str) -> str:
 
 
 def normalize_state_dict(
-    state_dict: dict[str, torch.Tensor]
+    state_dict: dict[str, torch.Tensor],
 ) -> dict[str, torch.Tensor]:
     """Drop EMA/DDP wrappers so keys match the ``transformer.*`` module tree."""
     return {_strip_prefix(k): v for k, v in state_dict.items()}
@@ -109,24 +109,22 @@ def describe_keys(path: str | Path, limit: int = 24) -> list[str]:
     return [f"{name}: {count}" for name, count in summary[:limit]]
 
 
-def _assign(module: torch.nn.Module, state_dict: dict[str, torch.Tensor], strict: bool):
+def _assign(module: torch.nn.Module, state_dict: dict[str, torch.Tensor]):
     try:
-        return module.load_state_dict(state_dict, strict=strict, assign=True)
-    except (TypeError, RuntimeError):
-        return module.load_state_dict(state_dict, strict=strict)
+        return module.load_state_dict(state_dict, strict=True, assign=True)
+    except TypeError:
+        return module.load_state_dict(state_dict, strict=True)
 
 
 def load_dit_weights(
     flow: torch.nn.Module,
     model_path: str,
-    *,
-    strict: bool = False,
 ) -> LoadReport:
     """Load the DiT + layer-fusion parameters into an ``AuKFlowMatching``."""
     weight_file = resolve_weight_file(model_path)
     state_dict = normalize_state_dict(_read_safetensors(weight_file))
 
-    missing, unexpected = _assign(flow, state_dict, strict)
+    missing, unexpected = _assign(flow, state_dict)
     missing_keys = list(missing)
     report = LoadReport(
         loaded=len(state_dict) - len(unexpected),
@@ -136,24 +134,12 @@ def load_dit_weights(
         unexpected_examples=tuple(unexpected[:10]),
     )
     logger.info("AuK: loaded DiT weights from %s (%s)", weight_file, report)
-    if report.missing:
-        logger.warning(
-            "AuK: missing DiT weights (examples: %s)",
-            list(report.missing_examples),
-        )
-    if report.unexpected:
-        logger.warning(
-            "AuK: unexpected DiT weights (examples: %s)",
-            list(report.unexpected_examples),
-        )
     return report
 
 
 def load_vae_weights(
     vae: torch.nn.Module,
     model_path: str,
-    *,
-    strict: bool = False,
 ) -> LoadReport:
     """Load ``vae.safetensors`` into a ``BigVGANFlowVAE``."""
     vae_file = resolve_vae_file(model_path)
@@ -161,7 +147,7 @@ def load_vae_weights(
         raise FileNotFoundError(f"No AuK VAE weights found under {model_path}")
     state_dict = normalize_state_dict(_read_safetensors(vae_file))
 
-    missing, unexpected = _assign(vae, state_dict, strict)
+    missing, unexpected = _assign(vae, state_dict)
     report = LoadReport(
         loaded=len(state_dict) - len(unexpected),
         missing=len(missing),
