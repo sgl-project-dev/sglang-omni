@@ -142,6 +142,21 @@ def test_reset_row_compiles_once_and_respects_last_codes_stride() -> None:
     assert torch.equal(wide[:, N:], torch.full_like(wide[:, N:], 3))
     assert torch.equal(strided[4], torch.full_like(strided[4], 3))
 
+    # Codebooks not contiguous: the fused path declines and the generic
+    # path handles it. Out of range: the generic path's IndexError is kept.
+    assert not reset_kernels.reset_sampler_row(
+        pool.delay_count,
+        pool.eoc_countdown,
+        pool.generation_done,
+        wide[:, ::2],
+        pool.seeds,
+        pool.step_count,
+        5,
+        NO_SEED,
+    )
+    with pytest.raises(IndexError):
+        pool.reset_row(pool.max_batch_size)
+
 
 # ---------------------------------------------------------------------------
 # Parity: delay window

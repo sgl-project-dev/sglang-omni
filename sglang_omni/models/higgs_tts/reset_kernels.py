@@ -18,6 +18,7 @@ if triton is not None:
     # note (Dayuxiaoshui): ``row`` changes with every request. Left to Triton's
     # default specialization (row == 1, row % 16 == 0) it would JIT three
     # variants at unpredictable points during serving, each a 40-450 ms stall.
+    # Excluding every integer argument leaves one binary per pool.
     @triton.jit(do_not_specialize=["row", "no_seed", "codes_row_stride"])
     def _reset_sampler_row_kernel(
         delay_count,
@@ -58,9 +59,22 @@ def reset_sampler_row(
     row: int,
     no_seed: int,
 ) -> bool:
-    """Reset one CUDA state row in one launch, or return ``False``."""
-    if _reset_sampler_row_kernel is None or not delay_count.is_cuda:
+    """Reset one CUDA state row in one launch, or return ``False``.
+
+    ``False`` means the caller must take its generic path: no Triton, a
+    non-CUDA pool, or a ``last_codes`` layout whose codebooks are not
+    contiguous, which the kernel does not address.
+    """
+    if (
+        _reset_sampler_row_kernel is None
+        or not delay_count.is_cuda
+        or last_codes.stride(1) != 1
+    ):
         return False
+    # The kernel cannot bounds-check; keep the IndexError the tensor
+    # indexing of the generic path would have raised.
+    if not 0 <= row < delay_count.shape[0]:
+        raise IndexError(f"row {row} out of range for {delay_count.shape[0]} rows")
 
     num_codebooks = last_codes.shape[1]
     block_size = triton.next_power_of_2(num_codebooks)
@@ -73,8 +87,8 @@ def reset_sampler_row(
         step_count,
         row,
         no_seed,
-        # The row stride is passed in so a strided view of ``last_codes`` is
-        # reset in place instead of silently writing past its own row.
+        # Row stride rather than ``num_codebooks``: a row-sliced view of
+        # ``last_codes`` is reset in place instead of past its own row.
         last_codes.stride(0),
         num_codebooks,
         block_size,
