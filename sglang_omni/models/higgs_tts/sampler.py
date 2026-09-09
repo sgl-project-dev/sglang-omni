@@ -112,6 +112,10 @@ class HiggsBatchedSamplerState:
         self.step_count = torch.zeros(
             self.max_batch_size, dtype=torch.long, device=self.device
         )
+        # note (Dayuxiaoshui): the fused reset is JIT-compiled on first use
+        # (~0.5 s). Row 0 is already clean, so this call only moves that
+        # compile from the first request to pool construction.
+        self.reset_row(0)
 
     def reset_row(self, row: int) -> None:
         """Wipe row ``row`` so the next owner can't read stale state."""

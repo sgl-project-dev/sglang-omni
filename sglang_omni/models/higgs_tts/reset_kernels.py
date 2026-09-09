@@ -15,7 +15,10 @@ except ImportError:  # pragma: no cover - depends on runtime image
 
 if triton is not None:
 
-    @triton.jit
+    # note (Dayuxiaoshui): ``row`` changes with every request. Left to Triton's
+    # default specialization (row == 1, row % 16 == 0) it would JIT three
+    # variants at unpredictable points during serving, each a 40-450 ms stall.
+    @triton.jit(do_not_specialize=["row", "no_seed", "codes_row_stride"])
     def _reset_sampler_row_kernel(
         delay_count,
         eoc_countdown,
@@ -25,6 +28,7 @@ if triton is not None:
         step_count,
         row,
         no_seed,
+        codes_row_stride,
         num_codebooks: tl.constexpr,
         block_size: tl.constexpr,
     ):
@@ -35,7 +39,7 @@ if triton is not None:
         tl.store(seeds + row, no_seed)
         tl.store(step_count + row, 0)
         tl.store(
-            last_codes + row * num_codebooks + offsets,
+            last_codes + row * codes_row_stride + offsets,
             0,
             mask=offsets < num_codebooks,
         )
@@ -69,6 +73,9 @@ def reset_sampler_row(
         step_count,
         row,
         no_seed,
+        # The row stride is passed in so a strided view of ``last_codes`` is
+        # reset in place instead of silently writing past its own row.
+        last_codes.stride(0),
         num_codebooks,
         block_size,
         num_warps=1,

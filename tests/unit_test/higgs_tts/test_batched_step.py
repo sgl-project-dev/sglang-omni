@@ -109,6 +109,40 @@ def test_reset_row_clears_selected_row_only(row: int) -> None:
         assert torch.equal(actual[row + 1 :], before[row + 1 :])
 
 
+@pytest.mark.accelerator
+@pytest.mark.skipif(DEVICE != "cuda", reason="fused reset only runs on CUDA")
+def test_reset_row_compiles_once_and_respects_last_codes_stride() -> None:
+    from sglang_omni.models.higgs_tts import reset_kernels
+
+    pool = HiggsBatchedSamplerState(33, N, device=DEVICE)
+    caches = reset_kernels._reset_sampler_row_kernel.device_caches
+
+    def variants() -> int:
+        return sum(len(entry[0]) for entry in caches.values())
+
+    assert variants() == 1  # compiled by the constructor
+
+    for row in (1, 16, 32):  # the values Triton would otherwise specialize on
+        pool.reset_row(row)
+    assert variants() == 1
+
+    wide = torch.full((33, 2 * N), 3, dtype=torch.long, device=DEVICE)
+    strided = wide[:, :N]
+    assert reset_kernels.reset_sampler_row(
+        pool.delay_count,
+        pool.eoc_countdown,
+        pool.generation_done,
+        strided,
+        pool.seeds,
+        pool.step_count,
+        5,
+        NO_SEED,
+    )
+    assert torch.equal(strided[5], torch.zeros(N, dtype=torch.long, device=DEVICE))
+    assert torch.equal(wide[:, N:], torch.full_like(wide[:, N:], 3))
+    assert torch.equal(strided[4], torch.full_like(strided[4], 3))
+
+
 # ---------------------------------------------------------------------------
 # Parity: delay window
 # ---------------------------------------------------------------------------
