@@ -39,7 +39,7 @@ class Qwen3ASRStreamingStrategy:
     ) -> GenerateRequest:
         del is_final, request_id
         qwen_state = self._state(state)
-        
+
         use_prefix = (
             qwen_state.chunk_id >= _UNFIXED_CHUNK_NUM
             and bool(qwen_state.transcript)
