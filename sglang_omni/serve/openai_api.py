@@ -1068,6 +1068,14 @@ def _rollout_sampling_to_client(params: RolloutSamplingParams) -> SamplingParams
     return SamplingParams(**kwargs)
 
 
+def _effective_rollout_return_logprob(req: RolloutGenerateRequest) -> bool:
+    from sglang_omni.platforms import current_platform
+
+    if current_platform.is_mps() and "return_logprob" not in req.model_fields_set:
+        return False
+    return req.return_logprob
+
+
 def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequest:
     """Convert a rollout GenerateRequest into a client GenerateRequest."""
     sampling = _rollout_sampling_to_client(req.sampling_params)
@@ -1084,7 +1092,7 @@ def _build_rollout_generate_request(req: RolloutGenerateRequest) -> GenerateRequ
         }
 
     extra_params: dict[str, Any] = {
-        "return_logprob": req.return_logprob,
+        "return_logprob": _effective_rollout_return_logprob(req),
         "return_omni_rollout": req.return_omni_rollout,
         "return_routed_experts": req.return_routed_experts,
         "return_indexer_topk": req.return_indexer_topk,
@@ -1123,6 +1131,7 @@ def _build_generate_response(
     result: CompletionResult,
     audio_format: str,
 ) -> GenerateResponse:
+    return_logprob = _effective_rollout_return_logprob(req)
     usage = result.usage
     completion_tokens = (
         usage.completion_tokens
@@ -1144,7 +1153,7 @@ def _build_generate_response(
     # logprobs or omni_rollout action logprobs, depending on modality.
     if result.omni_rollout is None and (
         req.return_omni_rollout
-        or (req.return_logprob and result.output_token_logprobs is None)
+        or (return_logprob and result.output_token_logprobs is None)
     ):
         raise HTTPException(
             status_code=501,
@@ -1155,7 +1164,7 @@ def _build_generate_response(
             ),
         )
     if (
-        req.return_logprob
+        return_logprob
         and result.output_token_logprobs is not None
         and len(result.output_token_logprobs) != completion_tokens
     ):
@@ -1178,7 +1187,7 @@ def _build_generate_response(
         weight_version=result.weight_version,
         request_metadata=req.metadata,
         output_token_logprobs=(
-            result.output_token_logprobs if req.return_logprob else None
+            result.output_token_logprobs if return_logprob else None
         ),
         omni_rollout=result.omni_rollout if req.return_omni_rollout else None,
     )
