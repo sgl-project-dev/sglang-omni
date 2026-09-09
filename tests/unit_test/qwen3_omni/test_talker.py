@@ -11,6 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
+from sglang.srt.disaggregation.utils import DisaggregationMode
 from torch import nn
 
 import sglang_omni.models.qwen3_omni.components.talker as talker_module
@@ -1256,6 +1257,7 @@ def _build_state_machine_scheduler(
 ) -> QwenTalkerScheduler:
     """Construct a scheduler with just enough state for process_input_requests."""
     scheduler = object.__new__(QwenTalkerScheduler)
+    scheduler.disaggregation_mode = DisaggregationMode.NULL
     scheduler._enable_partial_start = enable_partial_start
     scheduler._partial_start_min_chunks = partial_start_min_chunks
     scheduler._im_end_token_id = None
@@ -1316,6 +1318,7 @@ def test_process_input_requests_partial_build_state_machine() -> None:
     chunks = [SimpleNamespace(data=torch.tensor([float(i)])) for i in range(5)]
     payload = SimpleNamespace(
         request_id="rid-partial-1",
+        request=SimpleNamespace(params=None),
         prefetched_chunks=list(chunks),
         prefetched_stream_done=False,
     )
