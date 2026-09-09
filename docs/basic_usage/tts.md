@@ -48,6 +48,7 @@ for details.
 | [Higgs TTS](../cookbook/higgs_tts.md) | `--model-path` only | Voice cloning, streaming; no example YAML required |
 | [dots.tts](../cookbook/dots_tts.md) | `examples/configs/dots_tts.yaml` (MeanFlow), `examples/configs/dots_tts_soar.yaml` (SOAR) | 48 kHz continuous-latent TTS with reference audio. MeanFlow (`dots.tts-mf`) uses continuous batching (`max_running_requests=16` by default) with engine-wide `num_steps=4` and Euler. SOAR (`dots.tts-soar`) and base (`dots.tts-base`) are flow matching and run the single-request solver with CFG at `max_running_requests=1`; both use the SOAR config. All require `ref_audio` + `ref_text`. TP1 only |
 | [ZONOS2](../cookbook/zonos2.md) | `--model-path Zyphra/zonos2` | MoE TTS, 9 DAC codebooks, voice cloning; needs Descript DAC extras (see cookbook) |
+| AuK | `examples/configs/auk.yaml` | Instruction-driven generation and editing at 24 kHz (zero-shot TTS, content/acoustic/paralinguistic editing, enhancement, separation). Reference audio is optional; output length comes from `gen_seconds`. Needs the Qwen2.5-Omni-3B encoder snapshot (see `text_encoder_path` in the config) |
 
 ## Launch the Server
 
