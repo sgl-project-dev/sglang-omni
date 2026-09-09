@@ -51,6 +51,25 @@ def fast_sampling_params(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def cuda_platform_for_engine_builder_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pin the engine-builder platform to non-NPU for SM-validated CUDA tests.
+
+    On Ascend hosts torch.npu is available, so current_platform resolves to
+    NPU and these CUDA SM-scope tests would route into the NPU branch instead
+    of the SM-validated path they assert on.
+    """
+    from sglang_omni.models.fishaudio_s2_pro import engine_builder as fish_engine
+
+    monkeypatch.setattr(
+        fish_engine,
+        "current_platform",
+        SimpleNamespace(is_npu=lambda: False),
+    )
+
+
 def test_fish_config_state_and_tokenizer_prompt_contracts() -> None:
     """Preserves S2-Pro topology, state tensor round-trip, and prompt VQ layout."""
     config = S2ProPipelineConfig(model_path="model")
@@ -432,6 +451,117 @@ def test_fish_tts_request_and_result_adapters_preserve_tensor_contracts() -> Non
     assert adapted.stage_payload is payload
     assert result_payload.request is payload.request
     assert result_payload.data["output_codes"] == [[100], [1], [2]]
+
+
+class _RecordingFishTokenizer(FakeFishTokenizer):
+    vocab_size = 512
+
+    def __init__(self) -> None:
+        super().__init__()
+        del self.additional_stop_token_ids
+        self.metadata_calls: list[str] = []
+        self.added_vocab = {"<|semantic:4095|>": 639}
+        self.im_end_lookups = 0
+
+    def convert_tokens_to_ids(self, token):
+        if token == IM_END_TOKEN:
+            self.im_end_lookups += 1
+        return super().convert_tokens_to_ids(token)
+
+    def get_added_vocab(self) -> dict[str, int]:
+        self.metadata_calls.append("get_added_vocab")
+        return dict(self.added_vocab)
+
+    def __len__(self) -> int:
+        self.metadata_calls.append("len")
+        return 640
+
+
+def _attach_recording_stop_token_ids(tokenizer: _RecordingFishTokenizer) -> None:
+    tokenizer.additional_stop_token_ids = list(tokenizer.get_added_vocab().values())
+
+
+def test_fish_scheduler_resolves_tokenizer_invariants_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    request_builder, _, _ = make_tts_scheduler_adapters(tokenizer=tokenizer)
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    first = request_builder(make_s2pro_payload(request_id="req-1"))
+    second = request_builder(make_s2pro_payload(request_id="req-2"))
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.im_end_lookups == 1
+    assert tokenizer.added_vocab == original_added_vocab
+    assert first.req.vocab_size == second.req.vocab_size == 640
+    assert first.req.eos_token_ids == second.req.eos_token_ids == {99}
+    assert first.req.sampling_params.stop_token_ids == {99}
+    assert second.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_resolves_tokenizer_invariants(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+    original_added_vocab = dict(tokenizer.added_vocab)
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(), tokenizer, request_id="direct"
+    )
+
+    assert tokenizer.metadata_calls == ["get_added_vocab", "len"]
+    assert tokenizer.added_vocab == original_added_vocab
+    assert req_data.req.vocab_size == 640
+    assert req_data.req.eos_token_ids == {99}
+
+
+def test_fish_scheduler_reuses_caller_supplied_im_end_token_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "sglang.srt.utils.hf_transformers_utils.attach_additional_stop_token_ids",
+        _attach_recording_stop_token_ids,
+    )
+    tokenizer = _RecordingFishTokenizer()
+
+    request_builder, _, _ = make_tts_scheduler_adapters(
+        tokenizer=tokenizer, im_end_token_id=np.int64(99)
+    )
+
+    # The engine builder already owns an S2ProTokenizerAdapter, so no second
+    # adapter (and no extra <|im_end|> lookup) is built here.
+    assert tokenizer.im_end_lookups == 0
+    req_data = request_builder(make_s2pro_payload(request_id="req-1"))
+    assert tokenizer.im_end_lookups == 0
+    assert req_data.req.eos_token_ids == {99}
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
+    assert req_data.req.sampling_params.stop_token_ids == {99}
+
+
+def test_fish_direct_builder_normalizes_explicit_tokenizer_invariants() -> None:
+    tokenizer = FakeFishTokenizer()
+
+    req_data = build_sglang_tts_request(
+        make_s2pro_state(),
+        tokenizer,
+        request_id="explicit",
+        im_end_token_id=np.int64(99),
+        vocab_size=np.int64(640),
+    )
+
+    assert type(req_data.req.vocab_size) is int
+    assert all(type(token_id) is int for token_id in req_data.req.eos_token_ids)
 
 
 @pytest.mark.parametrize("top_k", [0, 31])
@@ -829,11 +959,15 @@ def _run_s2pro_engine_with_fake_buffers(
         gpu_id: int,
         *,
         defer_cuda_graph_capture: bool = False,
+        before_memory_pool=None,
     ) -> tuple[object, object, object, object, object]:
         assert gpu_id == 0
         infrastructure_saw_deferred_capture.append(defer_cuda_graph_capture)
+        worker = _FakeWorker(server_args)
+        if before_memory_pool is not None:
+            before_memory_pool(worker)
         return (
-            _FakeWorker(server_args),
+            worker,
             object(),
             object(),
             object(),
@@ -849,10 +983,14 @@ def _run_s2pro_engine_with_fake_buffers(
     def fake_create_sglang_infrastructure_defer_cuda_graph(
         server_args: SimpleNamespace,
         gpu_id: int,
+        **kwargs,
     ) -> tuple[bool, tuple[object, object, object, object, object]]:
         want_cuda_graph = not bool(server_args.disable_cuda_graph)
         infrastructure = fake_create_sglang_infrastructure(
-            server_args, gpu_id, defer_cuda_graph_capture=want_cuda_graph
+            server_args,
+            gpu_id,
+            defer_cuda_graph_capture=want_cuda_graph,
+            **kwargs,
         )
         return want_cuda_graph, infrastructure
 
@@ -1259,20 +1397,15 @@ def test_fish_reference_path_mutation_returns_but_does_not_cache(
     ref_path = tmp_path / "ref.wav"
     ref_path.write_bytes(b"version-a")
 
-    def load(path: str):
+    def load_audio(path: str, *, target_sample_rate: int, mono: bool):
         assert path == str(ref_path)
-        return torch.zeros((1, 8), dtype=torch.float32), 16000
+        assert target_sample_rate == 16000
+        assert mono is True
+        return np.zeros(8, dtype=np.float32)
 
-    monkeypatch.setitem(
-        sys.modules,
-        "torchaudio",
-        SimpleNamespace(
-            load=load,
-            functional=SimpleNamespace(
-                resample=lambda audio, sr, target_sr: audio,
-            ),
-        ),
-    )
+    from sglang_omni.utils import audio as audio_utils
+
+    monkeypatch.setattr(audio_utils, "load_audio", load_audio)
 
     class _Codec:
         sample_rate = 16000

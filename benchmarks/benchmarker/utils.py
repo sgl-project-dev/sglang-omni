@@ -260,6 +260,7 @@ def managed_omni_server(
 ) -> Iterator[None]:
     """Start an ``sglang_omni.cli serve`` process and clean it up on exit."""
     _ensure_port_available(host, port)
+    model_path = _pinned_model_path(model_path, server_config)
     cmd = [
         sys.executable,
         "-m",
@@ -301,6 +302,19 @@ def managed_omni_server(
         stop_server(proc)
         if wait_for_gpu_release:
             wait_for_gpu_memory_release()
+
+
+def _pinned_model_path(model_path: str, server_config: str | None) -> str:
+    # note (db-ol): --model-path outranks the config, so a bare repo id would
+    # drop the revision a config pins for that same repo. Serve the pin.
+    if server_config is None:
+        return model_path
+    from sglang_omni.config.manager import ConfigManager
+
+    pinned = ConfigManager.from_file(server_config).config.model_path
+    if pinned and pinned.startswith(f"{model_path}@"):
+        return pinned
+    return model_path
 
 
 def _resolve_managed_server_engine_stage(

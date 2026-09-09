@@ -19,6 +19,8 @@ class _CapturedServerArgs:
     def __init__(self, **kwargs: Any) -> None:
         self.kwargs = kwargs
         self.enable_dp_attention = False
+        self.enable_nccl_nvls = kwargs.get("enable_nccl_nvls", False)
+        self.enable_symm_mem = kwargs.get("enable_symm_mem", False)
         self.startup_weight_load_mode = kwargs.get("startup_weight_load_mode", "serial")
 
 
@@ -54,6 +56,15 @@ def test_overlapped_startup_weight_load_is_rejected(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="startup_weight_load_mode"):
         _build(monkeypatch, startup_weight_load_mode="overlap")
+
+
+def test_nvls_and_symmetric_memory_engine_flags_are_rejected(monkeypatch) -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="enable_nccl_nvls"):
+        _build(monkeypatch, enable_nccl_nvls=True)
+    with pytest.raises(ValueError, match="enable_symm_mem"):
+        _build(monkeypatch, enable_symm_mem=True)
 
 
 def _drive_build(monkeypatch, *, overrides, gpu_id=0):

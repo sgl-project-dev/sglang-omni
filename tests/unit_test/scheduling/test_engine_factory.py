@@ -201,12 +201,15 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
     ) -> tuple[Any, ...]:
         events.append("infrastructure")
         assert gpu_id == 2
+        before_memory_pool = kwargs.pop("before_memory_pool")
         assert kwargs == {
             "defer_cuda_graph_capture": True,
             "model_arch_override": "TestArch",
         }
+        worker = FakeWorker(server_args)
+        before_memory_pool(worker)
         return (
-            FakeWorker(server_args),
+            worker,
             "tree_cache",
             "req_pool",
             "kv_pool",
@@ -295,6 +298,22 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         def customize_server_args(self, server_args: Any) -> None:
             events.append("customize_server_args")
             assert server_args.context_length == 123
+
+        def before_memory_pool(
+            self,
+            *,
+            model_worker: Any,
+            checkpoint_dir: str,
+            device: str,
+            gpu_id: int,
+            server_args: Any,
+        ) -> None:
+            events.append("before_memory_pool")
+            assert isinstance(model_worker.model_runner.model, FakeModel)
+            assert checkpoint_dir == "model-resolved"
+            assert device == "cuda:2"
+            assert gpu_id == 2
+            assert server_args.disable_cuda_graph is False
 
         def setup_model(
             self,
@@ -397,6 +416,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
         "build_server_args",
         "customize_server_args",
         "infrastructure",
+        "before_memory_pool",
         "setup_model",
         "get_model_buffer_bs",
         "compile_model",
@@ -722,6 +742,9 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
     def abort_callback(request_id: str) -> None:
         del request_id
 
+    def shutdown_callback() -> None:
+        pass
+
     class SchedulerKwargsBuilder(TtsEngineBuilder):
         model_name = "Test TTS"
         context_length = 123
@@ -759,6 +782,9 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
         def make_abort_callback(self) -> Any | None:
             return abort_callback
 
+        def extra_scheduler_callbacks(self) -> dict[str, Any]:
+            return {"shutdown_callback": shutdown_callback}
+
         def extra_scheduler_kwargs(self) -> dict[str, Any]:
             return {
                 "enable_async_decode": True,
@@ -779,6 +805,7 @@ def test_tts_engine_builder_base_scheduler_preserves_abort_with_extra_kwargs(
 
     assert isinstance(scheduler, FakeScheduler)
     assert captured_kwargs["abort_callback"] is abort_callback
+    assert captured_kwargs["shutdown_callback"] is shutdown_callback
     assert captured_kwargs["enable_async_decode"] is True
     assert captured_kwargs["async_decode_min_batch_size"] == 3
     assert captured_kwargs["tp_worker"] == "worker"

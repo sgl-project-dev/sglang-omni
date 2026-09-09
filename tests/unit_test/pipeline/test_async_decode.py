@@ -154,7 +154,9 @@ def _sched_output(n):
             )
             for i in range(n)
         ],
-        batch_data=object(),
+        batch_data=types.SimpleNamespace(
+            forward_mode=types.SimpleNamespace(is_extend=lambda: False)
+        ),
     )
 
 
@@ -224,7 +226,9 @@ def test_resolve_recomputes_finished_overrun_skip_rids():
                 data=types.SimpleNamespace(req=skip_req),
             ),
         ],
-        batch_data=object(),
+        batch_data=types.SimpleNamespace(
+            forward_mode=types.SimpleNamespace(is_extend=lambda: False)
+        ),
     )
     with _patch_event(ready=True):
         step = r.execute_launch(sched_output)
@@ -256,7 +260,9 @@ def test_resolve_skips_retracted_row():
                 data=types.SimpleNamespace(req=retracted_req),
             ),
         ],
-        batch_data=object(),
+        batch_data=types.SimpleNamespace(
+            forward_mode=types.SimpleNamespace(is_extend=lambda: False)
+        ),
     )
     with _patch_event(ready=True):
         step = r.execute_launch(sched_output)
