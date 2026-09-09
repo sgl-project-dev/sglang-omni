@@ -409,6 +409,48 @@ async def test_handler_exception_is_reported_and_session_survives(
     assert websocket.events[-1]["text"] == "hello"
 
 
+@pytest.mark.asyncio
+async def test_prefix_padding_must_fit_inside_silence_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session, websocket, _client = await _session(monkeypatch)
+    session.transcription_config = RealtimeTranscriptionConfig(
+        strategy_cls=FakeStrategy, server_vad=True
+    )
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "prefix_padding_ms": 600,
+                    "silence_duration_ms": 500,
+                }
+            },
+        }
+    )
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "invalid_turn_detection"
+    assert session.vad is None
+
+    await session.dispatch(
+        {
+            "type": "session.update",
+            "session": {
+                "turn_detection": {
+                    "type": "server_vad",
+                    "prefix_padding_ms": 400,
+                    "silence_duration_ms": 500,
+                }
+            },
+        }
+    )
+    assert websocket.events[-1]["type"] == "session.updated"
+    assert session.vad is not None
+    await session.teardown()
+
+
 def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
     websocket = RecordingWebSocket()
     session = RealtimeTranscriptionSession(

@@ -59,6 +59,7 @@ from sglang_omni.serve.transcription_chunking import (
 logger = logging.getLogger(__name__)
 
 _SILENT_PCM16_PEAK = round(SILENT_CHUNK_PEAK_THRESHOLD * 32768)
+_VAD_FRAME_MS = VAD_FRAME_SAMPLES * 1000 // PCM_SAMPLE_RATE
 # Memory guard for models that never split a segment on length. This bounds
 # the PCM held per session
 _UNBOUNDED_BUFFER_S = 600.0
@@ -290,14 +291,30 @@ class RealtimeTranscriptionSession:
         )
 
     @staticmethod
-    def _new_vad(turn_detection: TurnDetection | None) -> StreamingVAD | None:
-        if turn_detection is None:
-            return None
+    def _vad_config(turn_detection: TurnDetection) -> VADConfig:
         settings = turn_detection.model_dump(
             include={"threshold", "prefix_padding_ms", "silence_duration_ms"},
             exclude_none=True,
         )
-        return StreamingVAD(VADConfig(**settings))
+        return VADConfig(**settings)
+
+    @staticmethod
+    def _vad_config_error(config: VADConfig) -> str | None:
+        # Note (Jeffro): A new segment starts prefix_padding_ms before the frame that woke the VAD,
+        # and the previous segment ended silence_duration_ms before that frame.
+        # Padding must fit inside the silence window (minus the one frame the VAD reports late) or segments would overlap.
+        if config.prefix_padding_ms + _VAD_FRAME_MS > config.silence_duration_ms:
+            return (
+                "prefix_padding_ms must be at most silence_duration_ms minus "
+                f"{_VAD_FRAME_MS} ms."
+            )
+        return None
+
+    @classmethod
+    def _new_vad(cls, turn_detection: TurnDetection | None) -> StreamingVAD | None:
+        if turn_detection is None:
+            return None
+        return StreamingVAD(cls._vad_config(turn_detection))
 
     async def handle_session_update(self, event: TranscriptionSessionUpdate) -> None:
         update = event.session.model_dump(exclude_unset=True)
@@ -334,6 +351,13 @@ class RealtimeTranscriptionSession:
                     "This model does not support server-side turn detection.",
                 )
                 return
+            if turn_detection is not None:
+                problem = self._vad_config_error(self._vad_config(turn_detection))
+                if problem is not None:
+                    await self.send_error(
+                        "invalid_request_error", "invalid_turn_detection", problem
+                    )
+                    return
             if self.vad is not None:
                 self.vad.reset()
             self.settings.turn_detection = turn_detection
@@ -416,9 +440,6 @@ class RealtimeTranscriptionSession:
             await self._finalize_through(absolute_sample)
 
     def _start_segment(self, start_sample: int) -> ActiveTranscriptionSegment:
-        start_sample = min(
-            max(start_sample, self.buffer_origin_samples), self._absolute_buffer_end()
-        )
         interval_samples = self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
         segment = ActiveTranscriptionSegment(
             segment_id=self._next_segment_id,
@@ -495,7 +516,7 @@ class RealtimeTranscriptionSession:
         segment = self.active_segment
         if segment is None or end_sample <= segment.start_sample:
             return
-        start_byte = max(0, (segment.start_sample - self.buffer_origin_samples) * 2)
+        start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
         end_byte = min(
             self.audio_buffer.num_bytes,
             max(start_byte, (end_sample - self.buffer_origin_samples) * 2),
@@ -577,7 +598,7 @@ class RealtimeTranscriptionSession:
             )
             while segment.next_refresh_sample <= end_sample:
                 segment.next_refresh_sample += interval_samples
-            start_byte = max(0, (segment.start_sample - self.buffer_origin_samples) * 2)
+            start_byte = (segment.start_sample - self.buffer_origin_samples) * 2
             pcm = bytes(self.audio_buffer.buf[start_byte:])
             if self._is_silent(pcm):
                 continue
