@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 import numpy as np
 from fastapi import WebSocket
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest
@@ -204,7 +205,7 @@ class RealtimeTranscriptionSession:
     async def dispatch(self, payload: dict[str, Any]) -> None:
         try:
             event = parse_transcription_client_event(payload)
-        except ValueError as exc:
+        except ValidationError as exc:
             await self.send_error("invalid_request_error", "invalid_event", str(exc))
             return
         if event is None or type(event) not in self.handlers:
