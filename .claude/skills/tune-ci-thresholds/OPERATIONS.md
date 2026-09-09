@@ -153,9 +153,9 @@ complete.
 Tab B behavior:
 
 - Resolves the active pytest from its process and `--basetemp`.
-- Prefers `server.log` under that basetemp. Locally (non-CI),
-  `server_log_file()` returns `None`, so router/worker stdout is multiplexed
-  into the sibling pytest `runN.log`; Tab B falls back to that file.
+- Prefers the sibling pytest `runN.log`, which combines worker output with any
+  router output tee'd by the fixture. Falls back to `server.log` files under
+  the basetemp when the pytest log is unavailable.
 - Detaches when cleanup kills a server or pytest exits; attaches the next
   launch in the same Tab B (must not stay stuck on a completed log).
 - IDE terminals truncate around ~1MiB. Tab B filters Decode/Prefill batch spam
