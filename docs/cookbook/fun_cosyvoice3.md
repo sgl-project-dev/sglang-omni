@@ -52,7 +52,7 @@ sgl-omni serve \
 
 ### Zero-shot Voice Cloning
 
-CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a localpath, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip) is optional but recommended for better alignment.
+CosyVoice3 clones a voice from a short reference audio clip. `ref_audio` can be a local path, file URL, data URL, or HTTP URL. `ref_text` (the transcript of the reference clip) is optional but recommended for better alignment.
 
 1. Using CURL:
 
