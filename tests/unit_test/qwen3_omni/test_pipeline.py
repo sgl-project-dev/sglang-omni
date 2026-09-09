@@ -1749,6 +1749,19 @@ def test_qwen_audio_cache_key_requires_complete_content(decoded_audio_preprocess
     assert run(video=True) is None
 
 
+def test_preprocessing_executor_defaults_to_serial_dispatch(monkeypatch):
+    from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
+    from sglang_omni.scheduling.threaded_simple_scheduler import ThreadedSimpleScheduler
+
+    monkeypatch.setattr(qwen_stages, "Qwen3OmniPreprocessor", lambda **_: object())
+    default = qwen_stages.create_preprocessing_executor("model")
+    assert type(default) is SimpleScheduler
+    one = qwen_stages.create_preprocessing_executor("model", max_concurrency=1)
+    assert type(one) is SimpleScheduler
+    threaded = qwen_stages.create_preprocessing_executor("model", max_concurrency=2)
+    assert type(threaded) is ThreadedSimpleScheduler
+
+
 def test_preprocessing_dispatch_preserves_results_errors_and_running_abort(monkeypatch):
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
 

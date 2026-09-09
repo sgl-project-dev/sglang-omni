@@ -596,6 +596,9 @@ that happened to contain an older version of the test.
     hits, and cached output ownership across reused encoder buffers
     (`test_pipeline.py`, `test_audio_encoder_batch_dedup.py`). The output
     ownership case is marked `accelerator`; the cache-key cases use CPU.
+  - preprocessing dispatch defaults to serial `SimpleScheduler`;
+    `max_concurrency > 1` opts into `ThreadedSimpleScheduler`
+    (`test_pipeline.py`).
   - threaded preprocessing request isolation, error propagation, and running
     request cancellation, plus repeated remote-image loading against a local
     HTTP server and media-loader cleanup on failure (`test_pipeline.py`).
