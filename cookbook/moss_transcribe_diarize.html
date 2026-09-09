@@ -806,7 +806,7 @@ set the request target to <code class="docutils literal notranslate"><span class
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">max_new_tokens</span></code></p></td>
 <td><p>int</p></td>
 <td><p>duration scaled</p></td>
-<td><p>Max generated tokens. Omitted requests default to <code class="docutils literal notranslate"><span class="pre">max(5120,</span> <span class="pre">10</span> <span class="pre">*</span> <span class="pre">audio</span> <span class="pre">seconds)</span></code>, or to the fixed stage value when the operator configured one. Explicit values always win and are clamped to the remaining model context</p></td>
+<td><p>Max generated tokens. With the stock config, omitted requests use <code class="docutils literal notranslate"><span class="pre">max(512,</span> <span class="pre">10</span> <span class="pre">*</span> <span class="pre">audio</span> <span class="pre">seconds)</span></code>; empty audio uses a 128-token fallback. A fixed stage value disables duration scaling. Explicit values always win and are clamped to the remaining model context</p></td>
 </tr>
 <tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">prompt</span></code></p></td>
 <td><p>string</p></td>
