@@ -17,7 +17,11 @@ from starlette.websockets import WebSocketState
 
 from sglang_omni.client import Client, GenerateRequest
 from sglang_omni.config import RealtimeTranscriptionConfig
-from sglang_omni.serve.realtime.audio_buffer import BufferOverflow, RealtimeAudioBuffer
+from sglang_omni.serve.realtime.audio_buffer import (
+    PCM_SAMPLE_RATE,
+    BufferOverflow,
+    RealtimeAudioBuffer,
+)
 from sglang_omni.serve.realtime.events import (
     InputAudioBufferAppend,
     InputAudioBufferClear,
@@ -42,7 +46,6 @@ from sglang_omni.serve.realtime.events import (
 )
 from sglang_omni.serve.realtime.vad import (
     VAD_FRAME_SAMPLES,
-    VAD_SAMPLE_RATE,
     StreamingVAD,
     VADConfig,
     VADEvent,
@@ -159,10 +162,10 @@ class RealtimeTranscriptionSession:
         max_buffer_seconds = (
             max_segment_s + 4 if max_segment_s is not None else _UNBOUNDED_BUFFER_S
         )
-        max_buffer_bytes = int(max_buffer_seconds * VAD_SAMPLE_RATE * 2)
+        max_buffer_bytes = int(max_buffer_seconds * PCM_SAMPLE_RATE * 2)
         self.audio_buffer = RealtimeAudioBuffer(
-            source_sr=VAD_SAMPLE_RATE,
-            target_sr=VAD_SAMPLE_RATE,
+            source_sr=PCM_SAMPLE_RATE,
+            target_sr=PCM_SAMPLE_RATE,
             max_bytes=max_buffer_bytes,
         )
         self.vad: StreamingVAD | None = self._new_vad(self.settings.turn_detection)
@@ -416,7 +419,7 @@ class RealtimeTranscriptionSession:
         start_sample = min(
             max(start_sample, self.buffer_origin_samples), self._absolute_buffer_end()
         )
-        interval_samples = self.settings.decode_interval_ms * VAD_SAMPLE_RATE // 1000
+        interval_samples = self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
         segment = ActiveTranscriptionSegment(
             segment_id=self._next_segment_id,
             start_sample=start_sample,
@@ -434,7 +437,7 @@ class RealtimeTranscriptionSession:
         max_segment_s = self.transcription_config.max_segment_s
         if max_segment_s is None:
             return None
-        return int(max_segment_s * VAD_SAMPLE_RATE)
+        return int(max_segment_s * PCM_SAMPLE_RATE)
 
     async def _enforce_hard_limit(self) -> None:
         max_samples = self._max_segment_samples()
@@ -461,7 +464,7 @@ class RealtimeTranscriptionSession:
         if self.vad is None or self.active_segment is not None:
             return
         keep_samples = (
-            self.vad.config.prefix_padding_ms * VAD_SAMPLE_RATE // 1000
+            self.vad.config.prefix_padding_ms * PCM_SAMPLE_RATE // 1000
             + 2 * VAD_FRAME_SAMPLES
         )
         excess_bytes = self.audio_buffer.num_bytes - keep_samples * 2
@@ -570,7 +573,7 @@ class RealtimeTranscriptionSession:
             if end_sample < segment.next_refresh_sample:
                 continue
             interval_samples = (
-                self.settings.decode_interval_ms * VAD_SAMPLE_RATE // 1000
+                self.settings.decode_interval_ms * PCM_SAMPLE_RATE // 1000
             )
             while segment.next_refresh_sample <= end_sample:
                 segment.next_refresh_sample += interval_samples
