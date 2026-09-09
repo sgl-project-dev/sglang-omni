@@ -1,4 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
+"""SeedTTS benchmark entry-point: model profiles, server lifecycle, WER filter."""
 
 import sys
 from contextlib import contextmanager
@@ -7,6 +8,25 @@ import pytest
 
 from benchmarks.eval import benchmark_tts_seedtts as tts
 from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
+
+
+@pytest.mark.parametrize(
+    "model, is_auk",
+    [
+        ("tencent/AuK", True),
+        ("tencent/AuK-Flash", True),
+        ("tencent/AuK@revision", True),
+        ("/ckpt/auk-flash", True),
+        ("fishaudio/s2-pro", False),
+    ],
+)
+def test_profile_for_model_matches_checkpoint_name(model, is_auk):
+    profile = tts._profile_for_model(model)
+    assert profile.forward_sglang_engine is not is_auk
+    if is_auk:
+        assert profile.argument_defaults["concurrency"] == 1
+    else:
+        assert profile.argument_defaults == {}
 
 
 @pytest.mark.parametrize(
@@ -97,7 +117,7 @@ def test_filtered_wer_mean_keeps_exactly_50_percent_and_excludes_failures():
     assert metrics["skipped"] == 1
 
 
-def test_auk_explicit_options_override_model_defaults(monkeypatch):
+def test_explicit_cli_overrides_model_profile_defaults(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
