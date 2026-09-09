@@ -81,9 +81,10 @@ def test_mps_artifacts_cannot_be_consumed_by_canonical_consistency() -> None:
     assert "mps-nonstream" not in canonical_text
 
 
-def test_cpu_selection_is_rerun_stable_and_conflicts_fail_before_h100() -> None:
+def test_cpu_selection_is_rerun_stable_and_conflicts_fail_on_cpu() -> None:
     omni = _workflow(OMNI_WORKFLOW)
-    selection = _step(omni["jobs"]["preflight"], "Select TTS model once")
+    pick = omni["jobs"]["pick-tts-model"]
+    selection = _step(pick, "Select TTS model once")
     run = selection["run"]
     assert not (REPO_ROOT / ".github/scripts/tts_ci_selection.py").exists()
     assert 'printf "%s" "${GITHUB_RUN_ID}" | sha256sum' in run
@@ -93,13 +94,16 @@ def test_cpu_selection_is_rerun_stable_and_conflicts_fail_before_h100() -> None:
     assert "mutually exclusive" in run
     assert "GITHUB_RUN_ATTEMPT" not in run.partition("selection_digest=")[0]
     assert "tts_stage1_topology" not in omni["on"]["workflow_dispatch"]["inputs"]
-    assert "pick-tts-model" not in omni["jobs"]
-    assert "selected_model" in omni["jobs"]["preflight"]["outputs"]
+    assert pick["runs-on"] == "ubuntu-latest"
+    assert pick["needs"] == omni["jobs"]["pick-asr-model"]["needs"]
+    assert "selected_model" in pick["outputs"]
+    assert "selected_model" not in omni["jobs"]["preflight"]["outputs"]
 
 
 def test_mps_config_resolution_covers_the_colocated_models() -> None:
     omni = _workflow(OMNI_WORKFLOW)
-    run = _step(omni["jobs"]["preflight"], "Select TTS model once")["run"]
+    pick = omni["jobs"]["pick-tts-model"]
+    run = _step(pick, "Select TTS model once")["run"]
     assert "examples/mps_dp/configs/higgs_h100_dp3.yaml" in run
     assert "HiggsTtsPipelineConfig" in run
     assert "examples/mps_dp/configs/moss_local_h100_dp2.yaml" in run
@@ -107,7 +111,7 @@ def test_mps_config_resolution_covers_the_colocated_models() -> None:
     assert "resolved config mismatch" in run
     # A single-instance model borrows the moss pool rather than skipping.
     assert 'mps_model="moss"' in run
-    assert "resolved_mps_model" in omni["jobs"]["preflight"]["outputs"]
+    assert "resolved_mps_model" in pick["outputs"]
 
 
 def test_mps_stage_measures_the_pool_model_not_the_rotation_model() -> None:
@@ -128,7 +132,13 @@ def test_mps_stage_measures_the_pool_model_not_the_rotation_model() -> None:
     assert "inputs.tts_ci_model" not in yaml.safe_dump(mps)
     # Passing the config without the model would gate a moss pool on whichever
     # model the test defaults to.
-    tts_ci = _workflow(OMNI_WORKFLOW)["jobs"]["tts-ci"]["with"]
+    tts_ci = _workflow(OMNI_WORKFLOW)["jobs"]["tts-ci"]
+    assert "pick-tts-model" in tts_ci["needs"]
     assert (
-        tts_ci["tts_mps_model"] == "${{ needs.preflight.outputs.resolved_mps_model }}"
+        tts_ci["with"]["tts_mps_model"]
+        == "${{ needs.pick-tts-model.outputs.resolved_mps_model }}"
+    )
+    assert (
+        tts_ci["with"]["tts_ci_model"]
+        == "${{ needs.pick-tts-model.outputs.selected_model }}"
     )
