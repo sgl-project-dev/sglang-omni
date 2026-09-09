@@ -144,7 +144,9 @@ specific gap. Prepare the router once before running the precheck:
 ```bash
 cd "$TUNE_REPO_ROOT/sglang_omni_router/rust"
 cargo build --release --locked
-export SGLANG_OMNI_ROUTER_BIN="$PWD/target/release/sgl-omni-router"
+export SGLANG_OMNI_ROUTER_BIN="$(
+  realpath "${CARGO_TARGET_DIR:-./target}/release/sgl-omni-router"
+)"
 cd "$TUNE_REPO_ROOT"
 ```
 
