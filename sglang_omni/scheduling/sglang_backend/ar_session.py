@@ -41,6 +41,12 @@ class ARSessionAdapter:
     def close(self, ref: SessionRef) -> None:
         """Release auxiliary history after native work and KV are released."""
 
+    def finish_input(
+        self, ref: SessionRef, payload: StagePayload
+    ) -> StagePayload | None:
+        """Return a relayed EOS payload, or None to use normal generation."""
+        return None
+
     def build(
         self, ref: SessionRef, chunk: TimedChunk, payload: StagePayload
     ) -> SGLangARRequestData:
@@ -177,6 +183,17 @@ class ARSessionBridge:
                 "session build must return SGLangARRequestData synchronously"
             )
         return data
+
+    def finish_input(self, payload):
+        owner = self.requests[payload.request_id]
+        try:
+            result = self.adapter.finish_input(owner.ref, payload)
+        except Exception:
+            self.complete(payload.request_id)
+            raise
+        if result is not None:
+            self.complete(payload.request_id)
+        return result
 
     def materialize(self, payload, data: SGLangARRequestData) -> None:
         self._drain()

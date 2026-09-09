@@ -906,6 +906,23 @@ class OmniScheduler:
                         )
                 else:
                     bridge.accept(payload)
+                    chunk = command["chunk"]
+                    if (
+                        chunk["eos"]
+                        and chunk["duration_ms"] == 0
+                        and isinstance(chunk["payload"], bytes)
+                        and not chunk["payload"]
+                    ):
+                        result = bridge.finish_input(payload)
+                        if result is not None:
+                            self.outbox.put(
+                                OutgoingMessage(
+                                    request_id=payload.request_id,
+                                    type="result",
+                                    data=result,
+                                )
+                            )
+                            continue
                     ordinary.append(payload)
             except Exception as exc:
                 self._emit_request_error(payload.request_id, exc)

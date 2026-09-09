@@ -108,3 +108,73 @@ def test_retained_sessions_block_direct_cache_flush_and_weight_reset(monkeypatch
         )["success"]
         is False
     )
+
+
+def test_empty_eof_relays_without_materializing_or_releasing_native_state():
+    b = bridge()
+    b.command(payload("open"))
+    native = b.scheduler.session_controller.get("s")
+    marker = object()
+    b.scheduler.tree_cache.slots["s"] = marker
+    p = payload("append")
+    b.accept(p)
+    b.adapter.finish_input = lambda ref, value: value
+    assert b.finish_input(p) is p
+    assert b.scheduler.session_controller.get("s") is native
+    assert b.scheduler.tree_cache.slots["s"] is marker
+    assert not native._inflight
+    assert not b.requests
+    assert b.owners["s"].active is None
+
+
+@pytest.mark.parametrize(
+    "content, relay, bypass",
+    [(b"", True, True), (b"", False, False), ("text", True, False)],
+)
+def test_scheduler_only_bypasses_adapter_handled_empty_eof(content, relay, bypass):
+    from queue import Queue
+
+    from sglang_omni.scheduling.omni_scheduler import OmniScheduler
+
+    b = bridge()
+    b.command(payload("open"))
+    if relay:
+        b.adapter.finish_input = lambda ref, value: value
+    p = payload("append")
+    p.request.metadata["omni_session"]["chunk"] = asdict(
+        TimedChunk(
+            "audio" if isinstance(content, bytes) else "text",
+            0,
+            0,
+            0,
+            content,
+            eos=True,
+        )
+    )
+    queued = []
+
+    def stage(values):
+        queued.extend(values)
+        return [], []
+
+    def unexpected_error(rid, exc):
+        raise AssertionError(str(exc)) from exc
+
+    scheduler = SimpleNamespace(
+        _session_bridge=b,
+        _aborted_request_ids=set(),
+        outbox=Queue(),
+        _drain_request_admission_results=lambda: None,
+        _drain_request_build_results=lambda: None,
+        _stage_request_build_payloads=stage,
+        _emit_request_error=unexpected_error,
+    )
+    OmniScheduler.process_input_requests(scheduler, [p])
+    assert queued == ([] if bypass else [p])
+    if bypass:
+        assert scheduler.outbox.get_nowait().data is p
+        assert not b.requests
+    else:
+        assert p.request_id in b.requests
+        assert b.owners["s"].active == p.request_id
+        assert scheduler.outbox.empty()
