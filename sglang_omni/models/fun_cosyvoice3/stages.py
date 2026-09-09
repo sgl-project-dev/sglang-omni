@@ -770,7 +770,10 @@ def _load_cosyvoice3_flow_hift_lightweight(
     hift.load_state_dict(hift_state, strict=True)
     flow.to(device).eval()
     hift.to(device).eval()
-    if torch.device(device).type == "mps":
+    if (
+        torch.device(device).type == "mps"
+        and not current_platform.is_float64_supported()
+    ):
         hift = _MpsHiFTAdapter(hift, device)
     del configs
     return FunCosyVoice3Flow(flow), hift
@@ -1507,7 +1510,10 @@ def create_vocoder_executor(
             f"expected one of {sorted(_AUTOCAST_DTYPES)}"
         )
     compute_dtype = _AUTOCAST_DTYPES[dtype]
-    if torch.device(device).type == "mps":
+    if (
+        torch.device(device).type == "mps"
+        and not current_platform.is_float64_supported()
+    ):
         # Keep the declarative CUDA default (bf16) unchanged while avoiding
         # an autocast scope around the MPS Flow/HiFT path. The MPS adapter also
         # keeps HiFT's required float64 F0 predictor on CPU.
