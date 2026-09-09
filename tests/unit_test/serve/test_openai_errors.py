@@ -53,3 +53,22 @@ def test_the_stop_bounds_themselves_normalize() -> None:
 
 def test_an_unrelated_failure_stays_internal() -> None:
     assert not is_bad_request_error(RuntimeError("CUDA out of memory"))
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "AuK nfe is a server-level setting",
+        "AuK gen_seconds must be positive, got -1.0",
+        "AuK speech requires stage_params.auk_engine.gen_seconds "
+        "or reference audio with ref_text",
+    ],
+)
+def test_auk_validation_is_a_bad_request(message: str) -> None:
+    assert is_bad_request_error(ValueError(message))
+
+
+def test_auk_runtime_failure_stays_internal() -> None:
+    assert not is_bad_request_error(
+        RuntimeError("AuK generated latent contains NaN/Inf")
+    )

@@ -55,6 +55,16 @@ def test_local_weight_marker_resolves_without_yaml(tmp_path):
     assert manager.resolve_config_cls_for_model_path(str(tmp_path)) is AuKPipelineConfig
 
 
+def test_checkpoint_yaml_resolves_interpolation(tmp_path):
+    from sglang_omni.models.auk.hf_config import load_auk_config
+
+    (tmp_path / "config.yaml").write_text(
+        "model:\n  name: AuK\n  arch:\n    dim: 16\n    heads: ${model.arch.dim}\n"
+    )
+    config = load_auk_config(str(tmp_path))
+    assert config.arch["heads"] == 16
+
+
 def test_hub_config_yaml_resolves_without_snapshot(monkeypatch, tmp_path):
     def fail_auto_config(*args, **kwargs):
         raise OSError("no config.json")

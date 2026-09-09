@@ -19,6 +19,14 @@ _BAD_REQUEST_MARKERS = (
     "disallowed special token",
     "stop strings are allowed",
     "stop_regex patterns are allowed",
+    "is a server-level setting",
+    "AuK speech requires",
+    "AuK gen_seconds must be",
+    "AuK seed must be",
+    "AuK requires a natural-language",
+    "AuK accepts at most one",
+    "AuK expected a",
+    "AuK references must be",
 )
 _BAD_REQUEST_PATTERNS = (
     re.compile(r"^Request\s+\S+\s+exceeds the maximum number of tokens:"),

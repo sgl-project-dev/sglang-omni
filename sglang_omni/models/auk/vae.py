@@ -813,7 +813,10 @@ class BigVGANFlowVAE(nn.Module):
         self.conv_post.apply(init_weights)
 
     def encoding_and_normalization(
-        self, sample: torch.Tensor, sample_lengths: torch.Tensor | None = None
+        self,
+        sample: torch.Tensor,
+        sample_lengths: torch.Tensor | None = None,
+        generator: torch.Generator | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         """Encode waveform [B, 1, T] to a normalized latent [B, T, D]."""
         with torch.autocast(device_type=sample.device.type, enabled=False):
@@ -824,7 +827,13 @@ class BigVGANFlowVAE(nn.Module):
                 ).to(sample.device)
             latent_lens = sample_lengths // self.hop_size
             mean, log_std = latent_stats.chunk(2, 1)
-            latents = mean + torch.randn_like(mean) * torch.exp(log_std)
+            noise = torch.randn(
+                mean.shape,
+                device=mean.device,
+                dtype=mean.dtype,
+                generator=generator,
+            )
+            latents = mean + noise * torch.exp(log_std)
             latents = latents.transpose(1, 2).float()
             latents = (latents - self.global_mean.float()) / torch.sqrt(
                 self.global_log_std.float()

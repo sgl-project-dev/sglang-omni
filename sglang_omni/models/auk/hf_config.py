@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from omegaconf import OmegaConf
+
 from sglang_omni.models.auk import constants as C
 
 logger = logging.getLogger(__name__)
@@ -56,15 +58,8 @@ class AuKRuntimeConfig:
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
-    try:
-        from omegaconf import OmegaConf
-
-        return OmegaConf.to_container(OmegaConf.load(str(path)), resolve=True)  # type: ignore[return-value]
-    except ImportError:
-        import yaml
-
-        with path.open("r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
+    loaded = OmegaConf.to_container(OmegaConf.load(str(path)), resolve=True)
+    return loaded if isinstance(loaded, dict) else {}
 
 
 def _load_json(path: Path) -> dict[str, Any]:

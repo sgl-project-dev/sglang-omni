@@ -17,7 +17,11 @@ from safetensors import safe_open
 
 from sglang_omni.models.auk import constants as C
 from sglang_omni.models.auk.dit import AuKDit, AuKDitConfig
-from sglang_omni.models.auk.flow_matching import AuKFlowMatching, AuKSampleItem
+from sglang_omni.models.auk.flow_matching import (
+    AuKFlowMatching,
+    AuKSampleItem,
+    request_generator,
+)
 from sglang_omni.models.auk.hf_config import make_runtime_config
 from sglang_omni.models.auk.payload_types import AuKState
 from sglang_omni.models.auk.reference_encode import AuKConditionEncoder, build_messages
@@ -74,7 +78,6 @@ def _load_flow(checkpoint: str, device: str):
 
 
 def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
-    # Each stage owns its CUDA stream. CPU payloads synchronize the hand-off.
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
     @torch.inference_mode()
@@ -109,7 +112,7 @@ def create_preprocessing_executor(
     return SimpleScheduler(preprocess_auk_payload, max_concurrency=max_concurrency)
 
 
-def _reference_latent(vae, device, audio):
+def _reference_latent(vae, device, audio, seed=None):
     if audio is None:
         return None, 0
     waveform = torch.from_numpy(
@@ -118,7 +121,9 @@ def _reference_latent(vae, device, audio):
     lengths = torch.tensor(
         [waveform.shape[-1] // vae.hop_size * vae.hop_size], device=device
     )
-    latent, lengths = vae.encoding_and_normalization(waveform, lengths)
+    latent, lengths = vae.encoding_and_normalization(
+        waveform, lengths, generator=request_generator(seed, device)
+    )
     return latent[0], int(lengths[0])
 
 
@@ -131,7 +136,7 @@ def _condition_batch(payloads, encoder, vae, flow, device, dtype):
     ]
     for state in states:
         state.ref_latent, state.ref_length = _reference_latent(
-            vae, device, state.ref_audio
+            vae, device, state.ref_audio, state.seed
         )
     with _autocast(device, dtype):
         encodings = encoder.encode_batch(
@@ -244,7 +249,6 @@ def _decode_batch(payloads, vae, device):
     for index, state in enumerate(states):
         groups[state.latent.shape[0]].append(index)
     results = [None] * len(states)
-    # The VAE's noncausal filters make length padding change boundary samples.
     for indices in groups.values():
         latents = torch.stack([states[i].latent for i in indices]).to(device)
         waveforms = vae.inference_from_latents(

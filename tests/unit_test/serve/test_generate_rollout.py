@@ -218,6 +218,26 @@ def test_generate_audio_logprob_error_hints_omni_rollout() -> None:
     assert "return_omni_rollout=true" in resp.text
 
 
+def test_generate_audio_succeeds_when_logprob_is_disabled() -> None:
+    result = _text_result()
+    result.output_token_logprobs = None
+    result.audio = CompletionAudio(id="a1", data="QUJD", transcript="hello world")
+    client = _RolloutClient(result)
+    tc = TestClient(create_app(client, model_name="tencent/AuK"))
+
+    resp = tc.post(
+        "/generate",
+        json={
+            "prompt": "Remove the background noise.",
+            "output_modalities": ["audio"],
+            "return_logprob": False,
+        },
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["audio"]["data"] == "QUJD"
+
+
 def test_generate_rejects_logprob_length_mismatch() -> None:
     result = _text_result()
     result.output_token_logprobs = [[-0.1, 11]]

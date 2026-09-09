@@ -15,6 +15,14 @@ from torch.nn.utils.rnn import pad_sequence
 from sglang_omni.models.auk.dit import AuKDit
 
 
+def request_generator(
+    seed: int | None, device: torch.device | str
+) -> torch.Generator | None:
+    if seed is None:
+        return None
+    return torch.Generator(device=device).manual_seed(int(seed))
+
+
 def fuse_hidden_states(hidden_states, layer_weights, layer_scale):
     d_llm = hidden_states.shape[-1]
     stacked = F.layer_norm(hidden_states[:, 1:], [d_llm])
@@ -118,11 +126,7 @@ class AuKFlowMatching(nn.Module):
         text_mask = pack([item.text_mask for item in items])
         noise = []
         for item in items:
-            generator = (
-                None
-                if item.seed is None
-                else torch.Generator(device=device).manual_seed(item.seed)
-            )
+            generator = request_generator(item.seed, device)
             noise.append(
                 torch.randn(
                     item.target_frames,
@@ -148,7 +152,6 @@ class AuKFlowMatching(nn.Module):
             text_sizes = torch.tensor(
                 [item.conditioning.shape[0] for item in items], device=device
             )[:, None]
-            # Padding must not shift a request's reference, target, or text RoPE positions.
             audio_positions = torch.cat(
                 [
                     torch.arange(ref.shape[1], device=device)[None, :].expand(

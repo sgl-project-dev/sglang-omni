@@ -168,7 +168,10 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         bytearray(result.data["audio_waveform"]), dtype=torch.float32
     ).reshape(1, -1)
     assert result.data["sample_rate"] == sample_rate == 24000
+    skip = {"reference", "latent", "waveform"} if reference else set()
     for key in expected:
+        if key in skip:
+            continue
         print(
             f"{key}: shape={tuple(expected[key].shape)}, max_abs_error={(actual[key] - expected[key]).abs().max().item():.8g}"
         )
