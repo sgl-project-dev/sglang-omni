@@ -19,11 +19,8 @@ class AuKPipelineConfig(PipelineConfig):
     """AuK speech generation / editing pipeline."""
 
     architecture: ClassVar[str] = "AuKForConditionalGeneration"
-    # AuK and AuK-Flash share one architecture; the variant is picked by
-    # ``config.yaml::model.name``.
     architecture_aliases: ClassVar[tuple[str, ...]] = ("AuK", "AuK-Flash")
 
-    # Reference audio is optional (instruction-only TTS is supported).
     required_speech_reference_count: ClassVar[int | None] = None
 
     stages: list[StageConfig] = [

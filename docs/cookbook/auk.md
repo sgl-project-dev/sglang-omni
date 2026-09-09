@@ -1,6 +1,6 @@
 # AuK
 
-[AuK](https://huggingface.co/tencent/AuK) supports instruction-driven speech generation and editing. SGLang-Omni runs CPU preprocessing followed by one serial GPU engine and returns 24 kHz mono audio. Batching, streaming, and CUDA graphs are not implemented for this pipeline.
+[AuK](https://huggingface.co/tencent/AuK) supports instruction-driven speech generation and editing.
 
 The released `tencent/AuK` checkpoint uses:
 
@@ -10,19 +10,24 @@ The released `tencent/AuK` checkpoint uses:
 | DiT | Flux-style MMDiT: 10 double-stream blocks, 20 single-stream blocks, dim=1536, 24 heads |
 | VAE | Shared reference encoder and audio decoder; 50 Hz, 64-channel latents |
 
-Architecture settings come from the checkpoint's `config.yaml`.
-
-## Start the Server
+## Prerequisites
 
 Follow [Installation](../get_started/installation.md), then run from the repository root:
 
 ```bash
-sgl-omni serve --config examples/configs/auk.yaml --port 8000
+sgl-omni serve --model-path tencent/AuK --port 8000
 ```
 
-The server downloads AuK and the separate `Qwen/Qwen2.5-Omni-3B` encoder as needed. To use a local encoder, set `stages.auk_engine.factory.text_encoder_path` in the YAML.
+The server downloads AuK and the separate `Qwen/Qwen2.5-Omni-3B` encoder as needed. Serving knobs live on `AuKPipelineConfig`; there is no example YAML. To use a local encoder:
 
-For AuK-Flash, change `model_path` to `tencent/AuK-Flash`. It fixes inference to the released four-step time grid with CFG disabled, ignoring the factory's `nfe`, `cfg_strength`, and `sway_sampling_coef` values.
+```bash
+sgl-omni serve \
+  --model-path tencent/AuK \
+  --auk_engine.factory.text_encoder_path /path/to/Qwen2.5-Omni-3B \
+  --port 8000
+```
+
+For AuK-Flash, pass `--model-path tencent/AuK-Flash`. It fixes inference to the released four-step time grid with CFG disabled, ignoring the factory's `nfe`, `cfg_strength`, and `sway_sampling_coef` values.
 
 ## Speech Generation
 
@@ -60,7 +65,7 @@ When `gen_seconds` is omitted, voice cloning requires the reference transcript (
 target_seconds = reference_seconds × UTF8_bytes(input) / UTF8_bytes(ref_text)
 ```
 
-Explicit `gen_seconds` takes priority and must be positive. Target duration rounds up to 20 ms frames and is capped at 30 seconds by default. To change the cap, set `max_seconds` in **both** `stages.preprocessing.factory` and `stages.auk_engine.factory`.
+Explicit `gen_seconds` takes priority and must be positive. Target duration rounds up to 20 ms frames and is capped at 30 seconds by default. To change the cap, set `max_seconds` on both stages: `--preprocessing.factory.max_seconds` and `--auk_engine.factory.max_seconds`.
 
 ## Speech Editing
 
@@ -80,13 +85,13 @@ Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing
 
 ## Sampling
 
-Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Configure these under `stages.auk_engine.factory`; request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
+Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags; request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
 
 `seed` controls target noise only. Reference VAE posterior sampling uses the process RNG, so a request seed alone does not make voice cloning deterministic. Multiple structured references are rejected.
 
 ## SeedTTS Evaluation
 
-The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash`, selects the AuK server config, and defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:
+The standard benchmark detects `tencent/AuK` and `tencent/AuK-Flash` and starts the server from `--model-path`. It defaults to the full English dataset, concurrency 1, one warmup, and seed 1234. It estimates duration from the reference audio and transcript, then automatically starts and stops the TTS and ASR servers:
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.benchmark_tts_seedtts \

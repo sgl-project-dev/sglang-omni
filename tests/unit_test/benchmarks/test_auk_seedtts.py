@@ -74,7 +74,7 @@ def test_shared_server_lifecycle(monkeypatch, model, options, phases):
             if model.startswith("tencent/AuK"):
                 assert "max_running_requests" not in servers[0]
                 assert "cuda_graph_max_bs" not in servers[0]
-                assert servers[0]["server_config"].endswith("examples/configs/auk.yaml")
+                assert servers[0]["server_config"] is None
             else:
                 assert servers[0]["max_running_requests"] == 64
                 assert servers[0]["cuda_graph_max_bs"] == 64

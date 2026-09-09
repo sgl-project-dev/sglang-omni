@@ -1067,15 +1067,11 @@ def main() -> None:
     is_auk = Path(args.model.split("@", 1)[0]).name.lower() in {"auk", "auk-flash"}
     if is_auk:
         parser.set_defaults(
-            server_config=str(
-                Path(__file__).resolve().parents[2] / "examples/configs/auk.yaml"
-            ),
             output_dir="results/auk_seedtts",
             concurrency=1,
             warmup=1,
             seed=1234,
         )
-        # Reparse so explicit CLI options take precedence over model defaults.
         args = parser.parse_args()
     _validate_args(parser, args)
     config = _config_from_args(args)
