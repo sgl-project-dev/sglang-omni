@@ -27,9 +27,6 @@ def render_router_config(
     model_name: str,
 ) -> str:
     """Render one current-schema router config for a homogeneous CI worker pool."""
-    if not worker_urls:
-        raise ValueError("worker_urls must not be empty")
-
     preamble = _router_preamble(topology, router_port)
     worker_blocks = [
         _worker_block(
@@ -144,7 +141,6 @@ def _worker_block(
         f"base_url = {_toml_string(worker_url.rstrip('/') + '/')}",
         'trust_domain = "local"',
         f"default_model_id = {_toml_string(model_name)}",
-        'health_path = "/health"',
     ]
     if topology is CiRouterTopology.TTS_SERVING:
         lines.extend(

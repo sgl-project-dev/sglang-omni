@@ -569,11 +569,6 @@ def test_managed_router_lifecycle_accepts_two_external_mps_workers(
         "_rust_router_binary",
         lambda: router_binary,
     )
-    monkeypatch.setattr(
-        omni_router_utils,
-        "_check_router_config",
-        lambda *_args, **_kwargs: None,
-    )
     for name in (
         "_record_process_group",
         "wait_for_all_router_workers",

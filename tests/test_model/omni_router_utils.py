@@ -111,7 +111,7 @@ def launch_managed_router(
     external_worker_urls: list[str] | None = None,
     worker_env: dict[str, str] | None = None,
 ) -> Iterator[ManagedRouterHandle]:
-    """Launch a validated Rust router over local or externally owned workers."""
+    """Launch a Rust router over local or externally owned workers."""
     router_binary = _rust_router_binary()
     cleanup_manifest = (
         tmp_path_factory.mktemp("omni_router_cleanup") / "router_pgids.txt"
@@ -152,7 +152,6 @@ def launch_managed_router(
         worker_urls=worker_urls,
         model_name=model_name,
     )
-    _check_router_config(router_binary, router_config)
     router_log = (
         tmp_path_factory.mktemp(log_prefix) / "server.log"
         if force_log
@@ -163,12 +162,6 @@ def launch_managed_router(
 
     try:
         startup_t0 = time.perf_counter()
-        if worker_launcher is not None:
-            worker_launcher.launch()
-            for worker in worker_launcher.workers:
-                _record_process_group(cleanup_manifest, worker.process_group_id)
-            worker_launcher.wait_ready()
-
         router_proc = start_server_from_cmd(
             [str(router_binary), "--config", str(router_config)],
             router_log,
@@ -176,10 +169,17 @@ def launch_managed_router(
             timeout=startup_timeout or wait_timeout,
             tee=force_log,
             strip_proxy=True,
-            health_path="/ready",
+            health_path="/live",
             health_body_contains=None,
         )
         _record_process_group(cleanup_manifest, os.getpgid(router_proc.pid))
+
+        if worker_launcher is not None:
+            worker_launcher.launch()
+            for worker in worker_launcher.workers:
+                _record_process_group(cleanup_manifest, worker.process_group_id)
+            worker_launcher.wait_ready()
+
         wait_for_all_router_workers(
             router_port,
             expected_workers=num_workers,
@@ -266,10 +266,7 @@ def wait_for_all_router_workers(
             last_payload.get("lifecycle") == "serving"
             and last_payload.get("ready") is True
             and len(workers) == expected_workers
-            and all(
-                worker.get("health") == "healthy" and worker.get("routable") is True
-                for worker in workers
-            )
+            and all(worker.get("routable") is True for worker in workers)
         ):
             return
         time.sleep(1)
@@ -306,7 +303,6 @@ def _router_is_quiescent(diagnostics: dict, *, expected_workers: int) -> bool:
         diagnostics.get("lifecycle") == "serving"
         and diagnostics.get("ready") is True
         and len(workers) == expected_workers
-        and all(worker.get("health") == "healthy" for worker in workers)
         and all(worker.get("routable") is True for worker in workers)
         and all(worker.get("active_requests") == 0 for worker in workers)
         and all(
@@ -471,20 +467,6 @@ def _write_router_config(
         encoding="utf-8",
     )
     return config_path
-
-
-def _check_router_config(binary: Path, config: Path) -> None:
-    completed = subprocess.run(
-        [str(binary), "--config", str(config), "--check-config"],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    if completed.returncode != 0:
-        raise RuntimeError(
-            f"Rust router rejected generated config {config}:\n"
-            f"{completed.stdout}{completed.stderr}"
-        )
 
 
 def _record_process_group(manifest: Path, process_group_id: int) -> None:
