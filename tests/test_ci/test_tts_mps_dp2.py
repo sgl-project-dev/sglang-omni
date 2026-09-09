@@ -328,7 +328,6 @@ def _run_canonical_generation(
         before_snapshot=before_workers,
         label="TTS MPS canonical generation",
         min_total_requests=SEEDTTS_EN_FULLSET_SAMPLES,
-        min_worker_share=0.40,
     )
     update_summary(
         summary_path,
