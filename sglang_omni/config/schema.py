@@ -6,11 +6,26 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+if TYPE_CHECKING:
+    from sglang_omni.serve.realtime.transcription_session import StreamingASRStrategy
+
 REPLICA_SEPARATOR = "@r"
+
+
+@dataclass(frozen=True, slots=True)
+class RealtimeTranscriptionConfig:
+    """Pipeline-owned declaration for live ASR over ``/v1/realtime``."""
+
+    strategy_cls: type[StreamingASRStrategy]
+    decode_interval_ms: int = 2000
+
+    def __post_init__(self) -> None:
+        if self.decode_interval_ms <= 0:
+            raise ValueError("realtime transcription decode interval must be positive")
 
 
 def replica_instance_name(logical_name: str, replica_id: int) -> str:
@@ -533,6 +548,14 @@ class ResolvedAudioChunking:
         return max(int(self.max_audio_clip_s * sample_rate), 1)
 
 
+@dataclass(frozen=True)
+class CustomVoiceConfig:
+    # Note(yzxiao): CustomVoice selects a checkpoint speaker without reference
+    # audio. Only an absent config disables this contract; speakers is required.
+    speakers: tuple[str, ...]
+    task_type: str
+
+
 class PipelineConfig(BaseModel):
     """Top-level pipeline configuration.
 
@@ -550,6 +573,7 @@ class PipelineConfig(BaseModel):
     speech_reference_text_required: ClassVar[bool] = False
     speech_reference_text_excludes_instructions: ClassVar[bool] = False
     additional_speech_languages: ClassVar[frozenset[str]] = frozenset()
+    realtime_transcription: ClassVar[RealtimeTranscriptionConfig | None] = None
 
     # Note (Jeffro): the model-owned parameters of the long-audio transcription
     # contract. Chunking stays off by default: some models can't correctly
@@ -584,6 +608,7 @@ class PipelineConfig(BaseModel):
     processes: dict[str, ProcessConfig] = Field(default_factory=dict)
     env_defaults: dict[str, str] = Field(default_factory=dict)
     mps: Literal["off", "on", "auto"] = "off"
+    weight_share: Literal["off", "on"] = "off"
     placement: PlacementConfig = Field(default_factory=PlacementConfig)
     placement_policy: str | None = None
     endpoints: EndpointsConfig = Field(default_factory=EndpointsConfig)
@@ -760,6 +785,9 @@ class PipelineConfig(BaseModel):
     def supports_uploaded_voice_references(self) -> bool:
         """Return whether uploaded voices can be lowered as reference audio."""
         return False
+
+    def resolve_custom_voice_config(self) -> CustomVoiceConfig | None:
+        return None
 
     def supports_audio_translation(self) -> bool:
         """Return whether this pipeline can serve /v1/audio/translations."""

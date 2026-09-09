@@ -12,6 +12,7 @@ Requires sglang to be importable.
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest import mock
 
@@ -205,6 +206,59 @@ def test_graph_capture_finalizes_post_capture_kv_pool():
         runner.init_cuda_graphs()
 
     assert calls == ["capture", "resize"]
+
+
+def test_graph_capture_pins_sdpa_around_the_upstream_capture():
+    from sglang_omni.platforms import current_platform
+
+    runner = _bare_runner()
+    calls = []
+
+    @contextmanager
+    def fake_pin():
+        calls.append("pin_enter")
+        try:
+            yield
+        finally:
+            calls.append("pin_exit")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(current_platform, "is_xpu", lambda: True),
+        mock.patch.object(current_platform, "graph_capture_attention", fake_pin),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert calls == ["pin_enter", "capture", "pin_exit"]
+
+
+def test_a_non_xpu_platform_captures_unwrapped():
+    from sglang_omni.platforms import current_platform
+
+    runner = _bare_runner()
+    calls = []
+
+    def fail_if_entered():
+        raise AssertionError("the pin must not be built off XPU")
+
+    with (
+        get_context().override_server_args(),
+        mock.patch.object(current_platform, "is_xpu", lambda: False),
+        mock.patch.object(current_platform, "graph_capture_attention", fail_if_entered),
+        mock.patch.object(
+            ModelRunner,
+            "init_cuda_graphs",
+            lambda self, capture_decode_cuda_graph=True: calls.append("capture"),
+        ),
+    ):
+        runner.init_cuda_graphs()
+
+    assert calls == ["capture"]
 
 
 def test_graph_capture_reseeds_torch_compile_from_the_exec_bag():

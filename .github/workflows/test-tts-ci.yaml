@@ -4,6 +4,7 @@ on:
   workflow_call:
     inputs:
       tts_ci_model:
+        description: TTS CI model preset selected by the parent pick-tts-model job.
         type: string
         default: higgs
       tts_mps_config:
