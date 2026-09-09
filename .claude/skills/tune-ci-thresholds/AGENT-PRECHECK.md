@@ -55,8 +55,8 @@ writing reports.
   often override `CUDA_VISIBLE_DEVICES` and break multi-group pinning.
 - Provide `HF_TOKEN` via the process environment or a mode-`600` file; do not
   depend on interactive shell state.
-- For concurrent groups, assign each group a distinct `SGLANG_CACHE_DIR` and
-  `XDG_CACHE_HOME` / `HOME` / `OMNI_CI_HOME` partition before precheck.
+- For concurrent groups, assign each group a distinct cache root
+  (`XDG_CACHE_HOME` / `HOME` / `OMNI_CI_HOME` partition) before precheck.
 
 ## 1. Scope and provenance
 
@@ -164,9 +164,7 @@ if `cargo` is unavailable.
   and burns startup-timeout rounds until it lands. Warm it with one
   throwaway server launch, or calibrate from a container that has run the
   model before.
-- This group’s `SGLANG_CACHE_DIR`, cache root, and `.torchinductor` are writable.
-- Concurrent groups must not share a writable FlashInfer JIT dir that another
-  group may delete mid-run.
+- This group’s cache root and `.torchinductor` are writable.
 
 ## 6. Official precheck
 

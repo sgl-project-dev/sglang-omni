@@ -31,10 +31,8 @@ These rules apply whether groups run Mode B or Mode C.
 
 1. **Disjoint GPUs.** Include sets must not overlap. Respect `TUNE_GPU_EXCLUDE`
    for host-reserved devices; never launch on or clean those GPUs.
-2. **Per-group cache root.** Give each group a distinct `SGLANG_CACHE_DIR` and
-   `XDG_CACHE_HOME` and/or `HOME` (or an equivalent `OMNI_CI_HOME` partition).
-   FlashInfer cleanup wipes only this job’s first cache dir; wiping every
-   candidate path races live workers on other groups.
+2. **Per-group cache root.** Give each group a distinct `XDG_CACHE_HOME` and/or
+   `HOME` (or equivalent `OMNI_CI_HOME` partition).
 3. **Scoped cleanup only.** Every cleanup path must pass physical GPU ids via
    `CUDA_VISIBLE_DEVICES`. See Cleanup below.
 4. **No interactive shell pollution.** Bootstrap from

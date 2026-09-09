@@ -80,41 +80,6 @@ _CRASH_SIGS = (
 )
 
 
-def _flashinfer_cache_dirs(env: dict[str, str] | None = None) -> list[Path]:
-    env = env or os.environ
-    candidates = [
-        Path(env.get("XDG_CACHE_HOME", "")) / "flashinfer"
-        if env.get("XDG_CACHE_HOME")
-        else None,
-        Path(env.get("HOME", "")) / ".cache" / "flashinfer"
-        if env.get("HOME")
-        else None,
-        _CI_HOME / ".cache" / "flashinfer",
-    ]
-    seen: set[Path] = set()
-    paths: list[Path] = []
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        path = candidate.expanduser()
-        if path in seen:
-            continue
-        seen.add(path)
-        paths.append(path)
-    return paths
-
-
-def _cleanup_flashinfer_cache(env: dict[str, str] | None = None) -> None:
-    # Wipe only this job's FlashInfer JIT dir so kernels recompile cleanly.
-    # Concurrent calibration groups must use distinct XDG_CACHE_HOME / HOME
-    # partitions; never delete every candidate path (that races live workers).
-    env = env or os.environ
-    cache_dirs = _flashinfer_cache_dirs(env)
-    if not cache_dirs:
-        return
-    shutil.rmtree(cache_dirs[0], ignore_errors=True)
-
-
 # Metric registry. Each entry encodes how a named metric should be
 # displayed in the report and which stage group it belongs to. Scales
 # assume the metric is read from the result JSON in its native unit
@@ -3453,7 +3418,6 @@ def _run_shared(test_path, stage_keys, all_stages, out, k, py, total, gpus_neede
                   f"(calibration continues)")
             time.sleep(_GPU_WAIT_POLL_S)
             continue
-        _cleanup_flashinfer_cache(env)
         shutil.rmtree(basetemp, ignore_errors=True)
         basetemp.mkdir(parents=True)
         picked, gate_err = _launch_gpu_gate(picked, gpus_needed, label, host)
