@@ -266,3 +266,61 @@ async def test_shared_manager_preserves_transcription_intent(monkeypatch):
     assert manager.active_sessions() == []
     assert websocket.application_state == WebSocketState.DISCONNECTED
     assert sent[-1]["type"] == "websocket.close"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("during_unit", [False, True])
+async def test_coordinator_output_eof_fails_pending_and_future_units(during_unit):
+    from sglang_omni.proto.session import SessionRef
+    from sglang_omni.serve.realtime.adapters import CoordinatorAdapter
+    from sglang_omni.serve.realtime.runtime import Unit
+
+    release = asyncio.Event()
+    appended = asyncio.Event()
+    events = []
+
+    class Client:
+        async def open_session(self, *args, **kwargs):
+            return SessionRef(kwargs["session_id"])
+
+        async def append_session(self, *args):
+            appended.set()
+
+        async def session_outputs(self, ref):
+            await release.wait()
+            if False:
+                yield None
+
+        async def close_session(self, ref):
+            release.set()
+
+    async def emit(event, *args):
+        events.append(event)
+
+    adapter = CoordinatorAdapter(
+        Client(),
+        stages=["mock"],
+        request_builder=lambda cfg: None,
+        output_converter=lambda output: [],
+        atomic_consumption=True,
+    )
+    await adapter.open("eof", {}, emit)
+    task = None
+    try:
+        unit = Unit(0, 0, b"\0\0" * 8, 8)
+        if during_unit:
+            task = asyncio.create_task(adapter.process(unit, 0))
+            await appended.wait()
+        release.set()
+        await adapter.reader
+        if task is None:
+            task = asyncio.create_task(adapter.process(unit, 0))
+        with pytest.raises(RuntimeError, match="output stream closed"):
+            await asyncio.wait_for(task, 0.2)
+        with pytest.raises(RuntimeError, match="output stream closed"):
+            await asyncio.wait_for(adapter.process(unit, 0), 0.2)
+    finally:
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await adapter.close()

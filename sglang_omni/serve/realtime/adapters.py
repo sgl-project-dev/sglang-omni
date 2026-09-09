@@ -43,6 +43,8 @@ class CoordinatorAdapter:
         self.buffer_bytes = 0
         self.emit = None
         self.epoch = 0
+        self.reader_error = None
+        self.closing = False
 
     def set_limits(self, limits):
         self.local_cleanup_timeout = limits.cleanup_timeout_s
@@ -81,7 +83,10 @@ class CoordinatorAdapter:
                             raise RuntimeError("native unit output budget exhausted")
                         self.buffer.append(event)
                         self.buffer_bytes += size
+            if not self.closing:
+                raise RuntimeError("session output stream closed")
         except Exception as exc:
+            self.reader_error = exc
             if self.future is not None and not self.future.done():
                 self.future.set_exception(exc)
             else:
@@ -92,6 +97,8 @@ class CoordinatorAdapter:
                 )
 
     async def process(self, unit, epoch):
+        if self.reader_error is not None:
+            raise self.reader_error
         self.active = unit
         self.epoch = epoch
         self.future = asyncio.get_running_loop().create_future()
@@ -104,8 +111,8 @@ class CoordinatorAdapter:
             format="pcm16",
             eos=unit.eos,
         )
-        await self.client.append_session(self.ref, chunk)
         try:
+            await self.client.append_session(self.ref, chunk)
             return await self.future
         finally:
             self.active = None
@@ -131,6 +138,7 @@ class CoordinatorAdapter:
         self.buffer_bytes = 0
 
     async def close(self):
+        self.closing = True
         try:
             if self.ref is not None:
                 await self.client.close_session(self.ref)
