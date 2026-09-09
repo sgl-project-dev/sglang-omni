@@ -672,6 +672,31 @@ def venv_version(py, mod):
     return r.stdout.strip()
 
 
+def rust_router_info() -> tuple[dict | None, str | None]:
+    configured = os.environ.get("SGLANG_OMNI_ROUTER_BIN", "").strip()
+    if not configured:
+        return None, "SGLANG_OMNI_ROUTER_BIN is not set"
+    binary = Path(configured).expanduser()
+    if not binary.is_file():
+        return None, f"Rust router binary not found: {binary}"
+    if not os.access(binary, os.X_OK):
+        return None, f"Rust router binary is not executable: {binary}"
+    try:
+        result = subprocess.run(
+            [str(binary), "--version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return None, f"Rust router version check failed: {exc}"
+    version = result.stdout.strip()
+    if result.returncode != 0 or not version.startswith("sgl-omni-router "):
+        detail = result.stderr.strip() or version or f"exit {result.returncode}"
+        return None, f"Rust router version check failed: {detail}"
+    return {"path": str(binary.resolve()), "version": version}, None
+
+
 def git_info():
     q = lambda c: subprocess.run(c, cwd=REPO_ROOT, capture_output=True,
                                   text=True, check=False).stdout.strip()
@@ -703,7 +728,7 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
         "TORCHINDUCTOR_CACHE_DIR", "FLASHINFER_WORKSPACE_BASE",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",
-        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF",
+        "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF", "SGLANG_OMNI_ROUTER_BIN",
     )
     image_digest = (
         os.environ.get("OMNI_CI_IMAGE_DIGEST")
@@ -1744,6 +1769,11 @@ def precheck(
         return _summary(errs, warns)
     gi = git_info()
     print(f"git: {gi['branch']} @ {gi['sha'][:8]}{' (dirty)' if gi['dirty'] else ''}")
+    router, router_error = rust_router_info()
+    if router_error:
+        errs.append(router_error)
+    else:
+        print(f"  Rust router: {router['version']} ({router['path']})")
     if not Path(py).exists():
         if src == "default" and tried and len(tried) > 1:
             errs.append(
@@ -1920,6 +1950,7 @@ def precheck(
             timestamp=now_iso(), model=cfg["name"],
             venv_python=py, venv_source=src, versions=versions,
             pins={"sglang": pins.get("sglang"), "torch": pins.get("torch")},
+            rust_router=router,
             git=gi, nvidia_smi_L=smi, gpu_summary=gpu_summary(smi),
             cpuset=cpuset_detail,
             environment_fingerprint="environment-fingerprint.json",
