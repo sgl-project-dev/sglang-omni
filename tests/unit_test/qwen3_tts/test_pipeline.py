@@ -2729,6 +2729,71 @@ def test_qwen3_tts_ingest_keeps_the_newest_chunk_event() -> None:
     assert state.codes_ready is None
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_ingest_records_readiness_for_a_device_chunk_without_an_event() -> (
+    None
+):
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cpu",
+    )
+    state = scheduler.create_stream_state("request")
+    state.num_quantizers = 2
+    scheduler.latch_stream_contract(
+        "request", state, {"num_quantizers": 2}, origin="stream metadata"
+    )
+    producer = torch.cuda.Stream()
+    with torch.cuda.stream(producer):
+        codes = torch.ones((1, 2), dtype=torch.long, device="cuda")
+    torch.cuda.current_stream().wait_stream(producer)
+
+    scheduler.ingest("request", state, codes)
+
+    assert isinstance(state.codes_ready, torch.cuda.Event)
+    worker = torch.cuda.Stream()
+    worker.wait_event(state.codes_ready)
+    worker.synchronize()
+    assert state.codes_ready.query()
+    assert state.code_chunks == [codes]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires CUDA")
+def test_qwen3_tts_worker_plan_reads_a_device_chunk_after_the_producer_wrote_it() -> (
+    None
+):
+    """A worker stream must see the producer's finished write, not the memory it
+    found before that write landed. The producer's write is held back on its own
+    stream, the ingesting stream is ordered after the producer the way the CUDA
+    IPC import orders it, and the plan is built on a separate worker stream."""
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        _FakeQwen3TTSTokenizer(),
+        device="cuda",
+        enable_stateful_codec_decoder=False,
+    )
+    state = scheduler.create_stream_state("request")
+    state.num_quantizers = 2
+    scheduler.latch_stream_contract(
+        "request", state, {"num_quantizers": 2}, origin="stream metadata"
+    )
+    codes = torch.full((4, 2), 4095, dtype=torch.long, device="cuda")
+    torch.cuda.synchronize()
+    producer = torch.cuda.Stream()
+    with torch.cuda.stream(producer):
+        torch.cuda._sleep(400_000_000)
+        codes.fill_(7)
+    torch.cuda.current_stream().wait_stream(producer)
+
+    scheduler.ingest("request", state, codes)
+    worker = torch.cuda.Stream()
+    with torch.cuda.stream(worker):
+        plan = scheduler._build_decode_plan(state, is_final=True)
+    worker.synchronize()
+
+    assert plan is not None
+    assert plan.decoder_input.shape == (1, 2, 4)
+    assert plan.decoder_input.eq(7).all().item()
+
+
 def test_qwen3_tts_pageable_fallback_syncs_with_empty_delta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
