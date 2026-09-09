@@ -463,6 +463,13 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  - `test_realtime_asr_benchmark.py`: the realtime ASR benchmark client
+    (`benchmarks/realtime_asr/client.py`) against an in-process fake
+    `/v1/realtime` WebSocket server (packet splitting, wall-clock pacing,
+    manual commit, trailing silence, timeout reporting), and the metric
+    definitions in `benchmarks/realtime_asr/metrics.py` pinned with hand-built
+    traces (first-partial refresh-point lookup, partial gaps, committed→final,
+    protocol invariant violations, percentile summaries). No GPU or server.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup
