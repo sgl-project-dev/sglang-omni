@@ -1,5 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
-"""ASR and TTS pick run together, as one Omni CI run would."""
+"""This file aim to test the model pick logic in the Omni CI workflow.
+
+Author: chenyang zhang https://github.com/zhaochenyang20
+
+In short, if having labels like run-higgs, our CI workflow will
+pick the Higgs model for TTS. This file aim to test the logic.
+"""
 
 from __future__ import annotations
 
