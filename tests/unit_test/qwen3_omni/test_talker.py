@@ -1839,6 +1839,7 @@ class TestBuildTalkerRequestTensorStorage:
             codec_vocab_size=4096,
         )
 
+        assert data.req.sampling_params.repetition_penalty == 1.05
         assert data.prefill_input_embeds is hidden_states
         assert data.req.input_embeds is None
         assert data.req._input_embeds_are_projected is False
