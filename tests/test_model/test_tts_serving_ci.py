@@ -48,6 +48,7 @@ BENCHMARK_TIMEOUT_S = 1800
 BENCHMARK_TIMEOUT_RETURNCODE = 124
 MIXED_STAGE = "mixed-production"
 ROUTER_STAGE_SNAPSHOTS = "router_stage_snapshots.json"
+ROUTER_REJECTION_METRIC = "sglang_omni_router_rejections_total"
 EXPECTED_WORKLOAD_SAMPLES = {
     "speech_normal": 50,
     "rest_stream": 50,
@@ -96,6 +97,7 @@ class ServingRun:
     request_timeout_s: int
     router: ManagedRouterHandle
     router_before: dict
+    router_rejections_before: int
 
 
 @dataclass(frozen=True)
@@ -316,6 +318,10 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
             request_timeout_s = load_spec(spec_path).params.timeout_s
             assert_router_healthy(router)
             router_before = router_get_json(router.port, "/diagnostics")
+            router_rejections_before = _router_rejections_total(
+                base_url,
+                request_timeout_s,
+            )
             yield ServingRun(
                 base_url=base_url,
                 run_dir=run_dir,
@@ -324,6 +330,7 @@ def serving_run(tmp_path_factory: pytest.TempPathFactory) -> Iterator[ServingRun
                 request_timeout_s=request_timeout_s,
                 router=router,
                 router_before=router_before,
+                router_rejections_before=router_rejections_before,
             )
     except Exception as exc:
         cleanup_error = exc
@@ -562,6 +569,10 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
         measured_worker_minimums, dispatch_failures = _measured_worker_minimums(
             mixed_delta
         )
+        router_rejections_after = _router_rejections_total(
+            run.base_url,
+            run.request_timeout_s,
+        )
     except Exception as exc:
         checks.fail(f"router validation failed: {exc}")
         return
@@ -578,6 +589,7 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
             "voice_control",
         )
     }
+    rejected_delta = router_rejections_after - run.router_rejections_before
     (run.run_dir / "router_validation.json").write_text(
         json.dumps(
             {
@@ -587,6 +599,11 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
                 "mixed_measured_worker_minimums": measured_worker_minimums,
                 "mixed_results": mixed_summary,
                 "class_dispatches": class_counts,
+                "router_rejections": {
+                    "before": run.router_rejections_before,
+                    "after": router_rejections_after,
+                    "delta": rejected_delta,
+                },
             },
             indent=2,
         )
@@ -595,6 +612,10 @@ def _check_router(run: ServingRun, checks: MetricCheckCollector) -> None:
     )
     for failure in dispatch_failures:
         checks.fail(failure)
+    checks.check(
+        rejected_delta == 0,
+        f"router rejected valid scheduled traffic: delta={rejected_delta}",
+    )
     checks.check(
         all(count > 0 for count in measured_worker_minimums),
         "both workers must provably serve measured mixed-production traffic: "
@@ -631,6 +652,21 @@ def _get_json(url: str, timeout_s: int) -> dict:
     if not isinstance(payload, dict):
         raise AssertionError(f"expected JSON object from {url}")
     return payload
+
+
+def _router_rejections_total(base_url: str, timeout_s: int) -> int:
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(f"{base_url}/metrics", timeout=timeout_s) as response:
+        metrics = response.read().decode("utf-8")
+    prefix = f"{ROUTER_REJECTION_METRIC}{{"
+    samples = [
+        int(line.rsplit(" ", 1)[1])
+        for line in metrics.splitlines()
+        if line.startswith(prefix)
+    ]
+    if not samples:
+        raise AssertionError(f"router metrics omit {ROUTER_REJECTION_METRIC}")
+    return sum(samples)
 
 
 def _write_benchmark_validation(
