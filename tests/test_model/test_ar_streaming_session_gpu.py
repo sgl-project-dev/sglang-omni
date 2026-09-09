@@ -73,7 +73,9 @@ def test_real_streaming_session_gpu():
         d.stage_payload.data = list(d.output_ids)
         return d.stage_payload
 
-    class Adapter:
+    from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
+
+    class Adapter(ARSessionAdapter):
         def build(self, ref, chunk, p):
             return make_data(p)
 

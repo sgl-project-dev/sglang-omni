@@ -6,14 +6,14 @@ import pytest
 
 from sglang_omni.proto.session import TimedChunk
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
-from tests.unit_test.fixtures.ar_session import bridge, data, payload
+from tests.unit_test.fixtures.ar_session import TestAdapter, bridge, data, payload
 
 
 def test_lifecycle_bypasses_builder_and_queue_capacity(monkeypatch):
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)
-    b = ARSessionBridge(s, SimpleNamespace())
+    b = ARSessionBridge(s, TestAdapter())
     s._session_bridge = b
     s.session_controller = bridge().scheduler.session_controller
     s.tree_cache = s.session_controller.tree_cache
@@ -31,7 +31,7 @@ def test_output_budget_includes_flush_and_terminal_only(monkeypatch):
 
     b = bridge()
     chunk = TimedChunk("text", 0, 0, 0, "hello")
-    b.adapter = SimpleNamespace(
+    b.adapter = TestAdapter(
         stream=lambda *args: [chunk], flush=lambda *args: [chunk, chunk]
     )
     b.command(payload("open"))
@@ -48,7 +48,7 @@ def test_ordinary_embeddings_and_sidecars_unchanged_with_bridge(monkeypatch):
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)
-    s._session_bridge = ARSessionBridge(s, SimpleNamespace())
+    s._session_bridge = ARSessionBridge(s, TestAdapter())
     p = payload("append")
     p.request.metadata.clear()
     d = data()
@@ -78,7 +78,7 @@ def test_stream_conversion_without_ordinary_builder(monkeypatch):
     b.command(payload("open"))
     b.accept(payload("append"))
     chunk = TimedChunk("text", 0, 0, 0, "converted")
-    b.adapter = SimpleNamespace(stream=lambda *args: [chunk])
+    b.adapter = TestAdapter(stream=lambda *args: [chunk])
     s = object.__new__(OmniScheduler)
     s._session_bridge = b
     s._stream_output_builder = None

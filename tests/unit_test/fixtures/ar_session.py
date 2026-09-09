@@ -9,8 +9,18 @@ from sglang.srt.session.session_controller import SessionController
 
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SessionRef, TimedChunk
-from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
+from sglang_omni.scheduling.sglang_backend.ar_session import (
+    ARSessionAdapter,
+    ARSessionBridge,
+)
 from sglang_omni.scheduling.sglang_backend.request_data import SGLangARRequestData
+
+
+class TestAdapter(ARSessionAdapter):
+    __test__ = False
+
+    def __init__(self, **hooks):
+        self.__dict__.update(hooks)
 
 
 def payload(op, rid="r", epoch=0):
@@ -52,4 +62,4 @@ def bridge():
         _aborted_request_ids=set(),
         _resolve_pending_async=lambda: None,
     )
-    return ARSessionBridge(scheduler, SimpleNamespace())
+    return ARSessionBridge(scheduler, TestAdapter())

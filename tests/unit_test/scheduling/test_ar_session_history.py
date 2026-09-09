@@ -6,7 +6,7 @@ import pytest
 
 from sglang_omni.proto.session import SessionRef
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
-from tests.unit_test.fixtures.ar_session import bridge, data, payload
+from tests.unit_test.fixtures.ar_session import TestAdapter, bridge, data, payload
 
 
 def test_materializes_native_history_preserving_sidecars():
@@ -126,7 +126,7 @@ def test_production_admission_rejection_rolls_back_native_history(
         built.append(d)
         return d
 
-    b = ARSessionBridge(s, SimpleNamespace(build=build))
+    b = ARSessionBridge(s, TestAdapter(build=build))
     s._session_bridge = b
     # Note (Junnan Li): Bypass early capacity rejection to reach post-build guards.
     b.capacity_error = lambda rid: None

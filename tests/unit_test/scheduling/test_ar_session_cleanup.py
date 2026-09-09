@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionBridge
-from tests.unit_test.fixtures.ar_session import bridge, data, payload
+from tests.unit_test.fixtures.ar_session import TestAdapter, bridge, data, payload
 
 
 def test_cancelled_close_retains_cleanup_intent(monkeypatch):
@@ -12,7 +12,7 @@ def test_cancelled_close_retains_cleanup_intent(monkeypatch):
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)
-    s._session_bridge = ARSessionBridge(s, SimpleNamespace())
+    s._session_bridge = ARSessionBridge(s, TestAdapter())
     s.session_controller = bridge().scheduler.session_controller
     s.tree_cache = s.session_controller.tree_cache
     s.process_input_requests([payload("open")])
@@ -134,7 +134,7 @@ def test_regular_async_wait_failure_preserves_native_owner_and_retries(
     from tests.unit_test.pipeline.test_scheduler import _construct_omni_scheduler
 
     s = _construct_omni_scheduler(monkeypatch)
-    b = ARSessionBridge(s, SimpleNamespace())
+    b = ARSessionBridge(s, TestAdapter())
     s.model_config.vocab_size = 32
     s._session_bridge = b
     s.session_controller = bridge().scheduler.session_controller
@@ -305,3 +305,25 @@ def test_cancel_at_boundary_preserves_native_session():
     b.command(payload("abort", epoch=1))
     assert b.scheduler.session_controller.get("s") is native
     assert b.owners["s"].ref.epoch == 1
+
+
+def test_adapter_state_follows_core_session_lifetime():
+    from sglang_omni.scheduling.sglang_backend.ar_session import ARSessionAdapter
+
+    calls = []
+
+    class Adapter(ARSessionAdapter):
+        def open(self, ref, request):
+            calls.append(("open", ref.session_id))
+
+        def close(self, ref):
+            calls.append(("close", ref.session_id))
+
+    b = bridge()
+    b.adapter = Adapter()
+    b.command(payload("open"))
+    b.command(payload("abort", epoch=1))
+    assert calls == [("open", "s")]
+    b.command(payload("close", epoch=1))
+    b.command(payload("close", epoch=1))
+    assert calls == [("open", "s"), ("close", "s")]

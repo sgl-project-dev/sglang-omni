@@ -35,6 +35,12 @@ class ARSessionAdapter:
     Build from the relayed payload; only the entry stage consumes chunk.payload.
     """
 
+    def open(self, ref: SessionRef, request) -> None:
+        """Initialize auxiliary model history after native session creation."""
+
+    def close(self, ref: SessionRef) -> None:
+        """Release auxiliary history after native work and KV are released."""
+
     def build(
         self, ref: SessionRef, chunk: TimedChunk, payload: StagePayload
     ) -> SGLangARRequestData:
@@ -117,6 +123,7 @@ class ARSessionBridge:
             if not result.success:
                 raise ValueError("native session open failed")
             self.owners[sid] = _Owner(ref)
+            self.adapter.open(ref, payload.request)
             payload.data = {"opened": True}
         elif op == "close":
             if owner is not None:
@@ -129,6 +136,7 @@ class ARSessionBridge:
                     or sid in self.scheduler.tree_cache.slots
                 ):
                     raise RuntimeError("native session close is still pending")
+                self.adapter.close(owner.ref)
                 del self.owners[sid]
             payload.data = {"closed": True}
         elif op == "abort":
@@ -403,4 +411,5 @@ class ARSessionBridge:
                 or sid in self.scheduler.tree_cache.slots
             ):
                 raise RuntimeError("native session shutdown still pending")
+            self.adapter.close(owner.ref)
             del self.owners[sid]
