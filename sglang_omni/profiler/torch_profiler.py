@@ -3,6 +3,8 @@
 # Original files:
 # - https://github.com/vllm-project/vllm-omni/blob/main/vllm_omni/diffusion/profiler/torch_profiler.py
 
+from __future__ import annotations
+
 import logging
 import os
 import subprocess
