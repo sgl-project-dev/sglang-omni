@@ -86,6 +86,36 @@ def test_reference_encoding_samples_posterior(context):
     assert context.vae.encoding_and_normalization.call_args.args[1].tolist() == [24000]
 
 
+def test_terminal_result_round_trips_through_control_plane(context):
+    from sglang_omni.pipeline.control_plane import (
+        deserialize_message,
+        serialize_message,
+    )
+    from sglang_omni.proto import CompleteMessage
+
+    state = AuKState(
+        instruction="Say hello",
+        gen_frames=10,
+        ref_audio=np.zeros(24000, dtype=np.float32),
+    )
+    payload = StagePayload(
+        request_id="serialize",
+        request=OmniRequest(inputs="hello"),
+        data=state.to_dict(),
+    )
+    result = _generate_one(context, payload)
+    message = CompleteMessage(
+        request_id=payload.request_id,
+        from_stage="auk_engine",
+        success=True,
+        result=result.data,
+    )
+    restored = deserialize_message(serialize_message(message))
+    assert restored.result == result.data
+    assert len(restored.result["audio_waveform"]) == 10 * 480 * 4
+    assert "audio_samples" not in restored.result
+
+
 @pytest.mark.parametrize("flash", [False, True])
 def test_factory_is_serial_and_flash_matches_upstream_recipe(monkeypatch, flash):
     from sglang_omni.models.auk import stages

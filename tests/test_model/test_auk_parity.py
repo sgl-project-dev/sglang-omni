@@ -159,7 +159,9 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
     )
     torch.manual_seed(42)
     result = engine._fn(payload)
-    actual["waveform"] = result.data["audio_samples"]
+    actual["waveform"] = torch.frombuffer(
+        bytearray(result.data["audio_waveform"]), dtype=torch.float32
+    ).reshape(1, -1)
     assert result.data["sample_rate"] == sample_rate == 24000
     for key in expected:
         print(

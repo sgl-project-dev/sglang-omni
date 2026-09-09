@@ -26,8 +26,6 @@ class AuKState(DeclarativeStateBase):
     gen_frames: int = wire(0, codec="int")
     seed: int | None = None
 
-    audio_samples: Any | None = wire(None, codec="tensor_cpu")
-
     @property
     def gen_seconds(self) -> float:
         return self.gen_frames * C.VAE_DOWNSAMPLE_RATE / self.sample_rate
