@@ -31,10 +31,10 @@ These rules apply whether groups run Mode B or Mode C.
 
 1. **Disjoint GPUs.** Include sets must not overlap. Respect `TUNE_GPU_EXCLUDE`
    for host-reserved devices; never launch on or clean those GPUs.
-2. **Per-group cache root.** Give each group a distinct `XDG_CACHE_HOME` and/or
-   `HOME` (or equivalent `OMNI_CI_HOME` partition). FlashInfer cleanup wipes
-   only this job’s first cache dir; wiping every candidate path races live
-   workers on other groups.
+2. **Per-group cache root.** Give each group a distinct `SGLANG_CACHE_DIR` and
+   `XDG_CACHE_HOME` and/or `HOME` (or an equivalent `OMNI_CI_HOME` partition).
+   FlashInfer cleanup wipes only this job’s first cache dir; wiping every
+   candidate path races live workers on other groups.
 3. **Scoped cleanup only.** Every cleanup path must pass physical GPU ids via
    `CUDA_VISIBLE_DEVICES`. See Cleanup below.
 4. **No interactive shell pollution.** Bootstrap from
@@ -114,7 +114,7 @@ Tab C — cpuset foreign-load supervisor (**one per GPU group**, matching that
 group's lane — not only `0,1`):
 
 ```bash
-# Prefer the GPU group; the script resolves the matching 32-core cpuset.
+# Prefer the GPU group; the script resolves the matching NUMA-local cpuset.
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 0,1
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 2,3
 bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 4,5
@@ -124,7 +124,7 @@ bash .claude/skills/tune-ci-thresholds/watch_calibration_cpuset.sh 6,7
 
 | `TUNE_GPU_INCLUDE` | Tab C argument / cpuset |
 |---|---|
-| `0,1` | `0,1` → `0-15,64-79` |
+| `0,1` | `0,1` → `2-15,66-79` |
 | `2,3` | `2,3` → `16-31,80-95` |
 | `4,5` | `4,5` → `48-63,112-127` |
 | `6,7` | `6,7` → `32-47,96-111` |

@@ -536,7 +536,7 @@ def precheck_cpuset_gate(host: dict | None) -> tuple[list[str], list[str], dict]
     if not pinned and not explicit:
         errs.append(
             "TUNE_GPU_INCLUDE and OMNI_CI_CPUSET are both unset — calibration "
-            "must name the GPU lane so it can bind the matching 32-core cpuset"
+            "must name the GPU lane so it can bind the matching NUMA-local cpuset"
         )
         detail["status"] = "missing_gpu_group"
         return errs, warns, detail
@@ -734,7 +734,8 @@ def environment_fingerprint(py: str, cfg: dict, versions: dict) -> dict:
     topology = _command_output(["nvidia-smi", "topo", "-m"])
     env_keys = (
         "HOME", "OMNI_CI_HOME", "HF_HOME", "HF_HUB_DISABLE_XET",
-        "XDG_CACHE_HOME", "HF_ENDPOINT", "TORCHINDUCTOR_CACHE_DIR",
+        "XDG_CACHE_HOME", "SGLANG_CACHE_DIR", "HF_ENDPOINT",
+        "TORCHINDUCTOR_CACHE_DIR", "FLASHINFER_WORKSPACE_BASE",
         "FLASHINFER_DISABLE_VERSION_CHECK", "SEEDTTS_SIM_CACHE_DIR",
         "TUNE_GPU_INCLUDE", "TUNE_GPU_EXCLUDE", "LD_LIBRARY_PATH",
         "OMNI_CI_CPUSET", "PYTORCH_ALLOC_CONF",
