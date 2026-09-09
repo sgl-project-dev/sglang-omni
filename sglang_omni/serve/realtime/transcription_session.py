@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import json
+import logging
 import uuid
 from collections import deque
 from dataclasses import dataclass
@@ -50,6 +51,8 @@ from sglang_omni.serve.transcription_chunking import (
     SILENT_CHUNK_PEAK_THRESHOLD,
     join_transcript_parts,
 )
+
+logger = logging.getLogger(__name__)
 
 _SILENT_PCM16_PEAK = round(SILENT_CHUNK_PEAK_THRESHOLD * 32768)
 # Memory guard for models that never split a segment on length. This bounds
@@ -171,7 +174,7 @@ class RealtimeTranscriptionSession:
         self._pending_finals: deque[FinalDecode] = deque()
         self._final_waiters: set[asyncio.Future[None]] = set()
         self._inflight_request_id: str | None = None
-        self._decode_worker_task = asyncio.create_task(self._decode_worker())
+        self._decode_worker_task = self._spawn_decode_worker()
         self._input_done = False
 
     async def run(self) -> None:
@@ -211,7 +214,19 @@ class RealtimeTranscriptionSession:
                 f"Unsupported event type: {payload.get('type')!r}",
             )
             return
-        await getattr(self, self.handlers[type(event)])(event)
+        try:
+            await getattr(self, self.handlers[type(event)])(event)
+        except Exception:
+            logger.exception(
+                "Realtime transcription handler failed: session=%s event=%s",
+                self.session_id,
+                event.type,
+            )
+            await self.send_error(
+                "server_error",
+                "internal_error",
+                f"Internal error while handling {event.type}.",
+            )
 
     async def send(self, event: dict[str, Any] | TranscriptionServerEvent) -> None:
         if self.closed:
@@ -511,6 +526,22 @@ class RealtimeTranscriptionSession:
         if self._absolute_buffer_end() >= segment.next_refresh_sample:
             self._decode_event.set()
 
+    def _spawn_decode_worker(self) -> asyncio.Task[None]:
+        task = asyncio.create_task(self._decode_worker())
+        task.add_done_callback(self._log_decode_worker_exit)
+        return task
+
+    def _log_decode_worker_exit(self, task: asyncio.Task[None]) -> None:
+        # A worker that dies leaves later appends signalling an event nobody
+        # waits on, make sure the cause reaches the log.
+        if task.cancelled() or task.exception() is None:
+            return
+        logger.error(
+            "Realtime transcription decode worker crashed: session=%s",
+            self.session_id,
+            exc_info=task.exception(),
+        )
+
     async def _decode_worker(self) -> None:
         while True:
             await self._decode_event.wait()
@@ -648,7 +679,7 @@ class RealtimeTranscriptionSession:
             self.vad.reset()
         self.vad_origin_samples = self.buffer_origin_samples
 
-        self._decode_worker_task = asyncio.create_task(self._decode_worker())
+        self._decode_worker_task = self._spawn_decode_worker()
         await self.send(TranscriptionCleared())
 
     async def _commit_buffer(self, reason: str) -> None:

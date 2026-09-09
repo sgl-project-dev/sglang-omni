@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -379,6 +380,33 @@ async def test_vad_idle_silence_keeps_buffer_bounded(
     assert not [event for event in websocket.events if event["type"] == "error"]
     assert session.audio_buffer.num_bytes < session.audio_buffer.max_bytes
     await session.teardown()
+
+
+class ExplodingStrategy(FakeStrategy):
+    def create_state(self, **settings: Any) -> object:
+        raise RuntimeError("strategy exploded")
+
+
+@pytest.mark.asyncio
+async def test_handler_exception_is_reported_and_session_survives(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    session, websocket, client = await _session(monkeypatch, outputs=["hello"])
+    session.strategy = ExplodingStrategy()
+
+    with caplog.at_level(logging.ERROR):
+        await session.dispatch(_audio_event(_pcm(0.5)))
+
+    assert websocket.events[-1]["type"] == "error"
+    assert websocket.events[-1]["error"]["code"] == "internal_error"
+    assert "strategy exploded" in caplog.text
+
+    session.strategy = FakeStrategy()
+    await session.dispatch(_audio_event(_pcm(0.5)))
+    await session.dispatch({"type": "input_audio_buffer.commit"})
+    await session.dispatch({"type": "transcription.done"})
+    assert websocket.events[-1]["type"] == "transcription.completed"
+    assert websocket.events[-1]["text"] == "hello"
 
 
 def _no_vad_session() -> tuple[RealtimeTranscriptionSession, RecordingWebSocket]:
