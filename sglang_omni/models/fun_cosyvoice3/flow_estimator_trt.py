@@ -86,7 +86,9 @@ def _dynamic_shapes(time: int) -> dict[str, tuple[int, ...]]:
 def _try_enable_fp16_tactics(config: Any, trt: Any) -> bool:
     """Enable weak-typed FP16 tactics when TensorRT still exposes the flag.
 
-    TensorRT 11 removed ``BuilderFlag.FP16``; networks are strongly typed and
+    Note (chenyang):
+
+    TensorRT 11 removed BuilderFlag.FP16; networks are strongly typed and
     the engine follows the ONNX dtypes. Skipping the missing flag lets the
     fp32 checkpoint build instead of crashing at startup.
     """

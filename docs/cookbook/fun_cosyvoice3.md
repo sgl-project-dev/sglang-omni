@@ -247,7 +247,7 @@ Do not enable it together with TensorRT.
 
 ### TensorRT for the DiT backbone
 
-TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive. 
+TensorRT accelerates the DiT by building a cached `.plan` engine from the bundled ONNX. The CFG batch is frozen at 2 with dynamic mel dimensions; larger request batches are handled by chunking cond/uncond pairs. TensorRT and torch.compile are mutually exclusive.
 
 ```bash
 uv pip install tensorrt
@@ -262,8 +262,6 @@ sgl-omni serve \
   --vocoder.factory.enable_flow_estimator_trt true \
   --port 8000
 ```
-
-The first launch compiles a cached `.plan` (reuse via `COSYVOICE3_TRT_CACHE` or `~/.cache/sglang-omni/cosyvoice3_trt`). The builder needs about 8 GiB workspace; TensorRT 11 fails if the pool is only 4 GiB.
 
 On one H200, Flow latency and vocoder RTF comparisons:
 
@@ -289,23 +287,6 @@ Full SeedTTS EN set (1088 samples) on buffered `/v1/audio/speech`, one H200:
 
 This result is only demonstrative, since we have further optimization after the evluation of TensorRT is done.
 
-
-
-## Benchmarking
-
-Measure causal streaming with Seed-TTS-Eval against a running server:
-
-```bash
-python -m benchmarks.eval.benchmark_tts_seedtts \
-  --model FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --port 8000 --lang en --max-concurrency 16 \
-  --use-existing-server --generate-only --stream \
-  --output-dir results/fun_cosyvoice3_en
-```
-
-Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
-`benchmarks/README.md` for the full workflow.
-
 ## Model Architecture
 
 | Component | Detail |
@@ -319,35 +300,14 @@ Use `--lang zh --no-ref-text` for the Chinese cross-lingual split. See
 
 ## Known Limitations
 
-- **Reference audio required.** CosyVoice3 requires a reference audio clip for voice
-  cloning; it does not support text-only synthesis without a speaker reference.
-- **30-second limit.** Reference audio must be 30 seconds or shorter for speech token
-  extraction.
-- **Speaker similarity.** Providing `ref_text` (the transcript) yields better voice
-  similarity than omitting it (cross-lingual mode).
-- **Reference shape.** The endpoint accepts either `ref_audio` plus optional `ref_text`,
-  or one item in `references`; multiple references are rejected for this checkpoint.
-- **Prompt modes.** Provide either `ref_text` or `instructions` for the reference prompt,
-  not both. `instructions` selects CosyVoice3 `instruct2` conditioning.
-- **Reference conditioning cache.** Local files, data URLs, and byte payloads are cached
-  by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded
-  on every request instead of being cached by URL alone.
-- **Speed control.** Applied once, on the decoded waveform, by the shared
-  `/v1/audio/speech` response-encoding path.
+- **Reference audio required.** CosyVoice3 requires a reference audio clip for voice cloning; it does not support text-only synthesis without a speaker reference.
+- **30-second limit.** Reference audio must be 30 seconds or shorter for speech token extraction.
+- **Speaker similarity.** Providing `ref_text` (the transcript) yields better voice similarity than omitting it (cross-lingual mode).
+- **Reference shape.** The endpoint accepts either `ref_audio` plus optional `ref_text`, or one item in `references`; multiple references are rejected for this checkpoint.
+- **Prompt modes.** Provide either `ref_text` or `instructions` for the reference prompt, not both. `instructions` selects CosyVoice3 `instruct2` conditioning.
+- **Reference conditioning cache.** Local files, data URLs, and byte payloads are cached by audio content and encoder configuration. Mutable HTTP URLs are intentionally encoded on every request instead of being cached by URL alone.
+- **Speed control.** Applied once, on the decoded waveform, by the shared `/v1/audio/speech` response-encoding path.
 - **Voice conversion.** Voice conversion is outside the current zero-shot TTS scope.
-- **Streaming decode.** Causal Flow + HiFT emit PCM after each hop
-  (`pre_lookahead_len=3`; hop grows 25 → 50 → 100 by default). Quality can
-  differ slightly from the buffered whole-utterance path. Opt-in TensorRT
-  (`enable_flow_estimator_trt`) also accelerates streaming hops; do not enable
-  it together with `enable_dit_torch_compile`. TRT freezes DiT attention, so
-  streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT
-  wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with
-  packed hop-batch CFG shapes.
-- **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator
-  and the opt-in TensorRT estimator. HiFT batches only the mels produced by one
-  Flow bucket while padding waste stays within `hift_max_padding_waste`.
-  Streaming coalesces first/follow-up hops across requests
-  (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
-- **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be
-  installed from GitHub. Matcha-TTS is a required submodule and must also be importable;
-  only the CosyVoice Flow and HiFT paths are used by the vocoder.
+- **Streaming decode.** Causal Flow + HiFT emit PCM after each hop (hop grows 25 → 50 → 100 by default). Quality can differ slightly from the buffered whole-utterance path. Opt-in TensorRT (`enable_flow_estimator_trt`) also accelerates streaming hops; do not enable it together with `enable_dit_torch_compile`. TRT freezes DiT attention, so streaming+TRT is not bit-exact with PyTorch streaming. Keep the Module TRT wrapper when streaming: CosyVoice's raw TRT enqueue is incompatible with packed hop-batch CFG shapes.
+- **Flow batch scope.** Flow batching supports the CosyVoice PyTorch estimator and the opt-in TensorRT estimator. HiFT batches only the mels produced by one Flow bucket while padding waste stays within `hift_max_padding_waste`. Streaming coalesces first/follow-up hops across requests (`_can_batch_stream_chunks`, short peer wait) so TTFP stays low under load.
+- **cosyvoice dependency.** The `cosyvoice` package has no PyPI release and must be installed from GitHub. Matcha-TTS is a required submodule and must also be importable; only the CosyVoice Flow and HiFT paths are used by the vocoder.
