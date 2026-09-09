@@ -551,10 +551,19 @@ comment that says a pin matches the sglang stack marks a line to revisit.</p>
 <tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">.github/workflows/*.yaml</span></code></p></td>
 <td><p>Every <code class="docutils literal notranslate"><span class="pre">image:</span></code> line, pinned by digest</p></td>
 </tr>
-<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">docs/get_started/installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/basic_usage/tts.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/cookbook/*.md</span></code>, model READMEs</p></td>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">docker/cpu.Dockerfile</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SGLANG_IMAGE</span></code> (digest of the new tag’s <code class="docutils literal notranslate"><span class="pre">-xeon</span></code> manifest)</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code></p></td>
+<td><p><code class="docutils literal notranslate"><span class="pre">SGLANG_XPU_BRANCH</span></code> (the tag) and <code class="docutils literal notranslate"><span class="pre">SGL_KERNEL_XPU_REF</span></code> (the last <code class="docutils literal notranslate"><span class="pre">sgl-kernel-xpu</span></code> commit before the tag)</p></td>
+</tr>
+<tr class="row-even"><td><p><code class="docutils literal notranslate"><span class="pre">pyproject_cpu.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">scripts/cpu/install_cpu.sh</span></code>, <code class="docutils literal notranslate"><span class="pre">scripts/xpu/install_xpu.sh</span></code></p></td>
+<td><p>The verified SGLang tag; the provider pyprojects cannot pin <code class="docutils literal notranslate"><span class="pre">sglang</span></code> because every wheel pulls CUDA torch</p></td>
+</tr>
+<tr class="row-odd"><td><p><code class="docutils literal notranslate"><span class="pre">docs/get_started/installation.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/get_started/installation_cpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/get_started/installation_xpu.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/basic_usage/tts.md</span></code>, <code class="docutils literal notranslate"><span class="pre">docs/cookbook/*.md</span></code>, model READMEs</p></td>
 <td><p>Version names in install instructions</p></td>
 </tr>
-<tr class="row-odd"><td><p>Comments in <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code></p></td>
+<tr class="row-even"><td><p>Comments in <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code></p></td>
 <td><p>Never name a version; state the invariant the code relies on so the text survives the next bump</p></td>
 </tr>
 </tbody>
@@ -562,13 +571,19 @@ comment that says a pin matches the sglang stack marks a line to revisit.</p>
 </div>
 <p>Search the tree for the old versions and the old image digest; the table is
 what past bumps touched.</p>
-<p>The ROCm, XPU, NPU and MUSA stacks (<code class="docutils literal notranslate"><span class="pre">docker/rocm.Dockerfile</span></code>,
-<code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_rocm.toml</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_xpu.toml</span></code>,
-<code class="docutils literal notranslate"><span class="pre">docs/get_started/installation_xpu.md</span></code>) pin their own SGLang tag and base
-images. No project CI builds them, so a bump PR leaves them alone, says so in
-its description, and hands the provider owners the new tag, the matching
-provider image digest if one exists, and any platform dispatch change made in
-<code class="docutils literal notranslate"><span class="pre">sglang_omni/platforms/</span></code>.</p>
+<p>The Intel CPU and XPU stacks pin their own SGLang tag and base images, and
+their CI workflows build <code class="docutils literal notranslate"><span class="pre">docker/cpu.Dockerfile</span></code> and <code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code>
+on every PR that touches <code class="docutils literal notranslate"><span class="pre">sglang_omni/</span></code>. <code class="docutils literal notranslate"><span class="pre">sglang_omni/platforms/</span></code> imports the
+pinned release’s modules at import time, so those workflows fail on a bump
+until the two stacks move with it: the <code class="docutils literal notranslate"><span class="pre">-xeon</span></code> image digest, the XPU tag and
+its <code class="docutils literal notranslate"><span class="pre">sgl-kernel-xpu</span></code> revision, and the verified tag in the provider
+pyprojects, install scripts and install docs. Upstream’s <code class="docutils literal notranslate"><span class="pre">docker/xpu.Dockerfile</span></code>
+at the tag names any new build prerequisite.</p>
+<p>The ROCm, NPU and MUSA stacks (<code class="docutils literal notranslate"><span class="pre">docker/rocm.Dockerfile</span></code>, <code class="docutils literal notranslate"><span class="pre">pyproject_rocm.toml</span></code>)
+pin their own SGLang tag and base images. No project CI builds them, so a bump
+PR leaves them alone, says so in its description, and hands the provider owners
+the new tag, the matching provider image digest if one exists, and any platform
+dispatch change made in <code class="docutils literal notranslate"><span class="pre">sglang_omni/platforms/</span></code>.</p>
 </section>
 <section id="where-omni-depends-on-sglang">
 <h2>Where Omni depends on SGLang<a class="headerlink" href="#where-omni-depends-on-sglang" title="Link to this heading">#</a></h2>
@@ -602,12 +617,15 @@ docstrings state what each patch does, and <code class="docutils literal notrans
 removing it. Check that the wrapped upstream body still has the shape the
 patch assumes (a dispatch rewrite upstream can route around a patched method
 without an error) and that <code class="docutils literal notranslate"><span class="pre">tests/unit_test/vendor/</span></code> still pins it.</p>
-<p><strong><code class="docutils literal notranslate"><span class="pre">ServerArgs</span></code> mutation.</strong> Omni changes engine configuration after
-<code class="docutils literal notranslate"><span class="pre">build_sglang_server_args</span></code> through one seam,
+<p><strong><code class="docutils literal notranslate"><span class="pre">ServerArgs</span></code> mutation.</strong> <code class="docutils literal notranslate"><span class="pre">build_sglang_server_args</span></code> constructs the record
+and resolves it once, so every reader between the builder and publish sees
+what resolution decided rather than the raw input. Omni changes engine
+configuration after the builder through one seam,
 <code class="docutils literal notranslate"><span class="pre">sglang_omni/vendor/sglang/server_args.py::override_server_args</span></code>. Upstream
-decides what a mutation means at each lifecycle phase; today a record that
-is not yet published resolves in place, and a published record is read-only
-with its values living on the runtime-context bags. Every call site has a
+decides what a mutation means at each lifecycle phase; today a resolved record
+that is not yet published takes the change as a late declaration, and a
+published record is read-only with its values living on the runtime-context
+bags. Every call site has a
 phase, and every later reader has to read from where the current release
 stores the value. The bump that introduced the read-only record turned
 several write-then-read-back sites into hard errors.</p>
@@ -683,18 +701,35 @@ Every API and shape matched and a benchmark score dropped. For a
 pretrained model the arithmetic that interprets its weights is part of
 the contract; the overlay preserves the old sequence and is verified on
 intermediates, not only on the final score.</p></li>
-<li><p>Caches. New Inductor, Triton and FlashInfer versions invalidate every
-compiled artifact once, so the first pass in a fresh image measures
-compilation, not serving.</p></li>
+<li><p>Caches. New Inductor, Triton, FlashInfer and DeepGEMM versions invalidate
+every compiled artifact once, so the first pass in a fresh image measures
+compilation, not serving. SGLang builds DeepGEMM, Triton and its own JIT
+kernels under <code class="docutils literal notranslate"><span class="pre">SGLANG_CACHE_DIR</span></code>; the CI setup action points it at a
+directory shared across PRs on the persistent CI mount, so only the first
+job after a bump pays the build.</p></li>
 </ul>
 </section>
 <section id="the-ci-image">
 <h2>The CI image<a class="headerlink" href="#the-ci-image" title="Link to this heading">#</a></h2>
 <p>GPU CI runs inside <code class="docutils literal notranslate"><span class="pre">hongccc/sglang-omni</span></code>, pinned by digest in every
-workflow. The CI virtualenv is built on the image’s Python with system site
-packages, so torch, FlashInfer and SGLang come from the image and only what
+workflow. The CI virtualenv uses Python 3.12 with system site-packages and
+loads <code class="docutils literal notranslate"><span class="pre">/opt/sglang/lib/python3.12/site-packages</span></code> with <code class="docutils literal notranslate"><span class="pre">site.addsitedir</span></code>, including
+the upstream SGLang editable-install <code class="docutils literal notranslate"><span class="pre">.pth</span></code> file. Torch, FlashInfer and SGLang
+come from the image and only what
 the image lacks is installed on top; <code class="docutils literal notranslate"><span class="pre">verify_omni_installed_pins.py</span></code> then
 checks every exact pin in <code class="docutils literal notranslate"><span class="pre">pyproject.toml</span></code> against what is installed.</p>
+<p>The image also installs Qwen-TTS without its conflicting dependencies, system
+SoX, the Descript DAC packages, and the Audar/CosyVoice extras. Apply the
+project’s dependency overrides when resolving these packages. The CI import
+gate checks Qwen-TTS after the compatibility patch, DAC and NeuCodec imports,
+and the SoX executable. It imports llama.cpp before Torch to catch system NCCL
+conflicts; the image prioritizes Torch’s NCCL library. A package listing alone
+does not prove a usable runtime.</p>
+<p>Reinstalling even the same FlashInfer wheel refreshes bundled header mtimes.
+The Dockerfile preserves the cache donor’s mtimes only for byte-identical
+FlashInfer sources; changed sources remain newer and invalidate their objects.
+After rebuilding, run Ninja with <code class="docutils literal notranslate"><span class="pre">-n</span> <span class="pre">-d</span> <span class="pre">explain</span></code> in the copied <code class="docutils literal notranslate"><span class="pre">cached_ops</span></code>
+directories before GPU validation to catch unintended object recompilation.</p>
 <p>A bump therefore ships a new image: build <code class="docutils literal notranslate"><span class="pre">docker/Dockerfile</span></code> on the
 <code class="docutils literal notranslate"><span class="pre">lmsysorg/sglang</span></code> digest for the new tag, populate the FlashInfer JIT cache
 on a GPU for the architectures CI runs on (Docker builds have none, so the

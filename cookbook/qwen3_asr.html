@@ -539,14 +539,14 @@
 </div>
 <section id="apple-silicon-mlx">
 <h3>Apple Silicon (MLX)<a class="headerlink" href="#apple-silicon-mlx" title="Link to this heading">#</a></h3>
-<p>The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang’s MLX
-runtime. Audio decoding also requires Homebrew’s versioned FFmpeg 7 formula:</p>
+<p>The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
+SGLang’s MLX runtime. Audio decoding also requires Homebrew’s versioned FFmpeg 7 formula:</p>
 <div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>brew<span class="w"> </span>install<span class="w"> </span>ffmpeg@7
 <span class="nb">export</span><span class="w"> </span><span class="nv">DYLD_LIBRARY_PATH</span><span class="o">=</span><span class="s2">"</span><span class="k">$(</span>brew<span class="w"> </span>--prefix<span class="w"> </span>ffmpeg@7<span class="k">)</span><span class="s2">/lib</span><span class="si">${</span><span class="nv">DYLD_LIBRARY_PATH</span><span class="p">:+:</span><span class="nv">$DYLD_LIBRARY_PATH</span><span class="si">}</span><span class="s2">"</span>
 </pre></div>
 </div>
 <p>Do not replace <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> with the unversioned <code class="docutils literal notranslate"><span class="pre">ffmpeg</span></code> formula. The latter
-currently installs FFmpeg 9, while Apple installs <code class="docutils literal notranslate"><span class="pre">torchcodec==0.11.1</span></code>, which
+currently installs FFmpeg 9, while Apple installs <code class="docutils literal notranslate"><span class="pre">torchcodec==0.15.0</span></code>, which
 supports FFmpeg 4 through 8. Because <code class="docutils literal notranslate"><span class="pre">ffmpeg&#64;7</span></code> is keg-only, its library
 directory must also be present in <code class="docutils literal notranslate"><span class="pre">DYLD_LIBRARY_PATH</span></code> whenever the server starts.</p>
 <p>macOS may remove <code class="docutils literal notranslate"><span class="pre">DYLD_*</span></code> variables when a SIP-protected system executable
@@ -557,7 +557,7 @@ can succeed without loading FFmpeg.</p>
 <p>Create one virtual environment for both repositories, then install the pinned
 SGLang tag from source with its <code class="docutils literal notranslate"><span class="pre">all_mps</span></code> dependencies before installing
 SGLang-Omni:</p>
-<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>v0.5.18<span class="w"> </span>https://github.com/sgl-project/sglang.git
+<div class="highlight-bash notranslate"><div class="highlight"><pre><span></span>git<span class="w"> </span>clone<span class="w"> </span>--branch<span class="w"> </span>v0.5.19<span class="w"> </span>https://github.com/sgl-project/sglang.git
 git<span class="w"> </span>clone<span class="w"> </span>https://github.com/sgl-project/sglang-omni.git
 
 uv<span class="w"> </span>venv<span class="w"> </span>-p<span class="w"> </span><span class="m">3</span>.12<span class="w"> </span>sglang-omni/.venv-apple
