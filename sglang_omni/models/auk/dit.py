@@ -560,6 +560,8 @@ class AuKDit(nn.Module):
         cache: bool = False,
         ref: torch.Tensor | None = None,
         ref_mask: torch.Tensor | None = None,
+        audio_positions: torch.Tensor | None = None,
+        joint_positions: torch.Tensor | None = None,
     ) -> torch.Tensor:
         batch = x.shape[0]
         if time.ndim == 0:
@@ -599,6 +601,9 @@ class AuKDit(nn.Module):
                 else None
             )
             c_mask = torch.cat((c_mask, c_mask), dim=0)
+            if audio_positions is not None:
+                audio_positions = audio_positions.repeat(2, 1)
+                joint_positions = joint_positions.repeat(2, 1)
         else:
             c = self.project_text(text, drop_text=drop_text)
             x, audio_mask, prompt_len = self._embed_audio(
@@ -607,7 +612,11 @@ class AuKDit(nn.Module):
 
         seq_len = x.shape[1]
         text_len = c.shape[1]
-        rope_audio = self.rotary_embed.forward_from_seq_len(seq_len)
+        rope_audio = (
+            self.rotary_embed.forward_from_seq_len(seq_len)
+            if audio_positions is None
+            else self.rotary_embed(audio_positions)
+        )
         rope_text = self.rotary_embed.forward_from_seq_len(text_len)
 
         for block in self.transformer_blocks:
@@ -622,7 +631,11 @@ class AuKDit(nn.Module):
             )
 
         x = torch.cat([c, x], dim=1)
-        rope = self.rotary_embed.forward_from_seq_len(text_len + seq_len)
+        rope = (
+            self.rotary_embed.forward_from_seq_len(text_len + seq_len)
+            if joint_positions is None
+            else self.rotary_embed(joint_positions)
+        )
         single_mask = (
             torch.cat([c_mask, audio_mask], dim=1) if audio_mask is not None else None
         )

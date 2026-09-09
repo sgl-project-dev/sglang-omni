@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import numpy as np
 import torch
 
 from sglang_omni.models.auk.constants import NO_PROMPT_AUDIO_MARKER
@@ -73,32 +72,23 @@ class AuKConditionEncoder:
     def num_hidden_layers(self) -> int:
         return int(self.model.config.text_config.num_hidden_layers)
 
-    def _process_one(
-        self, messages: list[dict[str, Any]], audio: np.ndarray | None
-    ) -> dict[str, torch.Tensor]:
-        formatted = self.processor.apply_chat_template(
-            [messages], tokenize=False, add_generation_prompt=True
-        )
-        kwargs: dict[str, Any] = {
-            "text": formatted,
-            "padding": True,
-            "return_tensors": "pt",
-        }
-        if audio is not None:
-            kwargs["audio"] = [audio]
-        return self.processor(**kwargs)
+    @torch.no_grad()
+    def encode(self, messages, audio):
+        return self.encode_batch([messages], [audio])[0]
 
     @torch.no_grad()
-    def encode(
-        self,
-        messages: list[dict[str, Any]],
-        audio: np.ndarray | None,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Encode one request into all-layer hidden states and its mask."""
-        inputs = self._process_one(messages, audio)
+    def encode_batch(self, messages, audios):
+        """Encode padded requests together, returning only each request's valid tokens."""
+        formatted = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        kwargs = dict(text=formatted, padding=True, return_tensors="pt")
+        references = [audio for audio in audios if audio is not None]
+        if references:
+            kwargs["audio"] = references
+        inputs = self.processor(**kwargs)
         inputs = {k: v.to(self.device) for k, v in inputs.items() if torch.is_tensor(v)}
         outputs = self.model(**inputs, output_hidden_states=True, use_cache=False)
-        return (
-            torch.stack(outputs.hidden_states, dim=1)[0],
-            inputs["attention_mask"][0].bool(),
-        )
+        hidden = torch.stack(outputs.hidden_states, dim=1)
+        masks = inputs["attention_mask"].bool()
+        return [(item[:, mask], mask[mask]) for item, mask in zip(hidden, masks)]

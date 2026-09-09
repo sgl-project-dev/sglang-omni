@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import torch
 import torch.nn.functional as F
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 
 from sglang_omni.models.auk.dit import AuKDit
 
@@ -42,7 +43,7 @@ def build_time_grid(
 
 @dataclass
 class AuKSampleItem:
-    hidden_states: torch.Tensor
+    conditioning: torch.Tensor
     text_mask: torch.Tensor
     target_frames: int
     ref_latent: torch.Tensor | None = None
@@ -51,7 +52,7 @@ class AuKSampleItem:
 
 
 class AuKFlowMatching(nn.Module):
-    """Serial velocity-field integration."""
+    """Velocity-field integration for variable-length request batches."""
 
     def __init__(self, transformer: AuKDit, num_llm_layers: int):
         super().__init__()
@@ -72,34 +73,113 @@ class AuKFlowMatching(nn.Module):
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
     ) -> torch.Tensor:
+        return self.sample_batch(
+            [item],
+            steps=steps,
+            cfg_strength=cfg_strength,
+            sway_sampling_coef=sway_sampling_coef,
+            t_grid=t_grid,
+        )[0]
+
+    @torch.no_grad()
+    def sample_batch(
+        self,
+        items: Sequence[AuKSampleItem],
+        *,
+        steps: int,
+        cfg_strength: float,
+        sway_sampling_coef: float | None = None,
+        t_grid: Sequence[float] | None = None,
+    ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
-        ref = (
-            item.ref_latent.unsqueeze(0)
-            if item.ref_latent is not None
-            else torch.zeros(1, 0, self.transformer.latent_dim, device=device)
+        dim = self.transformer.latent_dim
+
+        def pack(tensors):
+            return (
+                tensors[0].unsqueeze(0)
+                if len(tensors) == 1
+                else pad_sequence(tensors, batch_first=True)
+            )
+
+        references = [
+            (
+                item.ref_latent
+                if item.ref_latent is not None
+                else torch.zeros(0, dim, device=device)
+            )
+            for item in items
+        ]
+        ref = pack(references)
+        ref_mask = (
+            torch.arange(ref.shape[1], device=device)[None, :]
+            < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
-        ref_mask = torch.arange(ref.shape[1], device=device)[None, :] < item.ref_length
-        text = self.fuse(item.hidden_states.unsqueeze(0))
-        text_mask = item.text_mask.unsqueeze(0)
-        if item.seed is not None:
-            torch.manual_seed(item.seed)
-        y0 = torch.randn(
-            item.target_frames,
-            self.transformer.latent_dim,
-            device=device,
-            dtype=torch.float32,
-        ).unsqueeze(0)
+        text = pack([item.conditioning for item in items])
+        text_mask = pack([item.text_mask for item in items])
+        noise = []
+        for item in items:
+            generator = (
+                None
+                if item.seed is None
+                else torch.Generator(device=device).manual_seed(item.seed)
+            )
+            noise.append(
+                torch.randn(
+                    item.target_frames,
+                    dim,
+                    device=device,
+                    dtype=torch.float32,
+                    generator=generator,
+                )
+            )
+        y0 = pack(noise)
+        mask = audio_positions = joint_positions = None
+        if len(items) > 1:
+            target_positions = torch.arange(y0.shape[1], device=device)[None, :]
+            mask = (
+                target_positions
+                < torch.tensor([item.target_frames for item in items], device=device)[
+                    :, None
+                ]
+            )
+            ref_sizes = torch.tensor(
+                [ref.shape[0] for ref in references], device=device
+            )[:, None]
+            text_sizes = torch.tensor(
+                [item.conditioning.shape[0] for item in items], device=device
+            )[:, None]
+            # Padding must not shift a request's reference, target, or text RoPE positions.
+            audio_positions = torch.cat(
+                [
+                    torch.arange(ref.shape[1], device=device)[None, :].expand(
+                        len(items), -1
+                    ),
+                    target_positions + ref_sizes,
+                ],
+                dim=1,
+            )
+            joint_positions = torch.cat(
+                [
+                    torch.arange(text.shape[1], device=device)[None, :].expand(
+                        len(items), -1
+                    ),
+                    audio_positions + text_sizes,
+                ],
+                dim=1,
+            )
 
         def fn(t, x):
             kwargs = dict(
                 x=x,
                 text=text,
                 time=t,
-                mask=None,
+                mask=mask,
                 c_mask=text_mask,
                 ref=ref,
                 ref_mask=ref_mask,
                 cache=True,
+                audio_positions=audio_positions,
+                joint_positions=joint_positions,
             )
             if cfg_strength < 1e-5:
                 return self.transformer(
@@ -111,7 +191,8 @@ class AuKFlowMatching(nn.Module):
 
         t = build_time_grid(steps, sway_sampling_coef, t_grid, device=device)
         try:
-            return integrate(fn, y0, t)[0]
+            result = integrate(fn, y0, t)
+            return [latent[: item.target_frames] for item, latent in zip(items, result)]
         finally:
             self.transformer.clear_cache()
 

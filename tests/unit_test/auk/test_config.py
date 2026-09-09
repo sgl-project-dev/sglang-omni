@@ -11,6 +11,8 @@ import pytest
 
 from sglang_omni.config import manager
 from sglang_omni.models.auk.config import (
+    CONDITIONING_STAGE,
+    DECODE_STAGE,
     ENGINE_STAGE,
     PREPROCESSING_STAGE,
     AuKPipelineConfig,
@@ -25,10 +27,12 @@ def test_registered_pipeline_is_connected(architecture):
     config_cls = PIPELINE_CONFIG_REGISTRY.get_config(architecture)
     assert config_cls is AuKPipelineConfig
     config = config_cls(model_path="tencent/AuK")
-    preprocessing, engine = config.stages
+    preprocessing, conditioning, engine, decode = config.stages
     assert config.resolved_entry_stage == preprocessing.name == PREPROCESSING_STAGE
-    assert preprocessing.next == engine.name == ENGINE_STAGE
-    assert config.terminal_stages == [engine.name]
+    assert preprocessing.next == conditioning.name == CONDITIONING_STAGE
+    assert conditioning.next == engine.name == ENGINE_STAGE
+    assert engine.next == decode.name == DECODE_STAGE
+    assert config.terminal_stages == [decode.name]
     for stage in config.stages:
         module, name = stage.factory_path.rsplit(".", 1)
         assert callable(getattr(importlib.import_module(module), name))

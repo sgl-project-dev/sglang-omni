@@ -12,7 +12,7 @@ from sglang_omni.scheduling.pipeline_state import DeclarativeStateBase, wire
 
 @dataclass
 class AuKState(DeclarativeStateBase):
-    """Request fields passed from preprocessing to the terminal AuK engine."""
+    """Request fields shared by preprocessing, conditioning, sampling and decode."""
 
     sample_rate: int = wire(C.SAMPLE_RATE, codec="int")
 
@@ -23,6 +23,11 @@ class AuKState(DeclarativeStateBase):
 
     gen_frames: int = wire(0, codec="int")
     seed: int | None = None
+    conditioning: Any | None = wire(None, codec="tensor_cpu")
+    text_mask: Any | None = wire(None, codec="tensor_cpu")
+    ref_latent: Any | None = wire(None, codec="tensor_cpu")
+    ref_length: int = wire(0, codec="int")
+    latent: Any | None = wire(None, codec="tensor_cpu")
 
     @property
     def gen_seconds(self) -> float:

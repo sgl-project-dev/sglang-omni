@@ -1,6 +1,6 @@
 # AuK
 
-[AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash) support instruction-driven speech generation and editing. They share one pipeline. AuK-Flash is the DMD-distilled four-step recipe.
+[AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash) support instruction-driven speech generation and editing. They share a four-stage pipeline: preprocessing → conditioning → DiT sampling → VAE decoding. AuK-Flash is the DMD-distilled four-step recipe.
 
 The released checkpoints use:
 
@@ -20,11 +20,11 @@ The released checkpoints use:
 Follow [Installation](../get_started/installation.md), then run from the repository root:
 
 ```bash
-sgl-omni serve --model-path tencent/AuK --port 8000
+python -m sglang_omni.cli serve --model-path tencent/AuK --port 8000
 ```
 
 ```bash
-sgl-omni serve --model-path tencent/AuK-Flash --port 8000
+python -m sglang_omni.cli serve --model-path tencent/AuK-Flash --port 8000
 ```
 
 ## Speech Generation
@@ -67,7 +67,7 @@ Explicit `gen_seconds` takes priority and must be positive. Target duration roun
 
 ## Speech Editing
 
-`/generate` accepts a raw AuK instruction in `prompt` and returns JSON. Set `output_modalities` to `["audio"]` and supply reference audio through `metadata.tts_params.ref_audio`:
+`/generate` accepts a raw AuK instruction in `prompt` and returns JSON. Set `output_modalities` to `["audio"]` and `return_logprob` to `false` (AuK does not produce token log probabilities). Supply reference audio through `metadata.tts_params.ref_audio`:
 
 ```bash
 curl http://localhost:8000/generate \
@@ -75,7 +75,8 @@ curl http://localhost:8000/generate \
   -d '{
     "prompt": "Remove the background noise.",
     "metadata": {"tts_params": {"ref_audio": "https://huggingface.co/datasets/zhaochenyang20/seed-tts-eval-mini/resolve/main/en/prompt-wavs/common_voice_en_10119832.wav"}},
-    "output_modalities": ["audio"]
+    "output_modalities": ["audio"],
+    "return_logprob": false
   }'
 ```
 
@@ -85,7 +86,9 @@ Override duration with `stage_params.auk_engine.gen_seconds`. Otherwise, editing
 
 Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.0`, and `sway_sampling_coef=-1.0`. Override them with `--auk_engine.factory.*` flags. Flash locks to the released four-step grid with CFG disabled, so those flags have no effect on `tencent/AuK-Flash`. Request overrides of these settings and `max_seconds` are rejected. Qwen and DiT use BF16 autocast by default; the VAE runs in FP32.
 
-`seed` controls target noise only. Reference VAE posterior sampling uses the process RNG, so a request seed alone does not make voice cloning deterministic. Multiple structured references are rejected.
+`seed` selects a request-local random generator for target noise. Reference VAE posterior sampling happens earlier and depends on the process RNG and request order, so a request seed alone does not make voice cloning deterministic. Multiple structured references are rejected.
+
+Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
 ## SeedTTS Evaluation
 
@@ -96,7 +99,7 @@ CUDA_VISIBLE_DEVICES=0 python -m benchmarks.eval.benchmark_tts_seedtts \
   --model tencent/AuK --output-dir results/auk_en
 ```
 
-Use `--max-samples` and `--sample-offset` for a subset. `--generate-only` and `--transcribe-only` run individual phases; add `--use-existing-server` to either mode to use a running server. Explicit CLI options override the AuK defaults.
+Add `--concurrency 16` to evaluate with 16 in-flight requests. Use `--max-samples` and `--sample-offset` for a subset. `--generate-only` and `--transcribe-only` run individual phases; add `--use-existing-server` to either mode to use a running server. Explicit CLI options override the AuK defaults.
 
 `wer_results.json` includes full sample mean WER, `wer_below_50_per_sample_mean` (excluding samples strictly above 50%), and `n_above_50_pct_wer`. Corpus WER is reported separately and is word-weighted.
 

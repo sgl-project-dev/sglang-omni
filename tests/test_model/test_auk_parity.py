@@ -36,7 +36,11 @@ def models():
         )
     if not torch.cuda.is_available():
         pytest.skip("AuK checkpoint parity requires CUDA")
-    from sglang_omni.models.auk.stages import create_auk_engine_executor
+    from sglang_omni.models.auk.stages import (
+        create_auk_engine_executor,
+        create_conditioning_executor,
+        create_decode_executor,
+    )
     from sglang_omni.models.auk.weight_loader import resolve_weight_file
     from sglang_omni.utils.checkpoint import resolve_checkpoint
 
@@ -52,10 +56,16 @@ def models():
         device="cuda:0",
         qwen_path=qwen,
     )
-    engine = create_auk_engine_executor(
+    conditioning = create_conditioning_executor(
         checkpoint, device="cuda:0", text_encoder_path=qwen
     )
-    return upstream, engine, checkpoint, Path(source)
+    engine = create_auk_engine_executor(checkpoint, device="cuda:0")
+    decode = create_decode_executor(checkpoint, device="cuda:0")
+
+    def generate(payload):
+        return decode._fn(engine._fn(conditioning._fn(payload)))
+
+    return upstream, generate, checkpoint, Path(source)
 
 
 @pytest.mark.parametrize("reference", [False, True])
@@ -153,7 +163,7 @@ def test_speech_matches_upstream(models, monkeypatch, reference):
         cfg_strength=2.0,
     )
     torch.manual_seed(42)
-    result = engine._fn(payload)
+    result = engine(payload)
     actual["waveform"] = torch.frombuffer(
         bytearray(result.data["audio_waveform"]), dtype=torch.float32
     ).reshape(1, -1)
