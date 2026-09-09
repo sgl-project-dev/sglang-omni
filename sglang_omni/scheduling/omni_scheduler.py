@@ -1827,7 +1827,6 @@ class OmniScheduler:
             _remove_from_batch(self.running_batch, request_id)
             _remove_from_batch(self.cur_batch, request_id)
             _remove_from_batch(self.last_batch, request_id)
-            _remove_from_batch(self._async_pending_batch(), request_id)
         self._drain_inbox_for_request(request_id)
 
     def admin(
@@ -2361,10 +2360,12 @@ class OmniScheduler:
         _mark_sampler_finished sets) must be KEPT so process_batch_result emits
         it — only reqs finished in a *prior* step are the overrun to drop.
         """
-        # A request retracted at step S is still in step S+1's lagged batch;
-        # drop it like a prior-step finish so its KV is not re-freed.
-        pre_finished = [r.finished() or r.is_retracted for r in batch.reqs]
-        # rids finished/retracted in a prior step (overrun): suppress their emit
+        # Note (Akazaakane): Keep in-flight snapshot rows intact until resolve
+        # so aborted requests and their token rows are dropped together.
+        pre_finished = [
+            r.finished() or r.is_retracted or r.rid in self._aborted_request_ids
+            for r in batch.reqs
+        ]
         skip_rids = {batch.reqs[i].rid for i, was in enumerate(pre_finished) if was}
         result = self._run_batch_resolve(
             batch, sched_output, pending_step, skip_rids=skip_rids
@@ -2668,15 +2669,62 @@ class OmniScheduler:
         self._stream_done_handler(req_data)
 
 
-def _remove_from_batch(batch: Any, request_id: str) -> None:
+def _remove_from_batch(batch: ScheduleBatch | None, request_id: str) -> None:
     if batch is None:
         return
-    remaining_reqs = []
-    for req in batch.reqs:
-        if req.rid == request_id:
-            _detach_request_data(req)
-        else:
-            remaining_reqs.append(req)
-    batch.reqs = remaining_reqs
+    remove_indices = [
+        index for index, req in enumerate(batch.reqs) if req.rid == request_id
+    ]
+    if not remove_indices:
+        return
+
+    remove_set = set(remove_indices)
+    keep_indices = [
+        index for index in range(len(batch.reqs)) if index not in remove_set
+    ]
+    for index in remove_indices:
+        _detach_request_data(batch.reqs[index])
+
+    # Note (Akazaakane): ScheduleBatch.filter_batch preserves alignment across
+    # per-request state; mutating reqs alone corrupts downstream relay indices.
+    batch.filter_batch(keep_indices=keep_indices)
     if not batch.reqs:
         batch.batch_is_full = False
+        return
+    _validate_schedule_batch_row_alignment(batch)
+
+
+def _validate_schedule_batch_row_alignment(batch: ScheduleBatch) -> None:
+    expected = len(batch.reqs)
+    row_fields = (
+        "req_pool_indices",
+        "req_pool_indices_cpu",
+        "seq_lens",
+        "orig_seq_lens",
+        "seq_lens_cpu",
+        "multimodal_inputs",
+        "top_logprobs_nums",
+        "token_ids_logprobs",
+        "encoder_cached",
+        "encoder_lens",
+        "encoder_lens_cpu",
+    )
+    mismatches = {}
+    for field in row_fields:
+        value = getattr(batch, field)
+        if value is not None and len(value) != expected:
+            mismatches[field] = len(value)
+
+    forward_mode = batch.forward_mode
+    is_decode = forward_mode is not None and forward_mode.is_decode()
+    if is_decode:
+        for field in ("input_ids", "input_embeds"):
+            value = getattr(batch, field)
+            if value is not None and len(value) != expected:
+                mismatches[field] = len(value)
+
+    if mismatches:
+        raise RuntimeError(
+            "ScheduleBatch row alignment violated after request removal: "
+            f"requests={expected}, fields={mismatches}"
+        )

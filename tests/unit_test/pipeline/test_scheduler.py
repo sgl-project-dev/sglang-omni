@@ -79,6 +79,207 @@ def _new_stage_payload(request_id: str) -> StagePayload:
     )
 
 
+class _RowSamplingInfo:
+    def __init__(self, values: list[int]) -> None:
+        self.values = torch.tensor(values)
+
+    def filter_batch(self, keep_indices, keep_indices_device) -> None:
+        del keep_indices
+        self.values = self.values[keep_indices_device]
+
+
+def _make_row_aligned_schedule_batch(size: int = 4):
+    from sglang.srt.managers.schedule_batch import ScheduleBatch
+    from sglang.srt.model_executor.forward_batch_info import CaptureHiddenMode
+
+    reqs = [
+        SimpleNamespace(
+            rid=f"req-{index}",
+            _omni_data=object(),
+            return_logprob=False,
+            return_hidden_states_mode=CaptureHiddenMode.NULL,
+            grammar=None,
+            finished=lambda: False,
+            is_retracted=False,
+            _omni_terminal_claimed=False,
+            to_finish=None,
+        )
+        for index in range(size)
+    ]
+    row_values = list(range(10, 10 + size))
+    batch = ScheduleBatch(
+        reqs=reqs,
+        model_config=SimpleNamespace(is_encoder_decoder=False),
+        device="cpu",
+    )
+    batch.req_pool_indices = torch.tensor(row_values)
+    batch.req_pool_indices_cpu = torch.tensor(row_values)
+    batch.seq_lens = torch.tensor([100 + value for value in row_values])
+    batch.orig_seq_lens = torch.tensor([200 + value for value in row_values])
+    batch.seq_lens_cpu = torch.tensor([300 + value for value in row_values])
+    batch.input_ids = torch.tensor([400 + value for value in row_values])
+    batch.multimodal_inputs = [f"mm-{value}" for value in row_values]
+    batch.sampling_info = _RowSamplingInfo(row_values)
+    return batch
+
+
+def _assert_row_aligned_batch(batch, expected_pool_indices: list[int]) -> None:
+    expected = len(expected_pool_indices)
+    assert [req.rid for req in batch.reqs] == [
+        f"req-{value - 10}" for value in expected_pool_indices
+    ]
+    assert batch.req_pool_indices.tolist() == expected_pool_indices
+    assert batch.req_pool_indices_cpu.tolist() == expected_pool_indices
+    assert len(batch.seq_lens) == expected
+    assert len(batch.orig_seq_lens) == expected
+    assert len(batch.seq_lens_cpu) == expected
+    assert len(batch.input_ids) == expected
+    assert len(batch.multimodal_inputs) == expected
+    assert batch.sampling_info.values.tolist() == expected_pool_indices
+
+
+@pytest.mark.parametrize(
+    ("request_id", "expected_pool_indices"),
+    [
+        ("req-0", [11, 12, 13]),
+        ("req-1", [10, 12, 13]),
+        ("req-3", [10, 11, 12]),
+    ],
+)
+def test_remove_from_batch_compacts_every_scheduler_row(
+    request_id: str, expected_pool_indices: list[int]
+) -> None:
+    batch = _make_row_aligned_schedule_batch()
+
+    omni_scheduler_module._remove_from_batch(batch, request_id)
+
+    _assert_row_aligned_batch(batch, expected_pool_indices)
+
+
+def test_remove_from_batch_compacts_sequential_removals() -> None:
+    batch = _make_row_aligned_schedule_batch()
+
+    omni_scheduler_module._remove_from_batch(batch, "req-1")
+    omni_scheduler_module._remove_from_batch(batch, "req-3")
+
+    _assert_row_aligned_batch(batch, [10, 12])
+
+
+def test_remove_from_batch_discards_empty_batch(monkeypatch) -> None:
+    batch = _make_row_aligned_schedule_batch(size=1)
+    batch.batch_is_full = True
+    removed_req = batch.reqs[0]
+    monkeypatch.setattr(
+        omni_scheduler_module,
+        "_validate_schedule_batch_row_alignment",
+        lambda _batch: pytest.fail("empty batches must not be validated"),
+    )
+
+    omni_scheduler_module._remove_from_batch(batch, "req-0")
+
+    assert batch.reqs == []
+    assert removed_req._omni_data is None
+    assert batch.batch_is_full is False
+
+
+def _make_row_removal_abort_scheduler(batch):
+    scheduler = object.__new__(OmniScheduler)
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._aborted_request_ids = set()
+    scheduler._aborted_request_id_order = deque()
+    scheduler._pending_request_builds = {}
+    scheduler._pending_request_admissions = {}
+    scheduler._backlogged_request_build_payloads = deque()
+    scheduler.waiting_queue = []
+    scheduler._abort_callback = None
+    scheduler._pending_stream_ingress = {}
+    scheduler._deferred_request_payloads = {}
+    scheduler._dirty_deferred_request_ids = set()
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler._async_pending = None
+    scheduler.inbox = Queue()
+    scheduler.running_batch = batch
+    scheduler.cur_batch = batch
+    scheduler.last_batch = None
+    scheduler._release_immediate_request_resources = lambda _request_id: None
+    return scheduler
+
+
+def test_immediate_abort_compacts_live_schedule_batch_rows() -> None:
+    batch = _make_row_aligned_schedule_batch(size=2)
+    scheduler = _make_row_removal_abort_scheduler(batch)
+
+    scheduler.abort("req-0", defer_running_cleanup=False)
+
+    _assert_row_aligned_batch(batch, [11])
+
+
+def test_terminal_failure_abort_compacts_finished_schedule_batch_row() -> None:
+    batch = _make_row_aligned_schedule_batch(size=2)
+    batch.reqs[0].finished = lambda: True
+    scheduler = _make_row_removal_abort_scheduler(batch)
+
+    scheduler.abort("req-0")
+
+    _assert_row_aligned_batch(batch, [11])
+
+
+@pytest.mark.parametrize(("size", "aborted_indices"), [(3, [1]), (2, [0, 1])])
+@pytest.mark.parametrize("defer_running_cleanup", [False, True])
+def test_async_abort_preserves_snapshot_until_resolve(
+    monkeypatch, size, aborted_indices, defer_running_cleanup
+) -> None:
+    batch = _make_row_aligned_schedule_batch(size=size)
+    scheduler = _make_row_removal_abort_scheduler(batch)
+    reqs = list(batch.reqs)
+    snapshot = batch.copy()
+    snapshot_reqs = snapshot.reqs
+    sched_output, pending_step = object(), object()
+    scheduler._async_pending = (snapshot, sched_output, pending_step)
+    captured = {}
+
+    def fail_snapshot_filter(*args, **kwargs):
+        pytest.fail("async snapshots must not use ScheduleBatch.filter_batch")
+
+    monkeypatch.setattr(snapshot, "filter_batch", fail_snapshot_filter)
+
+    def resolve(resolved_batch, output, step, *, skip_rids):
+        assert resolved_batch is snapshot
+        assert output is sched_output
+        assert step is pending_step
+        assert all(actual is expected for actual, expected in zip(snapshot.reqs, reqs))
+        captured["skip_rids"] = skip_rids
+        return SimpleNamespace(next_token_ids=torch.arange(10, 10 + size))
+
+    def process(resolved_batch, result):
+        captured["reqs"] = list(resolved_batch.reqs)
+        captured["tokens"] = result.next_token_ids.tolist()
+
+    scheduler._run_batch_resolve = resolve
+    scheduler.process_batch_result = process
+    scheduler._handle_batch_failure = lambda _batch, exc: pytest.fail(str(exc))
+
+    for index in aborted_indices:
+        scheduler.abort(reqs[index].rid, defer_running_cleanup=defer_running_cleanup)
+        assert snapshot.reqs is snapshot_reqs
+        assert len(snapshot.reqs) == size
+        assert all(actual is expected for actual, expected in zip(snapshot.reqs, reqs))
+
+    scheduler._resolve_pending_async()
+
+    assert scheduler._async_pending is None
+    assert captured["skip_rids"] == {reqs[i].rid for i in aborted_indices}
+    keep = [i for i in range(size) if i not in aborted_indices]
+    assert snapshot.reqs == [reqs[i] for i in keep]
+    if keep:
+        assert captured["reqs"] == [reqs[i] for i in keep]
+        assert captured["tokens"] == [10 + i for i in keep]
+    else:
+        assert "reqs" not in captured
+
+
 def test_scheduler_idle_sleep_yields_to_pending_request_builds(monkeypatch) -> None:
     scheduler = object.__new__(OmniScheduler)
     scheduler._request_admission_lock = threading.RLock()
@@ -320,27 +521,30 @@ def test_omni_scheduler_run_batch_failure_emits_error_and_aborts(monkeypatch) ->
     scheduler._prefill_start_done = set()
     scheduler._prefill_end_done = set()
 
-    batch = SimpleNamespace(
-        reqs=[
-            SimpleNamespace(
-                rid="req-1",
-                _omni_data=SimpleNamespace(),
-                req_pool_idx=1,
-                mamba_pool_idx=None,
-                inflight_middle_chunks=0,
-            ),
-            SimpleNamespace(
-                rid="req-2",
-                _omni_data=SimpleNamespace(),
-                req_pool_idx=2,
-                mamba_pool_idx=None,
-                inflight_middle_chunks=0,
-            ),
-        ],
-        batch_is_full=True,
-        is_prefill_only=True,
-        is_extend_in_batch=False,
-    )
+    batch = _make_row_aligned_schedule_batch(size=2)
+    batch.reqs = [
+        SimpleNamespace(
+            rid="req-1",
+            _omni_data=SimpleNamespace(),
+            req_pool_idx=1,
+            mamba_pool_idx=None,
+            inflight_middle_chunks=0,
+        ),
+        SimpleNamespace(
+            rid="req-2",
+            _omni_data=SimpleNamespace(),
+            req_pool_idx=2,
+            mamba_pool_idx=None,
+            inflight_middle_chunks=0,
+        ),
+    ]
+    batch.batch_is_full = True
+    batch.is_prefill_only = True
+    batch.is_extend_in_batch = False
+    for req in batch.reqs:
+        req.return_logprob = False
+        req.return_hidden_states_mode = batch.return_hidden_states_mode
+        req.grammar = None
     failed_reqs = list(batch.reqs)
     for req in failed_reqs:
         req._omni_data.req = req
@@ -764,6 +968,7 @@ def test_omni_scheduler_resolve_drops_retracted_req() -> None:
         captured["ntids"] = result.next_token_ids.tolist()
 
     scheduler = object.__new__(OmniScheduler)
+    scheduler._aborted_request_ids = set()
     scheduler._run_batch_resolve = fake_resolve
     scheduler.process_batch_result = fake_process
 
@@ -994,7 +1199,8 @@ def test_omni_scheduler_abort_treats_retracted_alias_as_waiting_owned() -> None:
     )
     request_data = SimpleNamespace(req=req)
     req._omni_data = request_data
-    stale_batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    stale_batch = _make_row_aligned_schedule_batch(size=1)
+    stale_batch.reqs = [req]
     scheduler.waiting_queue = [req]
     scheduler.running_batch = SimpleNamespace(reqs=[], batch_is_full=False)
     scheduler.cur_batch = None
@@ -1390,7 +1596,8 @@ def test_stream_output_atomically_claims_request_data_against_abort() -> None:
     )
     req = Request(data)
     data.req = req
-    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    batch = _make_row_aligned_schedule_batch(size=1)
+    batch.reqs = [req]
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
     scheduler.last_batch = None
@@ -1442,7 +1649,8 @@ def test_abort_after_terminal_close_runs_its_own_cleanup() -> None:
         mamba_pool_idx=None,
     )
     data.req = req
-    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    batch = _make_row_aligned_schedule_batch(size=1)
+    batch.reqs = [req]
     scheduler.running_batch = batch
     scheduler.cur_batch = batch
     scheduler.last_batch = None
