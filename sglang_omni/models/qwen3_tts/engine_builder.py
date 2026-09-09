@@ -6,6 +6,8 @@ from __future__ import annotations
 import importlib
 from typing import Any
 
+import torch
+
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
@@ -141,6 +143,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         request_builders.set_qwen3_tts_preprocessing_context(
             model=model,
             wrapper=self.wrapper,
+            device=torch.device(device),
         )
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:

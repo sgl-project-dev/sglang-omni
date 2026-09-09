@@ -387,6 +387,29 @@ explicit value to trade continuity against time-to-first-audio.
 Utterances that finish in fewer than the first chunk's generated codec frames never reach the
 first chunk, so their audio arrives complete in a single final flush.
 
+#### Codec decoding defaults
+
+Streaming decodes run on the stateful incremental codec by default: each
+follow-up chunk decodes only its fresh frames against per-stream state held in
+a preallocated arena, steady-state cohorts replay CUDA graphs whose decode step
+is `torch.compile`d, and the follow-up workers collect for 4 ms. Startup spends
+about a minute compiling the steady shapes. The left-context decoder remains
+available as a rollback:
+
+```yaml
+stages:
+  vocoder:
+    factory:
+      enable_stateful_codec_decoder: false
+```
+
+`incremental_codec_cuda_graph`, `incremental_codec_compile` and
+`followup_batch_wait_ms` are the individual switches. Measured on one H100
+80GB at 20 requests per second, three client seeds of roughly 1200 requests
+each: the default path holds 0.6% to 2.3% of streams underrun against 20.9%
+for the left-context decoder, with first playable audio at 55 to 58 ms
+against 82 to 89 ms.
+
 #### First-audio chunk ramp
 
 For latency-sensitive deployments the whole early chunk schedule can be

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import logging
 from collections.abc import Iterator
@@ -451,6 +452,9 @@ class SGLModelRunner(ModelRunner):
         deferred graph-capture call sites, so finalize here at the common
         capture boundary instead of relying on every stage to mirror the
         scheduler's post-capture hook.
+
+        On XPU the capture is wrapped to pin SDPA, which the engines reach through
+        model code SGLang's capture does not wrap.
         """
         record = self._weight_share_record
         if record is not None:
@@ -463,7 +467,13 @@ class SGLModelRunner(ModelRunner):
 
         get_flags().capture.enable_torch_compile = get_exec().graph.enable_torch_compile
         _install_prefill_runner_dispatch()
-        result = super().init_cuda_graphs(capture_decode_cuda_graph)
+
+        from sglang_omni.platforms import current_platform
+
+        with contextlib.ExitStack() as pins:
+            if current_platform.is_xpu():
+                pins.enter_context(current_platform.graph_capture_attention())
+            result = super().init_cuda_graphs(capture_decode_cuda_graph)
         if self.token_to_kv_pool.post_capture_active:
             self.post_capture_resize_kv_pool()
         return result

@@ -6,6 +6,7 @@ from __future__ import annotations
 import functools
 import logging
 import os
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -18,6 +19,7 @@ from sglang_omni.models.qwen3_tts.request_builders import (
     preprocess_qwen3_tts_payload,
 )
 from sglang_omni.models.qwen3_tts.streaming_vocoder import (
+    DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
     DEFAULT_QWEN3_TTS_LEFT_CONTEXT_FRAMES,
     DEFAULT_QWEN3_TTS_STREAM_FOLLOWUP_STRIDE,
     DEFAULT_QWEN3_TTS_STREAM_STRIDE,
@@ -231,17 +233,29 @@ def create_vocoder_executor(
     initial_max_batch_size: int = 32,
     initial_batch_wait_ms: int = 2,
     followup_max_batch_size: int = 8,
-    followup_batch_wait_ms: int = 1,
+    followup_batch_wait_ms: int = 4,
     followup_worker_count: int = 2,
     initial_cuda_graph: bool = True,
     enable_deterministic_inference: bool = False,
     followup_cuda_graph: bool = True,
     fused_snake_activation: bool = False,
-    enable_stateful_codec_decoder: bool = False,
+    enable_stateful_codec_decoder: bool = True,
+    codec_state_slots: int = DEFAULT_QWEN3_TTS_CODEC_STATE_SLOTS,
+    incremental_codec_cuda_graph: bool | None = None,
+    incremental_codec_compile: bool | None = None,
+    incremental_codec_cuda_graph_cold_frames: Sequence[int] | None = None,
+    incremental_codec_cuda_graph_min_free_gb: float = 3.0,
     suppress_bootstrap_silence: bool = True,
     suppress_bootstrap_max_streams: int = 24,
 ) -> SimpleScheduler:
     device = resolve_device_spec(device, gpu_id)
+    # note (luojiaxuan): the graph and compile switches follow the decoder
+    # they belong to unless set explicitly, so turning the stateful decoder
+    # off for a rollback is one flag.
+    if incremental_codec_cuda_graph is None:
+        incremental_codec_cuda_graph = enable_stateful_codec_decoder
+    if incremental_codec_compile is None:
+        incremental_codec_compile = enable_stateful_codec_decoder
     tokenizer = _load_qwen3_tts_tokenizer(
         model_path,
         device=device,
@@ -270,6 +284,15 @@ def create_vocoder_executor(
         followup_cuda_graph=followup_cuda_graph,
         fused_snake_activation=fused_snake_activation,
         enable_stateful_codec_decoder=enable_stateful_codec_decoder,
+        codec_state_slots=codec_state_slots,
+        incremental_codec_cuda_graph=incremental_codec_cuda_graph,
+        incremental_codec_compile=incremental_codec_compile,
+        incremental_codec_cuda_graph_cold_frames=(
+            incremental_codec_cuda_graph_cold_frames
+        ),
+        incremental_codec_cuda_graph_min_free_gb=(
+            incremental_codec_cuda_graph_min_free_gb
+        ),
         suppress_bootstrap_silence=suppress_bootstrap_silence,
         suppress_bootstrap_max_streams=suppress_bootstrap_max_streams,
     )
