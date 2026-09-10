@@ -193,6 +193,8 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def _collect_new_request_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
+        if self._pending_messages:
+            return [first_msg]
         if not self._can_batch_stream_chunks:
             return super()._collect_new_request_batch(first_msg)
         try:
@@ -255,6 +257,10 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def _collect_stream_chunk_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
+        # note (Jshipper-art): Deferred messages precede every new inbox arrival,
+        # including those a superclass collector might inspect while batching.
+        if self._pending_messages:
+            return [first_msg]
         if not self._can_batch_stream_chunks:
             return super()._collect_stream_chunk_batch(first_msg)
         batch = [first_msg]
@@ -356,7 +362,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 return
             remaining = deadline - time.monotonic()
             try:
-                if remaining <= 0:
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                elif remaining <= 0:
                     msg = self.inbox.get_nowait()
                 else:
                     msg = self.inbox.get(timeout=remaining)
@@ -422,7 +430,9 @@ class FunCosyVoice3StreamingVocoderScheduler(
                 return
             remaining = deadline - time.monotonic()
             try:
-                if remaining <= 0:
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                elif remaining <= 0:
                     msg = self.inbox.get_nowait()
                 else:
                     msg = self.inbox.get(timeout=remaining)
@@ -442,7 +452,12 @@ class FunCosyVoice3StreamingVocoderScheduler(
         """
         while True:
             try:
-                msg = self.inbox.get_nowait()
+                # note (Jshipper-art): The collector may have pushed back an older
+                # chunk or done marker. Consume it before newer inbox messages.
+                if self._pending_messages:
+                    msg = self._pending_messages.popleft()
+                else:
+                    msg = self.inbox.get_nowait()
             except _queue_mod.Empty:
                 return
             if not self._ingest_peer_message(msg):
