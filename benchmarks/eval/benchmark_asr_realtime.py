@@ -66,12 +66,14 @@ from benchmarks.realtime_asr.client import (
 from benchmarks.realtime_asr.metrics import (
     check_invariants,
     latency_metrics,
+    paired_corpus_wer,
     summarize,
     wer_metrics,
 )
 from benchmarks.tasks.asr import (
     QWEN3_ASR_MODEL_PATH,
     _load_wav_mono_16k,
+    apply_wer,
     build_asr_eval_results,
     run_asr_transcription,
 )
@@ -157,7 +159,7 @@ async def _http_baseline(
     concurrency: int,
     model_path: str,
     lang: str,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[SampleOutput]]:
     outputs, wall_clock_s = await run_asr_transcription(
         samples,
         host=host,
@@ -174,13 +176,20 @@ async def _http_baseline(
         model_path=model_path,
         concurrency=concurrency,
     )
-    return {
+    http_outputs: list[SampleOutput] = []
+    for row in results["per_sample"]:
+        output = SampleOutput(sample_id=row["id"], target_text=row["ref_text"])
+        if row["is_success"]:
+            output = apply_wer(output, row["hyp_text"], lang)
+        http_outputs.append(output)
+    baseline = {
         "corpus_wer": results["summary"]["corpus_wer"],
         "per_sample_wer_max": results["summary"].get("wer_per_sample_max"),
         "evaluated": results["summary"]["evaluated"],
         "wall_clock_s": wall_clock_s,
         "per_sample": {row["id"]: row.get("wer") for row in results["per_sample"]},
     }
+    return baseline, http_outputs
 
 
 async def run_asr_realtime_once(
@@ -258,7 +267,7 @@ async def run_asr_realtime_once(
         "per_sample": per_sample,
     }
     if with_http_baseline:
-        baseline = await _http_baseline(
+        baseline, http_outputs = await _http_baseline(
             samples,
             host=host,
             port=port,
@@ -268,9 +277,8 @@ async def run_asr_realtime_once(
         )
         result["http_baseline"] = baseline
         result["summary"]["http_corpus_wer"] = baseline["corpus_wer"]
-        result["summary"]["corpus_wer_delta_vs_http"] = (
-            result["summary"]["corpus_wer"] - baseline["corpus_wer"]
-        )
+        result["summary"]["http_evaluated"] = baseline["evaluated"]
+        result["summary"].update(paired_corpus_wer(outputs, http_outputs, lang=lang))
         for record in per_sample:
             record["http_wer"] = baseline["per_sample"].get(record["sample_id"])
     return result
@@ -293,10 +301,11 @@ def _print_table(results: list[dict[str, Any]]) -> None:
     print()
     print(
         "| conc | mode | interval ms | sessions | violations | corpus WER | HTTP WER "
+        "| ΔWER vs HTTP (common n) "
         "| first partial mean/p50/p95 s | partial gap mean/p50/p95 s "
         "| final mean/p50/p95 s | done→completed mean/p50/p95 s | wall s |"
     )
-    print("|" + "---|" * 12)
+    print("|" + "---|" * 13)
     for result in results:
         config, summary = result["config"], result["summary"]
         print(
@@ -305,6 +314,8 @@ def _print_table(results: list[dict[str, Any]]) -> None:
             f"| {summary['sessions_with_violations']} "
             f"| {_fmt(summary['corpus_wer'], 4)} "
             f"| {_fmt(summary.get('http_corpus_wer'), 4)} "
+            f"| {_fmt(summary.get('corpus_wer_delta_vs_http'), 4)} "
+            f"({summary.get('common_evaluated', 'n/a')}) "
             f"| {_fmt_stat(summary['first_partial_latency_s'])} "
             f"| {_fmt_stat(summary['partial_interval_s'])} "
             f"| {_fmt_stat(summary['final_latency_s'])} "

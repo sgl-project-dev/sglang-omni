@@ -412,3 +412,46 @@ def test_percentile_and_summarize():
         "n": 20,
     }
     assert summarize([]) is None
+
+
+# --- paired WER delta ------------------------------------------------------
+
+
+def _outputs(texts: dict[str, str | None]) -> list:
+    """SampleOutputs with ref == hyp; ``None`` marks a failed sample."""
+    from benchmarks.metrics.wer import SampleOutput
+    from benchmarks.tasks.asr import apply_wer
+
+    outputs = []
+    for sample_id, text in texts.items():
+        output = SampleOutput(sample_id=sample_id, target_text=text or "unused ref")
+        if text is not None:
+            output = apply_wer(output, text, "en")
+        else:
+            output.error = "HTTP 500"
+        outputs.append(output)
+    return outputs
+
+
+def test_paired_wer_delta_ignores_samples_that_failed_on_one_side():
+    from benchmarks.realtime_asr.metrics import paired_corpus_wer
+
+    texts = {"a": "one two three", "b": "four five six", "c": "seven eight nine"}
+    stream = _outputs(texts)
+    http = _outputs({**texts, "c": None})  # identical transcripts, one HTTP failure
+
+    paired = paired_corpus_wer(stream, http, lang="en")
+    assert paired["common_evaluated"] == 2
+    assert paired["corpus_wer_delta_vs_http"] == 0.0
+
+
+def test_paired_wer_delta_is_none_when_baseline_has_no_successes():
+    from benchmarks.realtime_asr.metrics import paired_corpus_wer
+
+    stream = _outputs({"a": "one two three"})
+    http = _outputs({"a": None})
+
+    paired = paired_corpus_wer(stream, http, lang="en")
+    assert paired["common_evaluated"] == 0
+    assert paired["corpus_wer_delta_vs_http"] is None
+    assert paired["http_corpus_wer_common"] is None

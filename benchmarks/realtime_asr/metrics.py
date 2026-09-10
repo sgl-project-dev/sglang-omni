@@ -33,7 +33,7 @@ import statistics
 from collections import defaultdict
 from typing import Any
 
-from benchmarks.metrics.wer import SampleOutput
+from benchmarks.metrics.wer import SampleOutput, calculate_wer_metrics
 from benchmarks.realtime_asr.client import SAMPLE_RATE, SessionTrace
 from benchmarks.tasks.asr import apply_wer
 
@@ -185,6 +185,39 @@ def wer_metrics(trace: SessionTrace, ref_text: str, *, lang: str) -> SampleOutpu
     return apply_wer(output, text, lang)
 
 
+def paired_corpus_wer(
+    stream_outputs: list[SampleOutput],
+    http_outputs: list[SampleOutput],
+    *,
+    lang: str,
+) -> dict[str, Any]:
+    """Compare two transcription paths on the samples that succeeded in both.
+
+    Corpus WER silently drops failed samples, so subtracting two corpus WERs
+    computed over different successful sets measures the set difference, not
+    the transcripts. The delta here is taken over the intersection only and is
+    ``None`` when the intersection is empty.
+    """
+    stream_ok = {o.sample_id: o for o in stream_outputs if o.is_success}
+    http_ok = {o.sample_id: o for o in http_outputs if o.is_success}
+    common = sorted(stream_ok.keys() & http_ok.keys())
+    if not common:
+        return {
+            "common_evaluated": 0,
+            "stream_corpus_wer_common": None,
+            "http_corpus_wer_common": None,
+            "corpus_wer_delta_vs_http": None,
+        }
+    stream_wer = calculate_wer_metrics([stream_ok[i] for i in common], lang)
+    http_wer = calculate_wer_metrics([http_ok[i] for i in common], lang)
+    return {
+        "common_evaluated": len(common),
+        "stream_corpus_wer_common": stream_wer["wer_corpus"],
+        "http_corpus_wer_common": http_wer["wer_corpus"],
+        "corpus_wer_delta_vs_http": stream_wer["wer_corpus"] - http_wer["wer_corpus"],
+    }
+
+
 def percentile(values: list[float], pct: float) -> float:
     """Nearest-rank percentile; values must be non-empty."""
     ordered = sorted(values)
@@ -209,6 +242,7 @@ def summarize(values: list[float]) -> dict[str, float | int] | None:
 __all__ = [
     "check_invariants",
     "latency_metrics",
+    "paired_corpus_wer",
     "percentile",
     "summarize",
     "wer_metrics",

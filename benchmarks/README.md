@@ -296,7 +296,9 @@ only records timestamps; every metric definition lives in
 `--mode vad` (default) lets server VAD close turns and pads each clip with
 `--trailing-silence-ms` of silence so the last turn closes on VAD; `--mode
 manual` disables VAD and commits explicitly. `--http-baseline` transcribes the
-same clips over `/v1/audio/transcriptions` and reports the WER delta.
+same clips over `/v1/audio/transcriptions`; the WER delta is computed only on
+samples that succeeded on both paths (`common_evaluated`) and is `null` when
+that set is empty.
 `--concurrencies` runs one result per level; there is no cross-level report.
 The `decode_interval_ms` in effect is read from `session.created` and recorded
 in the result `config`.
