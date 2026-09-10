@@ -197,7 +197,10 @@ def create_code2wav_executor(
 ):
     from sglang_omni.models.minicpm_o.components.code2wav import MiniCPMOCode2Wav
     from sglang_omni.models.minicpm_o.payload_types import MiniCPMOPipelineState
-    from sglang_omni.models.minicpm_o.request_builders import TALKER_STAGE
+    from sglang_omni.models.minicpm_o.request_builders import (
+        TALKER_STAGE,
+        code2wav_reference_audio,
+    )
     from sglang_omni.scheduling.vocoder_base import BatchVocoderBase
     from sglang_omni.utils.audio_payload import audio_waveform_payload
     from sglang_omni.utils.device import resolve_device_spec
@@ -210,15 +213,18 @@ def create_code2wav_executor(
         def prepare_item(self, payload: StagePayload):
             state = MiniCPMOPipelineState.from_dict(payload.data)
             talker_out = state.engine_outputs.get(TALKER_STAGE) or {}
-            return state, talker_out["codec_tokens"]
+            return state, {
+                "codec_tokens": talker_out["codec_tokens"],
+                "prompt_wav": code2wav_reference_audio(payload),
+            }
 
         async def decode_batch(self, items):
             # Token2wav's flow.inference is single-sequence; batching merges
             # scheduling (one event-loop turn per batch) while vocoding
             # stays sequential, like the fun_cosyvoice3 vocoder.
             results = []
-            for _, codec_tokens in items:
-                out = model(codec_tokens=codec_tokens)
+            for _, model_inputs in items:
+                out = model(**model_inputs)
                 results.append((out["waveform"], int(out["sample_rate"])))
             return results
 

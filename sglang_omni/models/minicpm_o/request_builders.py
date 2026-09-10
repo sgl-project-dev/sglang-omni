@@ -53,6 +53,41 @@ def should_generate_audio_output(
     return modalities is None or "audio" in modalities
 
 
+def code2wav_reference_audio(payload: StagePayload) -> bytes | None:
+    """Read an explicit, inline speaker reference from request parameters."""
+    from sglang_omni.utils.audio import decode_audio_data_uri
+    from sglang_omni.utils.audio_payload import audio_data_uri_from_reference
+
+    params = payload.request.params or {}
+    metadata = payload.request.metadata or {}
+    stage_params = params.get("stage_params") or {}
+    sources = (
+        stage_params.get(CODE2WAV_STAGE) or {},
+        metadata.get("audio_config") or {},
+        metadata.get("tts_params") or {},
+        params,
+    )
+    for source in sources:
+        for key in ("ref_audio", "prompt_wav"):
+            reference = source.get(key)
+            if reference is None:
+                continue
+            if isinstance(reference, dict):
+                reference = audio_data_uri_from_reference(reference)
+            if isinstance(reference, bytes):
+                if reference:
+                    return reference
+            elif isinstance(reference, str):
+                decoded = decode_audio_data_uri(reference)
+                if decoded:
+                    return decoded
+            raise ValueError(
+                "MiniCPM-o ref_audio must be inline audio bytes or a base64 data "
+                "URI; encode local files before sending"
+            )
+    return None
+
+
 def _resolve_seed(params: dict[str, Any]) -> int | None:
     for key in ("seed", "sampling_seed"):
         value = params.get(key)

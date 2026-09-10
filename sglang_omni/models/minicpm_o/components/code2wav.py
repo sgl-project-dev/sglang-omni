@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 
 import numpy as np
 import torch
 import torch.nn as nn
 
 from sglang_omni.models.weight_loader import resolve_model_path
+from sglang_omni.preprocessing.cache_key import hash_bytes, reference_path_cache_key
 
 logger = logging.getLogger(__name__)
 
@@ -69,20 +71,21 @@ class MiniCPMOCode2Wav(nn.Module):
             default_wav = os.path.join(model_dir, "assets", "HT_ref_audio.wav")
             prompt_wav = default_wav if os.path.isfile(default_wav) else None
         self._prompt_wav = prompt_wav
+        self._prompt_cache_key: str | None = None
 
     @torch.inference_mode()
     def forward(
         self,
         *,
         codec_tokens: torch.Tensor,
-        prompt_wav: str | None = None,
+        prompt_wav: str | bytes | None = None,
         **_: object,
     ) -> dict[str, object]:
         """Vocode one utterance.
 
         Args:
             codec_tokens: ``(N,)`` s3tokenizer codes (EOS already stripped).
-            prompt_wav: optional path to a 16 kHz speaker-reference wav;
+            prompt_wav: optional path or encoded speaker-reference audio bytes;
                 falls back to the component default.
 
         Returns:
@@ -95,23 +98,47 @@ class MiniCPMOCode2Wav(nn.Module):
                 "sample_rate": OUTPUT_SAMPLE_RATE,
             }
         with self._device_ctx:
-            waveform = self._vocode(tokens, prompt_wav or self._prompt_wav)
+            reference = self._prompt_wav if prompt_wav is None else prompt_wav
+            waveform = self._vocode(tokens, reference)
         return {"waveform": waveform, "sample_rate": OUTPUT_SAMPLE_RATE}
 
-    def _vocode(self, tokens: list[int], prompt_wav: str | None) -> np.ndarray:
+    def _get_prompt(self, prompt_wav: str | bytes | None):
+        if prompt_wav is None:
+            raise ValueError("No speaker-reference audio supplied or default available")
+        prompt_key = (
+            f"bytes:{hash_bytes(prompt_wav)}"
+            if isinstance(prompt_wav, bytes)
+            else reference_path_cache_key(prompt_wav)
+        )
+        t2w = self.token2wav
+        if (
+            t2w.cache is None
+            or prompt_key is None
+            or prompt_key != self._prompt_cache_key
+        ):
+            if isinstance(prompt_wav, bytes):
+                with tempfile.NamedTemporaryFile(suffix=".wav") as reference:
+                    reference.write(prompt_wav)
+                    reference.flush()
+                    prompt = t2w._prepare_prompt(reference.name)
+            else:
+                prompt = t2w._prepare_prompt(prompt_wav)
+            t2w.cache = prompt
+            self._prompt_cache_key = prompt_key
+        return t2w.cache
+
+    def _vocode(self, tokens: list[int], prompt_wav: str | bytes | None) -> np.ndarray:
         """``Token2wav.__call__`` minus its final ``torchaudio.save`` — newer
         torchaudio (torchcodec backend) cannot encode into ``BytesIO``, and we
         want the raw waveform anyway."""
         t2w = self.token2wav
-        if t2w.cache is None:
-            t2w.cache = t2w._prepare_prompt(prompt_wav)
         (
             prompt_speech_tokens,
             prompt_speech_tokens_lens,
             spk_emb,
             prompt_mels,
             prompt_mels_lens,
-        ) = t2w.cache
+        ) = self._get_prompt(prompt_wav)
 
         speech_tokens = torch.tensor([tokens], dtype=torch.int32, device="cuda")
         speech_tokens_lens = torch.tensor(
