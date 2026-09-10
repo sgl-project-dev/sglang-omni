@@ -257,7 +257,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def _collect_stream_chunk_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
-        # note (Jshipper-art): Deferred messages precede every new inbox arrival,
+        # Deferred messages precede every new inbox arrival,
         # including those a superclass collector might inspect while batching.
         if self._pending_messages:
             return [first_msg]
@@ -452,7 +452,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         """
         while True:
             try:
-                # note (Jshipper-art): The collector may have pushed back an older
+                # The collector may have pushed back an older
                 # chunk or done marker. Consume it before newer inbox messages.
                 if self._pending_messages:
                     msg = self._pending_messages.popleft()

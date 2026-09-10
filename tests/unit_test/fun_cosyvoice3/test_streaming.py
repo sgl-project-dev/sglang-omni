@@ -756,7 +756,7 @@ def test_backlogged_chunks_stay_ordered_before_stream_done(
     def inference(**kwargs):
         result = original_inference(**kwargs)
         if len(flow.calls) == 1:
-            # note (Jshipper-art): The AR producer adds a newer chunk and
+            # The AR producer adds a newer chunk and
             # completion during Flow's first hop, with an older chunk deferred.
             scheduler.inbox.put(
                 IncomingMessage(
@@ -771,7 +771,7 @@ def test_backlogged_chunks_stay_ordered_before_stream_done(
     while scheduler._pending_messages or not scheduler.inbox.empty():
         scheduler._handle_message(scheduler._next_message(), None)
 
-    # note (Jshipper-art): The first batch defers the second chunk because its
+    # The first batch defers the second chunk because its
     # request ID is already in the batch. Pumping must not ingest the third chunk
     # or finalize the request ahead of that second chunk.
     assert flow.calls[-1]["finalize"] is True
