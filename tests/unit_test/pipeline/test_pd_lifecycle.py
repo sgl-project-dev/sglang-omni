@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import torch
+from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling import pd_utils
@@ -111,6 +112,66 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     assert released == [(req, threading.get_ident())]
 
 
+def _recording_decode_scheduler(done):
+    scheduler = _decode_scheduler()
+    scheduler.waiting_queue = [SimpleNamespace(rid="request-1")]
+    scheduler._release_request_kv_cache = lambda req: done.append(
+        (req.rid, threading.get_ident())
+    )
+    scheduler._drain_decode_admissions = lambda: done.append("admissions")
+    return scheduler
+
+
+def test_decode_abort_releases_on_the_scheduler_thread(monkeypatch):
+    done = []
+    scheduler = _recording_decode_scheduler(done)
+    scheduler.running_batch = None
+    monkeypatch.setattr(OmniScheduler, "abort", lambda self, rid, **kwargs: None)
+    monkeypatch.setattr(
+        _Upstream,
+        "get_next_disagg_decode_batch_to_run",
+        lambda self, running_batch: SimpleNamespace(
+            running_batch=None, batch_to_run=None
+        ),
+        raising=False,
+    )
+    with ThreadPoolExecutor(1) as threads:
+        threads.submit(scheduler.abort, "request-1").result(timeout=5)
+    assert done == []
+    scheduler.get_next_batch_to_run()
+    assert done == [("request-1", threading.get_ident()), "admissions"]
+
+
+def test_flush_cache_returns_deferred_rows_before_upstream_reads_idle(monkeypatch):
+    done = []
+    scheduler = _recording_decode_scheduler(done)
+    monkeypatch.setattr(OmniScheduler, "abort", lambda self, rid, **kwargs: None)
+    monkeypatch.setattr(
+        _Upstream, "flush_cache", lambda self: done.append("upstream_flush") or True
+    )
+    with ThreadPoolExecutor(1) as threads:
+        threads.submit(scheduler.abort, "request-1").result(timeout=5)
+    assert scheduler.flush_cache() is True
+    assert done == [("request-1", threading.get_ident()), "upstream_flush"]
+
+
+def test_a_failing_release_does_not_strand_the_rest_of_the_queue():
+    scheduler = _decode_scheduler()
+    released = []
+
+    def release(req):
+        if req.rid == "bad":
+            raise RuntimeError("release failed")
+        released.append(req.rid)
+
+    scheduler._release_request_kv_cache = release
+    for rid in ("first", "bad", "last"):
+        scheduler._pd_due_releases.put(SimpleNamespace(rid=rid))
+    scheduler._drain_due_releases()
+    assert released == ["first", "last"]
+    assert scheduler._pd_due_releases.empty()
+
+
 def _message(**updates):
     from sglang_omni.proto import KVBufferSpec, KVPoolLayout, KVTransferPrepareMessage
 
@@ -180,8 +241,10 @@ def test_receiver_rejects_mismatched_pages_and_bounds_finished_ids(monkeypatch):
 def _decode_scheduler():
     scheduler = object.__new__(OmniDecodeScheduler)
     scheduler._pd_admissions = queue.SimpleQueue()
+    scheduler._pd_due_releases = queue.SimpleQueue()
     scheduler._pd_deferred_admission = None
     scheduler._pd_admission_lock = threading.RLock()
+    scheduler._pd_kv_lock = threading.RLock()
     scheduler._pd_state_restorer = lambda *args: None
     scheduler._aborted_request_ids = set()
     scheduler.req_to_token_pool = _ReqPool()
