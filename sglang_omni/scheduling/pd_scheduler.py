@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import types
@@ -27,8 +28,36 @@ from sglang_omni.scheduling.pd_utils import (
     serialize_kv_allocator,
 )
 
+logger = logging.getLogger(__name__)
 
-class OmniPrefillScheduler(OmniScheduler):
+
+class _PDReleaseOwner(OmniScheduler):
+    """Omni scheduler half whose request table only its own thread mutates."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self._pd_due_releases: queue.SimpleQueue = queue.SimpleQueue()
+        super().__init__(*args, **kwargs)
+
+    def _drain_due_releases(self) -> None:
+        while True:
+            try:
+                req = self._pd_due_releases.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                self._release_request_kv_cache(req)
+            except Exception:
+                # One bad request must not strand the rest of the queue.
+                logger.exception("PD release failed for %r", getattr(req, "rid", req))
+
+    def flush_cache(self, *args, **kwargs):
+        # Note(Yue Yin): upstream clears both pools once it reads the
+        # scheduler as idle, and it cannot see this queue.
+        self._drain_due_releases()
+        return _Upstream.flush_cache(self, *args, **kwargs)
+
+
+class OmniPrefillScheduler(_PDReleaseOwner):
     """Omni scheduler whose generated requests stop after Prefill."""
 
     scheduler_role = "prefill"
@@ -47,7 +76,6 @@ class OmniPrefillScheduler(OmniScheduler):
         self._pd_stage_name = stage_name
         self._pd_partner_stage = partner_stage
         self._pd_state_builder = state_builder
-        self._pd_due_releases = queue.SimpleQueue()
         self._pd_pool_id = f"{stage_name}:kv"
         pool = build_kv_pool(
             self.token_to_kv_pool_allocator.get_kvcache(),
@@ -56,12 +84,7 @@ class OmniPrefillScheduler(OmniScheduler):
         self.kv_registrations = ((pool, None),)
 
     def get_next_batch_to_run(self):
-        while True:
-            try:
-                req = self._pd_due_releases.get_nowait()
-            except queue.Empty:
-                break
-            self._release_request_kv_cache(req)
+        self._drain_due_releases()
         if (
             self.running_batch.is_empty()
             and self.running_batch.batch_is_full
@@ -184,7 +207,7 @@ class OmniPrefillScheduler(OmniScheduler):
         return terminal_error, abort_cleanup_needed
 
 
-class OmniDecodeScheduler(OmniScheduler):
+class OmniDecodeScheduler(_PDReleaseOwner):
     """Omni scheduler that admits transferred Prefill state for Decode."""
 
     scheduler_role = "decode"
@@ -230,6 +253,7 @@ class OmniDecodeScheduler(OmniScheduler):
 
     def get_next_batch_to_run(self):
         with self._pd_admission_lock:
+            self._drain_due_releases()
             self._drain_decode_admissions()
             # Do not let a new transfer consume the space between the decode
             # memory check and allocation. Abort takes these locks in this order.
@@ -314,7 +338,9 @@ class OmniDecodeScheduler(OmniScheduler):
         with self._pd_admission_lock:
             for req in self.waiting_queue:
                 if req.rid == request_id:
-                    self._release_request_kv_cache(req)
+                    # Note(Yue Yin): abort runs on the Stage event loop, and
+                    # only the scheduler thread may mutate the request table.
+                    self._pd_due_releases.put(req)
                     break
             super().abort(
                 request_id,
