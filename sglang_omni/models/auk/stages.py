@@ -45,15 +45,26 @@ from sglang_omni.utils.device import resolve_device_spec
 logger = logging.getLogger(__name__)
 
 
+_COMPUTE_DTYPES = {
+    "float32": None,
+    "float16": torch.float16,
+    "bfloat16": torch.bfloat16,
+}
+
+
 def _autocast(device, dtype):
-    compute_dtype = {
-        "float32": None,
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-    }[dtype]
+    compute_dtype = _COMPUTE_DTYPES[dtype]
     return torch.autocast(
         device_type=device.type, dtype=compute_dtype, enabled=compute_dtype is not None
     )
+
+
+def _dit_compute_context(flow, device, dtype):
+    # A bf16 backbone runs natively; autocast would only re-cast per op and
+    # force the norms back to fp32.
+    if flow.transformer.dtype != torch.float32:
+        return nullcontext()
+    return _autocast(device, dtype)
 
 
 @lru_cache(maxsize=None)
@@ -192,7 +203,7 @@ def _sample_batch(payloads, flow, device, dtype, max_frames, sampling):
         for state in states
     ]
     logger.info("AuK DiT: sampling batch of %d requests", len(items))
-    with _autocast(device, dtype):
+    with _dit_compute_context(flow, device, dtype):
         latents = flow.sample_batch(items, **sampling)
     for state, latent in zip(states, latents):
         if not torch.isfinite(latent).all():
@@ -216,11 +227,22 @@ def create_auk_engine_executor(
     max_seconds: float = C.MAX_SECONDS,
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
+    weight_dtype: str | None = None,
 ) -> SimpleScheduler:
+    """Build the DiT sampling stage.
+
+    ``weight_dtype=None`` keeps fp32 weights under ``dtype`` autocast, the
+    upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
+    autocast (see docs/cookbook/auk.md, Sampling).
+    """
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
     device = torch.device(resolve_device_spec(device, gpu_id))
     flow = _load_flow(checkpoint, str(device))
+    if weight_dtype not in (None, "float32"):
+        # Backbone only: the conditioning stage shares this cached object for
+        # ``flow.fuse`` and keeps those layer weights fp32.
+        flow.transformer.to(dtype=_COMPUTE_DTYPES[weight_dtype])
     sampling = dict(
         steps=C.FLASH_NFE if config.is_flash else nfe,
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,

@@ -101,6 +101,8 @@ class AuKFlowMatching(nn.Module):
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
+        # Inputs follow the backbone dtype; y stays fp32 through type promotion.
+        weight_dtype = self.transformer.dtype
 
         def pack(tensors):
             return (
@@ -117,12 +119,12 @@ class AuKFlowMatching(nn.Module):
             )
             for item in items
         ]
-        ref = pack(references)
+        ref = pack(references).to(weight_dtype)
         ref_mask = (
             torch.arange(ref.shape[1], device=device)[None, :]
             < torch.tensor([item.ref_length for item in items], device=device)[:, None]
         )
-        text = pack([item.conditioning for item in items])
+        text = pack([item.conditioning for item in items]).to(weight_dtype)
         text_mask = pack([item.text_mask for item in items])
         noise = []
         for item in items:
@@ -173,7 +175,7 @@ class AuKFlowMatching(nn.Module):
 
         def fn(t, x):
             kwargs = dict(
-                x=x,
+                x=x.to(weight_dtype),
                 text=text,
                 time=t,
                 mask=mask,
