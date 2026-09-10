@@ -37,7 +37,7 @@ class NemotronTalkerScheduler(OmniScheduler):
             batch.out_cache_loc = None
         for req in batch.reqs:
             req.decode_batch_idx -= 1
-            req.kv_committed_len -= 1
+            req.kv.kv_committed_len -= 1
             req.kv.kv_allocated_len -= 1
         batch.seq_lens.sub_(1)
         batch.seq_lens_cpu.sub_(1)
