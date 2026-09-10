@@ -193,8 +193,6 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def _collect_new_request_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
-        if self._pending_messages:
-            return [first_msg]
         if not self._can_batch_stream_chunks:
             return super()._collect_new_request_batch(first_msg)
         try:
@@ -208,7 +206,7 @@ class FunCosyVoice3StreamingVocoderScheduler(
         cap = max(int(self._max_batch_size), 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if self._is_aborted(msg.request_id):
@@ -257,20 +255,18 @@ class FunCosyVoice3StreamingVocoderScheduler(
     def _collect_stream_chunk_batch(
         self, first_msg: IncomingMessage
     ) -> list[IncomingMessage]:
-        # Deferred messages precede every new inbox arrival,
-        # including those a superclass collector might inspect while batching.
-        if self._pending_messages:
-            return [first_msg]
         if not self._can_batch_stream_chunks:
             return super()._collect_stream_chunk_batch(first_msg)
         batch = [first_msg]
         seen = {first_msg.request_id}
+        # Keep duplicate-request chunks aside until collection ends so they
+        # cannot be re-read while looking for compatible peers.
         deferred: list[IncomingMessage] = []
         leftover: IncomingMessage | None = None
         cap = self._stream_chunk_batch_max or max(self._max_batch_size, 1)
         while len(batch) < cap:
             try:
-                msg = self.inbox.get_nowait()
+                msg = self._get_batch_message()
             except _queue_mod.Empty:
                 break
             if msg.type != "stream_chunk":
