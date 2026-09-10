@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 
 from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 
@@ -26,10 +27,13 @@ def test_fair_device_execution_guard_serves_waiters_in_ticket_order() -> None:
 
     waiters = [threading.Thread(target=run, args=(worker_id,)) for worker_id in (1, 2)]
     waiters[0].start()
-    # Starting the second waiter only after the first is blocked makes ticket
-    # assignment deterministic without relying on scheduler timing.
-    while guard._next_ticket < 2:
-        pass
+    # Starting the second waiter only after the first has taken its ticket makes
+    # ticket assignment deterministic without relying on scheduler timing. Poll
+    # with a deadline so a regression fails fast instead of spinning forever.
+    deadline = time.monotonic() + 2.0
+    while guard._next_ticket < 2 and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert guard._next_ticket >= 2
     waiters[1].start()
     release_first.set()
 

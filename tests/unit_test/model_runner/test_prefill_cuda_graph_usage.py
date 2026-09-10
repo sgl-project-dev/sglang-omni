@@ -137,6 +137,8 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     assert stats["custom_eager_count"] == 1
     assert stats["replay_buckets"] == {"16": 1, "32": 1}
     assert json.loads(json.dumps(stats)) == stats
+
+
 def test_model_worker_exposes_encoder_graph_runner_info() -> None:
     expected = {
         "enabled": True,

@@ -228,7 +228,17 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 output_proc,
             )
             return self._torch_mps_model_runner
-        return super().make_model_runner(model_worker, output_proc)
+        from sglang_omni.model_runner.base import ModelRunner
+
+        # The pre-LM encoder and the generation graph run on different host
+        # threads; sharing this process-local guard serializes their device
+        # submissions on NPU. ``getattr`` keeps engine builders and test doubles
+        # that predate the guard working unchanged.
+        return ModelRunner(
+            model_worker,
+            output_proc,
+            device_execution_guard=getattr(self, "_device_execution_guard", None),
+        )
 
     def setup_model(
         self,
@@ -334,18 +344,20 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             # shared multimodal routine still requires its cache singleton.
             init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
             return
-        audio_tower = getattr(model, "audio_tower", None)
-        reference = next(audio_tower.parameters()) if audio_tower is not None else None
-        self._device_execution_guard = (
-            FairDeviceExecutionGuard()
-            if (
-                reference is not None
-                and reference.device.type == "npu"
-                and generation_cuda_graph_enabled
-                and self.enable_pre_lm_encoder
+        if (
+            current_platform.is_npu()
+            and generation_cuda_graph_enabled
+            and self.enable_pre_lm_encoder
+        ):
+            # The pre-LM encoder and the generation graph replay on different
+            # host threads; concurrent device submission of two captured graphs
+            # can hang on Ascend, so both sides share this FIFO guard.
+            self._device_execution_guard = FairDeviceExecutionGuard()
+            logger.info(
+                "[qwen3-asr] serializing NPU encoder and generation device execution"
             )
-            else None
-        )
+        else:
+            self._device_execution_guard = None
         self._log_memory_checkpoint("post_cuda_graph_capture")
         if self.enable_encoder_cuda_graph:
             from sglang_omni.models.qwen3_asr.audio_lengths import (
@@ -385,17 +397,6 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
                 device_execution_guard=self._device_execution_guard,
             )
-
-    def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
-        from sglang_omni.model_runner.base import ModelRunner
-
-        return ModelRunner(
-            model_worker,
-            output_proc,
-            device_execution_guard=getattr(
-                self, "_device_execution_guard", None
-            ),
-        )
 
     def should_wait_for_encode(self) -> bool:
         return (
