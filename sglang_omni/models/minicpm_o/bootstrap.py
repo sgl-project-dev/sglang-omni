@@ -233,6 +233,7 @@ def create_thinker_scheduler(
         request_builder=request_builder,
         result_adapter=result_adapter,
         stream_output_builder=make_thinker_stream_output_builder(),
+        abort_callback=model_runner.reset_request,
         enable_async_decode=enable_async_decode,
         async_decode_min_batch_size=async_decode_min_batch_size,
     )
