@@ -12,7 +12,7 @@ from array import array
 from collections.abc import Callable
 from contextlib import contextmanager
 from functools import wraps
-from typing import Any
+from typing import Any, Literal
 
 import msgspec
 import torch
@@ -77,7 +77,7 @@ class DecodeContinuation:
     top_logprobs_num: int = 0
     token_ids_logprob: list[int] | None = None
     logprob_start_len: int = -1
-    return_hidden_states: bool = False
+    return_hidden_states: bool | Literal["last"] = False
     return_sampling_mask: bool = False
     return_routed_experts: bool = False
     return_indexer_topk: bool = False
@@ -100,6 +100,12 @@ class DecodeContinuation:
             self.multimodal_resume, dict
         ):
             raise TypeError("decode continuation multimodal_resume must be a mapping")
+        hidden_states = self.return_hidden_states
+        if not isinstance(hidden_states, bool) and hidden_states != "last":
+            raise ValueError(
+                f"unsupported decode continuation "
+                f"return_hidden_states {hidden_states!r}"
+            )
 
     def encode(self) -> bytes:
         return msgspec.msgpack.encode(dataclasses.asdict(self))
@@ -193,7 +199,7 @@ def continuation_from_req(
             else None
         ),
         logprob_start_len=int(req.logprob_start_len),
-        return_hidden_states=bool(req.return_hidden_states),
+        return_hidden_states=req.return_hidden_states,
         return_sampling_mask=bool(req.return_sampling_mask),
         return_routed_experts=bool(req.return_routed_experts),
         return_indexer_topk=bool(req.return_indexer_topk),
@@ -298,7 +304,15 @@ def req_from_continuation(
 
 def _sampling_params_to_dict(params: Any) -> dict[str, Any]:
     allowed = inspect.signature(type(params)).parameters
-    return {name: getattr(params, name) for name in allowed if hasattr(params, name)}
+    values = {name: getattr(params, name) for name in allowed if hasattr(params, name)}
+    custom = values.get("custom_params")
+    if isinstance(custom, dict):
+        # Note(Yue Yin): Req.__init__ injects the live Req under "__req__", and
+        # injects it again on the Decode side. Do not serialize it.
+        values["custom_params"] = {
+            key: value for key, value in custom.items() if key != "__req__"
+        }
+    return values
 
 
 @contextmanager
