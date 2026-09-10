@@ -870,3 +870,36 @@ that happened to contain an older version of the test.
   fences cover shutdown during abort/append hooks and the open/append window
   between the final hook check and owner unlock, requiring exactly-once cleanup
   after native work returns without blocking shutdown.
+
+### Native AR streaming sessions
+
+CPU contracts and existing scheduler/embedding-sidecar regression checks:
+
+```bash
+python -m pytest -q tests/unit_test/scheduling/test_ar_session_*.py \
+  tests/unit_test/pipeline/test_scheduler.py \
+  tests/unit_test/pipeline/test_async_decode.py \
+  tests/unit_test/model_runner/test_prefill_inputs.py
+```
+
+The real GPU gate is opt-in and loads a local small dense causal LM. It runs
+through OmniScheduler and its normal ModelRunner, using greedy generation,
+disabled radix/CUDA graphs, and an exact allocator baseline. Qwen3-0.6B is a
+suitable fixture; the shared bridge has no model-name branches.
+
+```bash
+OMNI_SESSION_TEST_MODEL=/path/to/local/model \
+  python -m pytest -s tests/test_model/test_ar_streaming_session_gpu.py
+```
+
+The gate requires one CUDA GPU and validates physical prefix/slot reuse,
+full-history token parity, session cancellation after a mixed three-row async
+decode unit completes without losing its slot or KV prefix, rejection before
+enqueue preserving the retained prefix,
+queued abort, refill after running abort, completed-lookahead close/append, repeated
+close resource return, and actual retained slot/KV exhaustion. It does not
+validate mixed chunked prefill, model-specific audio consumption, or performance.
+
+AR session unit tests are grouped by history/admission, scheduler dispatch,
+and cancellation/cleanup. Shared native request builders live in
+`unit_test/fixtures/ar_session.py`.
