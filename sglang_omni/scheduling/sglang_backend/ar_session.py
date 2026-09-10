@@ -313,9 +313,7 @@ class ARSessionBridge:
         req = owner.req
         cache = self.scheduler.tree_cache
         slot = cache.slots.get(self.native_id(owner.ref))
-        held = (
-            slot.kv.kv_allocated_len if slot is not None and slot.is_holding_kv else 0
-        )
+        held = slot.kv.kv_allocated_len if slot is not None else 0
         free_slots = self.scheduler.req_to_token_pool.free_slots
         unallocated = sum(
             other is not owner

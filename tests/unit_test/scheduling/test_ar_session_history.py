@@ -166,3 +166,26 @@ def test_production_admission_rejection_rolls_back_native_history(
     b.rollback("next")
     s.tree_cache.slots.clear()
     assert b.command(payload("close", "close")).data == {"closed": True}
+
+
+@pytest.mark.parametrize("available, exhausted", [(2, False), (1, True)])
+def test_admission_counts_retained_kv_from_native_session_slot(available, exhausted):
+    from sglang.srt.session.streaming_session import SessionSlot
+
+    b = bridge()
+    b.command(payload("open"))
+    p = payload("append")
+    b.accept(p)
+    d = data()
+    b.materialize(p, d)
+    slot = SessionSlot()
+    slot.kv.kv_allocated_len = 2
+    slot.restore_to_req(d.req)
+    b.scheduler.tree_cache.slots["s"] = slot
+    b.scheduler.tree_cache.evictable_size = lambda: 0
+    b.scheduler.req_to_token_pool = SimpleNamespace(free_slots=[0, 1])
+    b.scheduler.token_to_kv_pool_allocator = SimpleNamespace(
+        available_size=lambda: available
+    )
+    error = b.capacity_error(p.request_id)
+    assert error == ("session KV capacity exhausted" if exhausted else None)
