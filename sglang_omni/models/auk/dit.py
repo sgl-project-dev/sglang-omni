@@ -269,7 +269,25 @@ class Attention(nn.Module):
 
         query, key = self.q_norm(query), self.k_norm(key)
         if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
+            freqs, scale = rope
+            if (
+                query.is_cuda
+                and torch.version.hip is None
+                and not torch.is_grad_enabled()
+                and head_dim == 64
+                and query.dtype == key.dtype == freqs.dtype == torch.float32
+                and query.is_contiguous()
+                and key.is_contiguous()
+                and freqs.stride(-1) == 1
+                and freqs.shape[-1] == head_dim
+                and isinstance(scale, (int, float))
+                and scale == 1.0
+            ):
+                from sglang_omni.models.auk.fused_rope import fused_rope
+
+                query, key = fused_rope(query, key, freqs)
+            else:
+                query, key = self._apply_rope(query, key, rope)
 
         out = self._attend(query, key, value, mask).to(query.dtype)
         out = self.to_out[1](self.to_out[0](out))
