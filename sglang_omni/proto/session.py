@@ -28,6 +28,8 @@ class SessionRef:
 
 @dataclass(frozen=True)
 class TimedChunk:
+    """Input seq is global across modalities within a session incarnation."""
+
     modality: str
     t_start_ms: float
     duration_ms: float
@@ -47,6 +49,8 @@ class TimedChunk:
 
 @dataclass(frozen=True)
 class OutputChunk:
+    """input_seq identifies the originating pipeline input, not a stream seq."""
+
     ref: SessionRef
     seq: int
     input_seq: int

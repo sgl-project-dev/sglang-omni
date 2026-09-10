@@ -157,7 +157,11 @@ class CoordinatorSessions:
         return session.ref
 
     async def append_session(self, ref: SessionRef, chunk: TimedChunk) -> int:
-        """Accept a bounded input without waiting for the current output unit."""
+        """Accept input in global seq order, independently of output consumption.
+
+        Adapters map per-stream seq to this order. Rejected input keeps its seq
+        for retry; accepted input advances it and must not be resubmitted.
+        """
         session = self._session(ref)
         if session.closing or session.closed:
             raise RuntimeError("session is closing")

@@ -7,7 +7,7 @@ import pytest
 
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest
-from sglang_omni.proto.session import SessionLimits
+from sglang_omni.proto.session import SessionLimits, TimedChunk
 from tests.unit_test.fixtures.session_pipeline import chunk, pipeline
 
 
@@ -178,3 +178,30 @@ async def test_idle_timeout_closes_session_and_wakes_reader(tmp_path):
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(anext(output), 5)
         assert ref.session_id not in coordinator._sessions
+
+
+@pytest.mark.asyncio
+async def test_cross_modality_order_and_rejected_input_retry(tmp_path):
+    async with pipeline(tmp_path) as (coordinator, events, processes):
+        ref = await coordinator.open_session(
+            OmniRequest(None),
+            stages=["source", "sink"],
+            limits=SessionLimits(max_pending_chunks=1),
+        )
+        output = coordinator.session_outputs(ref)
+        await coordinator.append_session(ref, chunk(0, eos=True))
+        text = TimedChunk("text", 0, 0, 1, "hello", eos=True)
+        with pytest.raises(QueueFullError):
+            await coordinator.append_session(ref, text)
+        for kind in ("data", "input_done"):
+            result = await asyncio.wait_for(anext(output), 5)
+            assert (result.kind, result.input_seq) == (kind, 0)
+        assert await coordinator.append_session(ref, text) == 1
+        with pytest.raises(ValueError, match="contiguous"):
+            await coordinator.append_session(ref, text)
+        for kind in ("data", "input_done"):
+            result = await asyncio.wait_for(anext(output), 5)
+            assert (result.kind, result.input_seq) == (kind, 1)
+        with pytest.raises(ValueError, match="EOS"):
+            await coordinator.append_session(ref, chunk(2))
+        await output.aclose()
