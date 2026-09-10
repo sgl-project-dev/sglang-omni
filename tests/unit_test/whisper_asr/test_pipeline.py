@@ -43,6 +43,28 @@ def _encoder_graph_builder(**kwargs):
     return builder
 
 
+@pytest.fixture(autouse=True)
+def _default_backend(monkeypatch):
+    """Pin the backend so these expectations do not depend on the environment.
+
+    The builder picks the MLX profile when `SGLANG_USE_MLX` is set, and the
+    Torch/MPS profile when the stage resolves onto a Metal device. Without
+    pinning both, this file reads a different branch on a macOS arm64 developer
+    machine, and a different one again under `SGLANG_USE_MLX=1`.
+    """
+    import sglang.srt.hardware_backend.mlx.runtime as mlx_runtime
+
+    from sglang_omni.models.whisper_asr import engine_builder
+
+    monkeypatch.setattr(mlx_runtime, "use_mlx", lambda: False)
+    monkeypatch.setattr(
+        engine_builder.WhisperASREngineBuilder,
+        "_uses_torch_mps",
+        lambda self: False,
+        raising=False,
+    )
+
+
 def test_whisper_stage_defaults() -> None:
     signature = inspect.signature(whisper_asr_stages.create_sglang_whisper_asr_executor)
 
@@ -285,7 +307,9 @@ def test_whisper_asr_config_uses_single_batched_stage() -> None:
     assert stage.factory_path.endswith("create_sglang_whisper_asr_executor")
     assert stage.engine.max_running_requests == 64
     factory = stage.factory
-    assert factory.device == "cuda:0"
+    # None lets the builder resolve the device from the active platform;
+    # a pinned cuda:0 sends non-CUDA backends into torch.cuda.set_device.
+    assert factory.device is None
     assert factory.enable_encoder_cuda_graph is True
     assert factory.request_build_max_workers == 8
     assert factory.enable_async_decode is True

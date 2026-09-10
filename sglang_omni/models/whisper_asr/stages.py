@@ -9,7 +9,10 @@ from typing import Any
 def create_sglang_whisper_asr_executor(
     model_path: str,
     *,
-    device: str = "cuda:0",
+    # None lets the builder resolve the device from the active platform, the
+    # way the other ASR stages do. A hard-coded "cuda:0" sends every non-CUDA
+    # backend into torch.cuda.set_device.
+    device: str | None = None,
     dtype: str = "float16",
     max_running_requests: int = 64,
     max_new_tokens: int = 256,
