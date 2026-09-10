@@ -9,26 +9,18 @@ from collections.abc import Mapping
 from numbers import Integral
 from typing import Any, ClassVar
 
+from sglang.srt.arg_groups.model_override_base import resolved_view
+
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     build_generation_batch_overrides,
     get_prefill_cuda_graph_backend,
-    nested_prefill_overrides,
+    operator_selected_prefill_backend,
     validate_generation_batch_policy,
 )
 from sglang_omni.utils.checkpoint import resolve_checkpoint as _resolve_checkpoint
 
 logger = logging.getLogger(__name__)
-
-
-def _operator_selected_prefill_graph_backend(
-    server_args_overrides: Mapping[str, Any] | None,
-) -> bool:
-    if not server_args_overrides:
-        return False
-    if "cuda_graph_backend_prefill" in server_args_overrides:
-        return True
-    return "backend" in nested_prefill_overrides(server_args_overrides)
 
 
 def _normalize_context_length(value: Any, *, model_name: str) -> int:
@@ -117,9 +109,7 @@ class SGLangGenerationEngineBuilder(ABC):
             model_name=self.model_name,
         )
 
-        operator_selected_prefill_backend = _operator_selected_prefill_graph_backend(
-            server_args_overrides
-        )
+        operator_selected = operator_selected_prefill_backend(server_args_overrides)
         overrides = build_generation_batch_overrides(
             server_args_overrides=server_args_overrides,
             **self.generation_defaults(dtype=dtype),
@@ -161,30 +151,33 @@ class SGLangGenerationEngineBuilder(ABC):
             **overrides,
         )
         self.customize_server_args(server_args)
+        cfg = resolved_view(server_args)
         if (
             overrides.get("chunked_prefill_size") is None
-            and get_prefill_cuda_graph_backend(server_args) != CudaGraphBackend.DISABLED
+            and cfg.cuda_graph_config.prefill.backend != CudaGraphBackend.DISABLED
         ):
             logger.info(
                 f"{self.model_name}: chunked_prefill_size was unset, SGLang resolved "
-                f"{server_args.chunked_prefill_size}, prefill CUDA graph cap "
-                f"{server_args.cuda_graph_config.prefill.max_bs}"
+                f"{cfg.chunked_prefill_size}, prefill CUDA graph cap "
+                f"{cfg.cuda_graph_config.prefill.max_bs}"
             )
         self.validate_before_infrastructure(server_args)
 
         infra_kwargs = dict(self.infra_kwargs())
         if self.model_arch_override is not None:
             infra_kwargs.setdefault("model_arch_override", self.model_arch_override)
+
+        def before_memory_pool(model_worker: Any) -> None:
+            self.before_memory_pool(
+                model_worker=model_worker,
+                checkpoint_dir=checkpoint_dir,
+                device=device,
+                gpu_id=gpu_id,
+                server_args=server_args,
+            )
+
+        infra_kwargs["before_memory_pool"] = before_memory_pool
         prefill_graph_backend = get_prefill_cuda_graph_backend(server_args)
-        if (
-            prefill_graph_backend != CudaGraphBackend.DISABLED
-            and not operator_selected_prefill_backend
-        ):
-            # SGLang treats every non-default source as operator-locked, and a
-            # locked prefill backend skips upstream's model compatibility
-            # resolution; a model-qualified stage default must stay eligible
-            # for it.
-            server_args._cuda_graph_config_locked.discard(("prefill", "backend"))
         if prefill_graph_backend == CudaGraphBackend.BREAKABLE:
             if not self.supports_breakable_prefill_cuda_graph:
                 raise RuntimeError(
@@ -226,7 +219,8 @@ class SGLangGenerationEngineBuilder(ABC):
                 from sglang_omni.utils import cuda_graph_batch_validator
 
                 cuda_graph_batch_validator.attest_prefill_cuda_graphs(
-                    model_worker.model_runner, server_args
+                    model_worker.model_runner,
+                    operator_selected=operator_selected,
                 )
 
         try:
@@ -299,6 +293,18 @@ class SGLangGenerationEngineBuilder(ABC):
 
     def infra_kwargs(self) -> dict[str, Any]:
         return {}
+
+    def before_memory_pool(
+        self,
+        *,
+        model_worker: Any,
+        checkpoint_dir: str,
+        device: str,
+        gpu_id: int,
+        server_args: Any,
+    ) -> None:
+        """Attach what the stage keeps resident, before the KV pool is sized."""
+        del model_worker, checkpoint_dir, device, gpu_id, server_args
 
     def setup_model(
         self,

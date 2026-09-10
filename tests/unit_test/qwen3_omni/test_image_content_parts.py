@@ -46,7 +46,7 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
     else:
         assert inputs == {"messages": messages, "images": top_level}
 
-    loader = AsyncMock(side_effect=lambda images: images or [])
+    loader = AsyncMock(side_effect=lambda images, **kwargs: images or [])
     monkeypatch.setattr(preprocessor_mod, "ensure_image_list_async", loader)
     monkeypatch.setattr(
         preprocessor_mod, "ensure_audio_list_async", AsyncMock(return_value=[])
@@ -80,7 +80,12 @@ def test_image_parts_reach_processor_in_conversation_order(monkeypatch, top_leve
     expected_images = ["first.png", "second.png", "third.png"]
     if top_level is not None:
         expected_images.append("extra.png")
-    loader.assert_awaited_once_with(expected_images)
+    loader.assert_awaited_once()
+    assert loader.await_args.args == (expected_images,)
+    assert isinstance(
+        loader.await_args.kwargs["media_connector"],
+        preprocessor_mod.MultiModalResourceConnector,
+    )
     assert processor.call_args.kwargs["images"] == expected_images
     templated = processor.apply_chat_template.call_args.args[0]
     assert templated[0] == {"role": "user", "content": [{"type": "image"}]}

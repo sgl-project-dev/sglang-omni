@@ -615,6 +615,7 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
         *,
         model_arch_override=None,
         defer_cuda_graph_capture=False,
+        before_memory_pool=None,
     ):
         captured["gpu_id"] = gpu_id
         captured["model_arch_override"] = model_arch_override
@@ -643,6 +644,8 @@ def test_moss_tts_engine_uses_auto_mem_fraction_by_default(monkeypatch) -> None:
             model_runner=model_runner,
             enable_prefill_input_embeds=False,
         )
+        if before_memory_pool is not None:
+            before_memory_pool(model_worker)
         return (
             model_worker,
             object(),

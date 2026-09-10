@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
@@ -13,6 +15,7 @@ import torch
 import torch.nn.functional as F
 from torch.nn.utils.parametrize import is_parametrized, remove_parametrizations
 
+from sglang_omni.models.fun_cosyvoice3.config import reject_conflicting_dit_accelerators
 from sglang_omni.models.fun_cosyvoice3.flow_estimator_trt import (
     execute_flow_estimator,
     is_flow_estimator_trt,
@@ -295,6 +298,44 @@ def _solve_flow_euler(
     return x.float()
 
 
+class _FlowSolveTimer:
+    """Elapsed time of one Euler solve, read back without waiting on the device.
+
+    On an accelerator two stream events bracket the solve and the elapsed time
+    is only available once the end event has completed. On CPU the ops run
+    synchronously, so perf_counter around the call is already exact.
+    """
+
+    def __init__(self, device: torch.device) -> None:
+        self._on_device = device.type != "cpu"
+        if self._on_device:
+            self._stream = torch.accelerator.current_stream(device)
+            self._start = torch.Event(device=device, enable_timing=True)
+            self._end = torch.Event(device=device, enable_timing=True)
+        else:
+            self._start = self._end = 0.0
+
+    def start(self) -> None:
+        if self._on_device:
+            self._start.record(self._stream)
+        else:
+            self._start = time.perf_counter()
+
+    def stop(self) -> None:
+        if self._on_device:
+            self._end.record(self._stream)
+        else:
+            self._end = time.perf_counter()
+
+    def elapsed_ms(self) -> float | None:
+        """Return the solve time, or None while the end event is still pending."""
+        if not self._on_device:
+            return (self._end - self._start) * 1000.0
+        if not self._end.query():
+            return None
+        return self._start.elapsed_time(self._end)
+
+
 @torch.inference_mode()
 def _generate_flow(
     flow: Any,
@@ -302,6 +343,7 @@ def _generate_flow(
     *,
     streaming: bool = False,
     finalize: bool = True,
+    timer: _FlowSolveTimer | None = None,
 ) -> torch.Tensor:
     embedding = flow.spk_embed_affine_layer(F.normalize(packed.embedding, dim=1))
     token_embedding = flow.input_embedding(torch.clamp(packed.token, min=0))
@@ -357,9 +399,14 @@ def _generate_flow(
     t_span = torch.linspace(0, 1, 11, device=mu.device, dtype=mu.dtype)
     if decoder.t_scheduler == "cosine":
         t_span = 1 - torch.cos(t_span * 0.5 * torch.pi)
-    return _solve_flow_euler(
+    if timer is not None:
+        timer.start()
+    mel = _solve_flow_euler(
         decoder, z, t_span, mu, mask, embedding, cond, streaming=streaming
     )
+    if timer is not None:
+        timer.stop()
+    return mel
 
 
 def _split_generated_mels(
@@ -411,6 +458,7 @@ class FunCosyVoice3Flow:
 
     def __init__(self, flow: Any) -> None:
         self._flow = flow
+        self._last_solve: tuple[int, _FlowSolveTimer] | None = None
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._flow, name)
@@ -426,10 +474,32 @@ class FunCosyVoice3Flow:
         self._flow.eval()
         return self
 
+    def log_last_solve(self) -> None:
+        # note (db-ol): the vocoder calls this after the bucket's audio reached
+        # the host. A still pending end event is skipped, never waited for.
+        if self._last_solve is None:
+            return
+        items, timer = self._last_solve
+        self._last_solve = None
+        elapsed_ms = timer.elapsed_ms()
+        if elapsed_ms is None:
+            return
+        logger.debug(
+            "Fun-CosyVoice3 flow solve: batch_items=%d solve_elapsed_ms=%.1f",
+            items,
+            elapsed_ms,
+        )
+
     @torch.inference_mode()
     def inference(self, inputs: Sequence[FlowBatchInput]) -> list[torch.Tensor]:
         packed = _pack_flow_inputs(self._flow, inputs)
-        generated = _generate_flow(self._flow, packed)
+        # note (db-ol): the solve is timed only while the debug record can be
+        # seen, so the default INFO path runs it untouched.
+        timer = None
+        if logger.isEnabledFor(logging.DEBUG):
+            timer = _FlowSolveTimer(packed.token.device)
+            self._last_solve = (len(inputs), timer)
+        generated = _generate_flow(self._flow, packed, timer=timer)
         return _split_generated_mels(
             self._flow,
             packed,
@@ -552,6 +622,27 @@ def _prepare_hift_for_inference(hift: Any) -> None:
     )
 
 
+def _import_modelscope_preserving_root_handlers() -> None:
+    # note (db-ol): the first modelscope import sets every root StreamHandler
+    # to ERROR once torch.distributed is initialized, which silences the stage
+    # process that hosts both the engine and this vocoder. Undo that change.
+    saved = [(handler, handler.level) for handler in logging.getLogger().handlers]
+    try:
+        importlib.import_module("modelscope")
+    except ImportError:
+        # note (db-ol): cosyvoice imports modelscope itself and raises a
+        # clearer error below.
+        pass
+    for handler, level in saved:
+        if handler.level != level:
+            handler.setLevel(level)
+            logger.info(
+                "Restored root log handler level to %s after the modelscope "
+                "import changed it",
+                logging.getLevelName(level),
+            )
+
+
 def _load_cosyvoice3_flow_hift(
     checkpoint_dir: str,
     device: str,
@@ -559,6 +650,7 @@ def _load_cosyvoice3_flow_hift(
     *,
     enable_flow_estimator_trt: bool = False,
 ) -> tuple[Any, Any]:
+    _import_modelscope_preserving_root_handlers()
     try:
         from cosyvoice.cli.cosyvoice import CosyVoice3
     except ImportError as exc:
@@ -846,6 +938,7 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
                     wavs = self._mel2wav_batch([mel for _, mel in group])
                     for (request, _), wav in zip(group, wavs, strict=True):
                         results[request.index] = (wav, request.sample_rate)
+            self._flow.log_last_solve()
 
         if any(result is None for result in results):
             raise RuntimeError("Fun-CosyVoice3 vocoder did not decode every request")
@@ -1079,7 +1172,7 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 30,
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
-    enable_dit_torch_compile: bool | None = None,
+    enable_dit_torch_compile: bool = False,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
     hift_max_padding_waste: float = 1.5,
@@ -1093,13 +1186,10 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
-    if enable_flow_estimator_trt and enable_dit_torch_compile:
-        raise ValueError(
-            "enable_flow_estimator_trt and enable_dit_torch_compile both "
-            "target flow.decoder.estimator; enable only one"
-        )
-    if enable_dit_torch_compile is None:
-        enable_dit_torch_compile = not enable_flow_estimator_trt
+    reject_conflicting_dit_accelerators(
+        enable_dit_torch_compile=enable_dit_torch_compile,
+        enable_flow_estimator_trt=enable_flow_estimator_trt,
+    )
     device = resolve_device_spec(device, gpu_id)
     checkpoint_dir = resolve_checkpoint(model_path)
     if dtype not in _AUTOCAST_DTYPES:
