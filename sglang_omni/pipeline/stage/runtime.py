@@ -23,7 +23,7 @@ import torch
 
 from sglang_omni.comm import stage_io
 from sglang_omni.comm.data_ref import DataKind, DataRef
-from sglang_omni.comm.engine import CommEngine
+from sglang_omni.comm.engine import CommEngine, KVTransferCancelled
 from sglang_omni.comm.kv_transfer import KVPageTransfer
 from sglang_omni.comm.router import CommRouter
 from sglang_omni.pipeline.replicas import ReplicaTopology
@@ -1241,6 +1241,10 @@ class Stage:
                 transfer_id=transfer.transfer_id,
                 lease=transfer.lease,
             )
+        except KVTransferCancelled:
+            # Request cleanup is terminal for this transfer, but not for the
+            # stage's long-lived outbox drain.
+            return
         except Exception as exc:
             logger.exception(
                 "Stage %s KV transfer failed for %s",

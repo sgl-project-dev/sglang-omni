@@ -210,7 +210,6 @@ class OmniScheduler:
         self.inbox: _queue_mod.Queue[IncomingMessage] = _queue_mod.Queue()
         self.outbox: _queue_mod.Queue[OutgoingMessage] = _queue_mod.Queue()
         self.requires_tp_work_fanout: bool = False
-        self.kv_registrations = ()
 
         # --- Request builder: StagePayload → SGLangARRequestData ----------
         self._request_builder = request_builder
@@ -469,7 +468,7 @@ class OmniScheduler:
         self.require_mlp_sync = False
         self.abort_on_priority_when_disabled = False
 
-        # Disaggregation / hybrid (disabled)
+        # Upstream processing mode; explicit Prefill remains NULL, Decode overrides.
         self.disaggregation_mode = self._initial_disaggregation_mode()
         self.is_hybrid_swa = False
         self.is_hybrid_ssm = False
@@ -1685,16 +1684,9 @@ class OmniScheduler:
                     rid,
                 )
             finally:
-                callback = self._request_finished_callback
-                if callback is not None:
-                    try:
-                        callback(rid)
-                    except Exception as exc:
-                        logger.exception(
-                            f"OmniScheduler: terminal cleanup failed for {rid}"
-                        )
-                        if terminal_error is None:
-                            terminal_error = exc
+                callback_error = self._run_request_finished_callback(rid)
+                if terminal_error is None:
+                    terminal_error = callback_error
                 data.prefill_input_embeds = None
                 data.decode_input_embeds = None
                 # Note: (Jiaxin Deng) close the model-path interval before
@@ -2292,6 +2284,19 @@ class OmniScheduler:
             callback(request_id)
         except Exception:
             logger.exception("OmniScheduler: abort cleanup failed for %s", request_id)
+
+    def _run_request_finished_callback(self, request_id: str) -> Exception | None:
+        callback = self._request_finished_callback
+        if callback is None:
+            return None
+        try:
+            callback(request_id)
+        except Exception as exc:
+            logger.exception(
+                "OmniScheduler: terminal cleanup failed for %s", request_id
+            )
+            return exc
+        return None
 
     def _release_immediate_request_resources(self, request_id: str) -> None:
         seen: set[int] = set()

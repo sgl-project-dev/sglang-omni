@@ -14,7 +14,7 @@ from sglang.srt.managers.scheduler import Scheduler as _Upstream
 
 from sglang_omni.comm import KVPageTransfer
 from sglang_omni.scheduling.messages import OutgoingMessage
-from sglang_omni.scheduling.omni_scheduler import OmniScheduler, _detach_request_data
+from sglang_omni.scheduling.omni_scheduler import OmniScheduler
 from sglang_omni.scheduling.pd_utils import (
     DecodeKVReceiver,
     DecodeRequestPoolExhausted,
@@ -122,24 +122,33 @@ class OmniPrefillScheduler(OmniScheduler):
                 continuation = continuation_from_req(
                     req, transfer_id, self._pd_state_builder
                 )
-                transfer = KVPageTransfer(
-                    request_id=req.rid,
-                    transfer_id=transfer_id,
-                    source_pool_id=self._pd_pool_id,
-                    target_pool_id=f"{self._pd_partner_stage}:kv",
-                    source_page_indices=request_page_indices(
-                        self.req_to_token_pool, req
-                    ),
-                    to_stage=self._pd_partner_stage,
-                    metadata={"decode_continuation": continuation.encode()},
-                    lease=SGLangKVLease(req, self._pd_due_releases),
-                )
+                source_page_indices = request_page_indices(self.req_to_token_pool, req)
+                metadata = {"decode_continuation": continuation.encode()}
             except Exception as exc:
+                terminal_error, _ = self._finalize_prefill_request(
+                    req, terminal_error=exc
+                )
                 self._release_request_kv_cache(req)
-                _detach_request_data(req)
-                self._emit_request_error(req.rid, exc)
+                self._emit_request_error(req.rid, terminal_error)
                 continue
-            _detach_request_data(req)
+
+            terminal_error, abort_cleanup_needed = self._finalize_prefill_request(req)
+            if terminal_error is not None or abort_cleanup_needed:
+                self._release_request_kv_cache(req)
+                if terminal_error is not None:
+                    self._emit_request_error(req.rid, terminal_error)
+                continue
+
+            transfer = KVPageTransfer(
+                request_id=req.rid,
+                transfer_id=transfer_id,
+                source_pool_id=self._pd_pool_id,
+                target_pool_id=f"{self._pd_partner_stage}:kv",
+                source_page_indices=source_page_indices,
+                to_stage=self._pd_partner_stage,
+                metadata=metadata,
+                lease=SGLangKVLease(req, self._pd_due_releases),
+            )
             self.outbox.put(
                 OutgoingMessage(
                     request_id=req.rid,
@@ -150,6 +159,29 @@ class OmniPrefillScheduler(OmniScheduler):
         batch.reqs = retained
         if not retained:
             batch.batch_is_full = False
+
+    def _finalize_prefill_request(
+        self,
+        req,
+        *,
+        terminal_error: Exception | None = None,
+    ) -> tuple[Exception | None, bool]:
+        callback_error = self._run_request_finished_callback(req.rid)
+        if terminal_error is None:
+            terminal_error = callback_error
+
+        if req.rid in self._aborted_request_ids:
+            status = "aborted"
+        elif terminal_error is not None:
+            status = "error"
+        else:
+            status = "success"
+        self._emit_model_path_end_once(req.rid, status=status)
+
+        abort_cleanup_needed = self._close_completed_request(req)
+        if abort_cleanup_needed:
+            self._run_abort_callback(req.rid)
+        return terminal_error, abort_cleanup_needed
 
 
 class OmniDecodeScheduler(OmniScheduler):

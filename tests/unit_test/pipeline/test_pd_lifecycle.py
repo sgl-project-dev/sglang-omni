@@ -34,6 +34,7 @@ from tests.unit_test.pipeline.test_pd_utils import (
     _KVAllocator,
     _prefill_req,
     _ReqPool,
+    _state_builder,
 )
 
 
@@ -109,6 +110,107 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     scheduler.get_next_batch_to_run()
     scheduler.get_next_batch_to_run()
     assert released == [(req, threading.get_ident())]
+
+
+def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
+    scheduler = object.__new__(OmniPrefillScheduler)
+    scheduler._pd_state_builder = _state_builder
+    scheduler._pd_pool_id = "prefill:kv"
+    scheduler._pd_partner_stage = "decode"
+    scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler.req_to_token_pool = _ReqPool()
+    scheduler.outbox = queue.Queue()
+    scheduler.is_entry_rank = True
+    scheduler._request_finished_callback = request_finished_callback
+    scheduler._abort_callback = Mock()
+    scheduler._request_admission_lock = threading.RLock()
+    scheduler._completed_request_ids = {}
+    scheduler._pending_stream_ingress = {}
+    scheduler._first_emit_done = set()
+    scheduler._prefill_start_done = set()
+    scheduler._prefill_end_done = set()
+    scheduler._aborted_request_ids = set()
+    scheduler._release_request_kv_cache = Mock()
+    return scheduler
+
+
+def _prefill_handoff_batch(scheduler):
+    req = _prefill_req()
+    scheduler.req_to_token_pool.alloc([req])
+    scheduler.req_to_token_pool.req_to_token[req.req_pool_idx, :3] = torch.tensor(
+        [1, 2, 3]
+    )
+    batch = SimpleNamespace(reqs=[req], batch_is_full=True)
+    scheduler._first_emit_done.add(req.rid)
+    scheduler._prefill_start_done.add(req.rid)
+    scheduler._prefill_end_done.add(req.rid)
+    return req, batch
+
+
+def test_prefill_handoff_runs_terminal_cleanup_and_closes_bookkeeping(
+    monkeypatch,
+) -> None:
+    model_path_end = Mock()
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_model_path_end",
+        model_path_end,
+    )
+    finished_callback = Mock()
+    scheduler = _prefill_scheduler_for_handoff(
+        request_finished_callback=finished_callback
+    )
+    req, batch = _prefill_handoff_batch(scheduler)
+
+    scheduler._handoff_prefilled_requests(batch, {id(req)})
+
+    message = scheduler.outbox.get_nowait()
+    assert message.type == "kv_transfer"
+    assert message.request_id == req.rid
+    assert message.data.source_page_indices == (1, 2, 3)
+    finished_callback.assert_called_once_with(req.rid)
+    model_path_end.assert_called_once_with(req.rid, status="success")
+    scheduler._release_request_kv_cache.assert_not_called()
+    assert req._omni_data is None
+    assert req.rid in scheduler._completed_request_ids
+    assert req.rid not in scheduler._first_emit_done
+    assert req.rid not in scheduler._prefill_start_done
+    assert req.rid not in scheduler._prefill_end_done
+    assert batch.reqs == []
+    assert not batch.batch_is_full
+
+
+def test_prefill_handoff_cleanup_failure_emits_error_and_releases_kv(
+    monkeypatch,
+) -> None:
+    model_path_end = Mock()
+    monkeypatch.setattr(
+        "sglang_omni.scheduling.omni_scheduler._emit_model_path_end",
+        model_path_end,
+    )
+    cleanup_error = RuntimeError("terminal cleanup failed")
+    finished_callback = Mock(side_effect=cleanup_error)
+    scheduler = _prefill_scheduler_for_handoff(
+        request_finished_callback=finished_callback
+    )
+    req, batch = _prefill_handoff_batch(scheduler)
+
+    scheduler._handoff_prefilled_requests(batch, {id(req)})
+
+    message = scheduler.outbox.get_nowait()
+    assert message.type == "error"
+    assert message.request_id == req.rid
+    assert message.data is cleanup_error
+    assert scheduler.outbox.empty()
+    finished_callback.assert_called_once_with(req.rid)
+    model_path_end.assert_called_once_with(req.rid, status="error")
+    scheduler._release_request_kv_cache.assert_called_once_with(req)
+    assert req._omni_data is None
+    assert req.rid in scheduler._completed_request_ids
+    assert req.rid not in scheduler._first_emit_done
+    assert req.rid not in scheduler._prefill_start_done
+    assert req.rid not in scheduler._prefill_end_done
+    assert batch.reqs == []
+    assert not batch.batch_is_full
 
 
 def _message(**updates):
@@ -325,7 +427,7 @@ def test_memory_pressure_fails_one_request_without_upstream_rebootstrap():
         filter_batch=lambda: None,
         is_empty=lambda: False,
         check_decode_mem=lambda: False,
-        retract_decode=lambda args: ([SimpleNamespace(rid="full")], 0.5, []),
+        retract_decode=lambda: ([SimpleNamespace(rid="full")], 0.5, []),
         prepare_for_decode=Mock(),
     )
     scheduler.update_running_batch(batch)
