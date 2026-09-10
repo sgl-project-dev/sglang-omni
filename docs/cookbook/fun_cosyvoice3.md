@@ -73,7 +73,6 @@ several minutes while the `tts_engine` captures CUDA graphs.
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --port 8000
 ```
 
@@ -89,7 +88,6 @@ dependency.
 ```bash
 SGLANG_USE_MLX=1 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --tts-engine.engine.quantization mlx_q4 \
   --port 8000
 ```
@@ -101,7 +99,6 @@ ONNX, Flow, and HiFT assets:
 ```bash
 SGLANG_USE_MLX=1 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --tts-engine.factory.mlx_model_path \
     mlx-community/Fun-CosyVoice3-0.5B-2512-4bit \
   --port 8000
@@ -129,7 +126,6 @@ path is unavailable on MPS.
 unset SGLANG_USE_MLX
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --port 8000
 ```
 
@@ -165,7 +161,6 @@ Change the mel-frame bucket size, for example to 100 frames:
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --port 8000 \
   --vocoder.factory.flow_batch_bucket_frames 100
 ```
@@ -187,7 +182,6 @@ single request.
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --port 8000 \
   --vocoder.factory.flow_batch_admission_frames 4000
 ```
@@ -230,7 +224,6 @@ startup during development:
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --vocoder.factory.enable_dit_torch_compile false \
   --port 8000
 ```
@@ -256,7 +249,6 @@ flags to true is rejected:
 ```bash
 sgl-omni serve \
   --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
-  --config examples/configs/fun_cosyvoice3_0_5b.yaml \
   --vocoder.factory.enable_flow_estimator_trt true \
   --port 8000
 ```
