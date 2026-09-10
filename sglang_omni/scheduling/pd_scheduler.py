@@ -7,7 +7,7 @@ import logging
 import queue
 import threading
 import types
-from contextlib import contextmanager
+from contextlib import nullcontext
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -32,8 +32,8 @@ from sglang_omni.scheduling.pd_utils import (
 logger = logging.getLogger(__name__)
 
 
-class _PDReleaseOwner(OmniScheduler):
-    """Omni scheduler half whose request table only its own thread mutates."""
+class _PDKVLifecycle(OmniScheduler):
+    """Own PD-only KV state that upstream scheduler lifecycle checks cannot see."""
 
     def __init__(self, *args, **kwargs) -> None:
         self._pd_due_releases: queue.SimpleQueue = queue.SimpleQueue()
@@ -42,6 +42,18 @@ class _PDReleaseOwner(OmniScheduler):
 
     def _pd_holds_kv(self) -> bool:
         return bool(self._pd_outstanding_releases)
+
+    def _pd_lifecycle_guard(self):
+        return nullcontext()
+
+    def _lease_pd_kv(self, req) -> SGLangKVLease:
+        lease = SGLangKVLease(req, self._pd_due_releases)
+        self._pd_outstanding_releases.add(req.rid)
+        return lease
+
+    def _defer_pd_kv_release(self, req) -> None:
+        self._pd_outstanding_releases.add(req.rid)
+        self._pd_due_releases.put(req)
 
     def is_fully_idle(self, for_health_check: bool = False) -> bool:
         # Health checks only care whether a running request can carry their
@@ -78,21 +90,22 @@ class _PDReleaseOwner(OmniScheduler):
                 return False, "PD-owned KV is still in flight"
             return update_fn(update_payload)
 
-        return super()._run_weight_update_with_lifecycle(
-            payload,
-            update_after_pd_drains,
-            result_data,
-            keep_pause_on_failure=keep_pause_on_failure,
-        )
+        with self._pd_lifecycle_guard():
+            return super()._run_weight_update_with_lifecycle(
+                payload,
+                update_after_pd_drains,
+                result_data,
+                keep_pause_on_failure=keep_pause_on_failure,
+            )
 
     def flush_cache(self, *args, **kwargs):
-        # Note(Yue Yin): upstream clears both pools once it reads the
-        # scheduler as idle, and it cannot see this queue.
-        self._drain_due_releases()
-        return _Upstream.flush_cache(self, *args, **kwargs)
+        with self._pd_lifecycle_guard():
+            # Upstream clears both pools once it reads the scheduler as idle.
+            self._drain_due_releases()
+            return _Upstream.flush_cache(self, *args, **kwargs)
 
 
-class OmniPrefillScheduler(_PDReleaseOwner):
+class OmniPrefillScheduler(_PDKVLifecycle):
     """Omni scheduler whose generated requests stop after Prefill."""
 
     scheduler_role = "prefill"
@@ -205,9 +218,8 @@ class OmniPrefillScheduler(_PDReleaseOwner):
                 source_page_indices=source_page_indices,
                 to_stage=self._pd_partner_stage,
                 metadata=metadata,
-                lease=SGLangKVLease(req, self._pd_due_releases),
+                lease=self._lease_pd_kv(req),
             )
-            self._pd_outstanding_releases.add(req.rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=req.rid,
@@ -243,7 +255,7 @@ class OmniPrefillScheduler(_PDReleaseOwner):
         return terminal_error, abort_cleanup_needed
 
 
-class OmniDecodeScheduler(_PDReleaseOwner):
+class OmniDecodeScheduler(_PDKVLifecycle):
     """Omni scheduler that admits transferred Prefill state for Decode."""
 
     scheduler_role = "decode"
@@ -258,11 +270,14 @@ class OmniDecodeScheduler(_PDReleaseOwner):
     ) -> None:
         self._pd_admissions = queue.SimpleQueue()
         self._pd_deferred_admission = None
-        self._pd_admission_lock = threading.RLock()
+        self._pd_lifecycle_lock = threading.RLock()
         self._pd_state_restorer = state_restorer
         super().__init__(*args, **kwargs)
         _validate_pd_runtime(self)
-        self._pd_kv_lock = serialize_kv_allocator(self.token_to_kv_pool_allocator)
+        serialize_kv_allocator(
+            self.token_to_kv_pool_allocator,
+            lock=self._pd_lifecycle_lock,
+        )
 
         pool_id = f"{stage_name}:kv"
         pool = build_kv_pool(
@@ -274,7 +289,7 @@ class OmniDecodeScheduler(_PDReleaseOwner):
             allocator=self.token_to_kv_pool_allocator,
             admissions=self._pd_admissions,
             resume_schema=resume_schema,
-            lifecycle_lock=self._pd_admission_lock,
+            lifecycle_lock=self._pd_lifecycle_lock,
         )
         self._pd_receiver = receiver
         self.kv_registrations = ((pool, receiver),)
@@ -284,7 +299,7 @@ class OmniDecodeScheduler(_PDReleaseOwner):
         self.disagg_decode_transfer_queue = types.SimpleNamespace(queue=[])
 
     def _pd_holds_kv(self) -> bool:
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             return (
                 self._pd_deferred_admission is not None
                 or not self._pd_admissions.empty()
@@ -293,40 +308,15 @@ class OmniDecodeScheduler(_PDReleaseOwner):
             )
 
     def is_fully_idle(self, for_health_check: bool = False) -> bool:
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             return super().is_fully_idle(for_health_check=for_health_check)
 
     def _drain_due_releases(self) -> None:
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             super()._drain_due_releases()
 
-    @contextmanager
-    def _pause_pd_reservations(self):
-        was_accepting = self._pd_receiver.set_accepting_reservations(False)
-        try:
-            yield
-        finally:
-            self._pd_receiver.set_accepting_reservations(was_accepting)
-
-    def flush_cache(self, *args, **kwargs):
-        with self._pause_pd_reservations():
-            return super().flush_cache(*args, **kwargs)
-
-    def _run_weight_update_with_lifecycle(
-        self,
-        payload: dict[str, Any],
-        update_fn,
-        result_data: dict[str, Any],
-        *,
-        keep_pause_on_failure: bool = False,
-    ) -> dict[str, Any]:
-        with self._pause_pd_reservations():
-            return super()._run_weight_update_with_lifecycle(
-                payload,
-                update_fn,
-                result_data,
-                keep_pause_on_failure=keep_pause_on_failure,
-            )
+    def _pd_lifecycle_guard(self):
+        return self._pd_receiver.suspend_reservations()
 
     def _initial_disaggregation_mode(self):
         from sglang.srt.disaggregation.utils import DisaggregationMode
@@ -334,17 +324,16 @@ class OmniDecodeScheduler(_PDReleaseOwner):
         return DisaggregationMode.DECODE
 
     def get_next_batch_to_run(self):
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             self._drain_due_releases()
             self._drain_decode_admissions()
             # Do not let a new transfer consume the space between the decode
-            # memory check and allocation. Abort takes these locks in this order.
-            with self._pd_kv_lock:
-                plan = _Upstream.get_next_disagg_decode_batch_to_run(
-                    self, self.running_batch
-                )
-                self.running_batch = plan.running_batch
-                return plan.batch_to_run
+            # memory check and allocation.
+            plan = _Upstream.get_next_disagg_decode_batch_to_run(
+                self, self.running_batch
+            )
+            self.running_batch = plan.running_batch
+            return plan.batch_to_run
 
     def _add_request_to_queue(self, req, is_retracted=False):
         # Upstream retraction frees KV and expects its own rebootstrap queues.
@@ -363,7 +352,7 @@ class OmniDecodeScheduler(_PDReleaseOwner):
             self.abort(payload.request_id)
 
     def _drain_decode_admissions(self) -> None:
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             while True:
                 admission = self._pd_deferred_admission
                 if admission is None:
@@ -404,7 +393,7 @@ class OmniDecodeScheduler(_PDReleaseOwner):
     def _discard_pending_request_admissions(self) -> None:
         super()._discard_pending_request_admissions()
         self._pd_receiver.close()
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             admission = self._pd_deferred_admission
             self._pd_deferred_admission = None
             if admission is not None:
@@ -417,13 +406,12 @@ class OmniDecodeScheduler(_PDReleaseOwner):
                 self.token_to_kv_pool_allocator.free(admission.allocation.slots)
 
     def abort(self, request_id: str, *, defer_running_cleanup: bool = True) -> None:
-        with self._pd_admission_lock:
+        with self._pd_lifecycle_lock:
             for req in self.waiting_queue:
                 if req.rid == request_id:
                     # Note(Yue Yin): abort runs on the Stage event loop, and
                     # only the scheduler thread may mutate the request table.
-                    self._pd_outstanding_releases.add(req.rid)
-                    self._pd_due_releases.put(req)
+                    self._defer_pd_kv_release(req)
                     break
             super().abort(
                 request_id,

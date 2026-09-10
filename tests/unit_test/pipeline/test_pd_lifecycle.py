@@ -293,8 +293,7 @@ def _decode_scheduler():
     scheduler._pd_due_releases = queue.SimpleQueue()
     scheduler._pd_outstanding_releases = set()
     scheduler._pd_deferred_admission = None
-    scheduler._pd_admission_lock = threading.RLock()
-    scheduler._pd_kv_lock = threading.RLock()
+    scheduler._pd_lifecycle_lock = threading.RLock()
     scheduler._pd_state_restorer = lambda *args: None
     scheduler._aborted_request_ids = set()
     scheduler.req_to_token_pool = _ReqPool()
@@ -306,7 +305,7 @@ def _decode_scheduler():
         allocator=scheduler.token_to_kv_pool_allocator,
         admissions=scheduler._pd_admissions,
         resume_schema="test-v1",
-        lifecycle_lock=scheduler._pd_admission_lock,
+        lifecycle_lock=scheduler._pd_lifecycle_lock,
     )
     return scheduler
 

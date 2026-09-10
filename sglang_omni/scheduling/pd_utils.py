@@ -27,15 +27,17 @@ CONTINUATION_VERSION = 1
 _TRANSFER_TOMBSTONE_LIMIT = 10000
 
 
-def serialize_kv_allocator(allocator: Any):
+def serialize_kv_allocator(allocator: Any, *, lock: Any | None = None):
     """Synchronize the existing allocator, including calls through other holders.
 
     Wrap bound methods in place so concrete types and existing aliases survive.
     An RLock covers nested calls such as free_group_end -> free and alloc ->
     merge_and_sort_free, which a proxy around only alloc/free would miss.
+    A caller-provided RLock can cover the surrounding lifecycle transition too.
     Install once, before the Decode scheduler or comm threads start.
     """
-    lock = threading.RLock()
+    if lock is None:
+        lock = threading.RLock()
 
     def synchronized(method):
         @wraps(method)
@@ -513,11 +515,18 @@ class DecodeKVReceiver:
         with self._lock:
             return bool(self._reservations)
 
-    def set_accepting_reservations(self, accepting: bool) -> bool:
+    @contextmanager
+    def suspend_reservations(self):
+        """Reject new reservations while a destructive scheduler operation runs."""
+
         with self._lock:
-            previous = self._accepting_reservations
-            self._accepting_reservations = accepting and not self._closed
-            return previous
+            was_accepting = self._accepting_reservations
+            self._accepting_reservations = False
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._accepting_reservations = was_accepting and not self._closed
 
     def close(self) -> None:
         # CommEngine must finish/abort an in-flight copy before its pages can
