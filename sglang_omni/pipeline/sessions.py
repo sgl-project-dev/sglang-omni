@@ -394,10 +394,11 @@ class CoordinatorSessions:
         return discarded
 
     async def close_session(self, ref: SessionRef) -> None:
+        """Close the referenced incarnation regardless of its current output epoch."""
         session = self._sessions.get(ref.session_id)
         if session is None:
             return
-        if session.ref != ref:
+        if session.ref.incarnation != ref.incarnation:
             raise ValueError("stale session reference")
         await asyncio.shield(
             self._owned_session_task(self._close_session_state(session))

@@ -6,7 +6,7 @@ import asyncio
 import pytest
 
 from sglang_omni.proto import OmniRequest
-from tests.unit_test.fixtures.session_pipeline import chunk, pipeline
+from tests.unit_test.fixtures.session_pipeline import block_async_call, chunk, pipeline
 
 
 @pytest.mark.asyncio
@@ -105,3 +105,31 @@ async def test_abort_preserves_pending_input_and_completion_receipt(tmp_path):
         assert resumed.input_seq == 1 and resumed.ref == new_ref
         assert resumed.payload[0] == 2
         await output.aclose()
+
+
+@pytest.mark.asyncio
+async def test_close_previous_epoch_after_cancelled_abort_waiter(tmp_path, monkeypatch):
+    async with pipeline(tmp_path) as (coordinator, _, _):
+        ref = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="reused"
+        )
+        entered, release, completed = block_async_call(
+            monkeypatch, coordinator, "_abort_session"
+        )
+        waiter = asyncio.create_task(coordinator.abort_session(ref))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        finally:
+            release.set()
+        await asyncio.wait_for(completed.wait(), 5)
+        await coordinator.close_session(ref)
+        current = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="reused"
+        )
+        with pytest.raises(ValueError, match="stale"):
+            await coordinator.close_session(ref)
+        await coordinator.append_session(current, chunk(0))
+        await coordinator.close_session(current)

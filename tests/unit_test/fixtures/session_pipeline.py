@@ -172,3 +172,18 @@ async def pipeline(tmp_path, *, stage_count=2, replicated=False, list_next=False
 
 def chunk(seq, eos=False):
     return TimedChunk("audio", seq * 20, 20, seq, b"pcm", eos=eos)
+
+
+def block_async_call(monkeypatch, obj, name):
+    entered, release, completed = (asyncio.Event() for _ in range(3))
+    original = getattr(obj, name)
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        result = await original(*args, **kwargs)
+        completed.set()
+        return result
+
+    monkeypatch.setattr(obj, name, blocked)
+    return entered, release, completed
