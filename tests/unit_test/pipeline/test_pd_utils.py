@@ -8,7 +8,7 @@ from array import array
 from types import SimpleNamespace
 
 import torch
-from sglang.srt.managers.schedule_batch import Req
+from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
 from sglang_omni.comm import KVPageTransfer
@@ -78,13 +78,19 @@ class _KVAllocator:
         self.freed.append(slots)
 
 
-def _prefill_req(*, max_new_tokens: int = 16) -> Req:
+def _prefill_req(
+    *,
+    max_new_tokens: int = 16,
+    custom_params: dict | None = None,
+    return_hidden_states: bool | str = False,
+) -> Req:
     sampling = SamplingParams(
         max_new_tokens=max_new_tokens,
         temperature=0.7,
         top_p=0.9,
         stop_token_ids={2},
         sampling_seed=17,
+        custom_params=custom_params,
     )
     sampling.normalize(None)
     req = Req(
@@ -94,6 +100,7 @@ def _prefill_req(*, max_new_tokens: int = 16) -> Req:
         sampling_params=sampling,
         vocab_size=128,
         eos_token_ids={2},
+        return_hidden_states=return_hidden_states,
     )
     req.output_ids.append(42)
     payload = StagePayload(
@@ -137,6 +144,37 @@ def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     assert req.sampling_params.stop_token_ids == {2}
     assert req.prefix_indices.tolist() == [7, 8, 9]
     assert req.kv.kv_allocated_len == 3
+
+
+def _rebuilt_req(source):
+    continuation = DecodeContinuation.decode(
+        continuation_from_req(source, "transfer-1", _state_builder).encode()
+    )
+    return req_from_continuation(
+        continuation,
+        _allocation(),
+        req_to_token_pool=_ReqPool(),
+        state_restorer=lambda req, _data, _resume: setattr(req, "tokenizer", None),
+    )
+
+
+def test_continuation_preserves_the_hidden_state_mode() -> None:
+    for mode, capture in (
+        (False, CaptureHiddenMode.NULL),
+        (True, CaptureHiddenMode.FULL),
+        ("last", CaptureHiddenMode.LAST),
+    ):
+        req = _rebuilt_req(_prefill_req(return_hidden_states=mode))
+        assert req.return_hidden_states == mode
+        assert req.return_hidden_states_mode is capture
+
+
+def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
+    source = _prefill_req(custom_params={"segment_timestamps": True})
+    req = _rebuilt_req(source)
+    assert req.sampling_params.custom_params["segment_timestamps"] is True
+    assert req.sampling_params.custom_params["__req__"] is req
+    assert source.sampling_params.custom_params["__req__"] is source
 
 
 def test_decode_receiver_commits_directly_to_admission_queue() -> None:
