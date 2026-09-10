@@ -5,6 +5,8 @@ Tile heads of each token, as in OmniVoice's fused attention prologue. AuK uses
 adjacent even/odd rotary pairs and batch-dependent positions. Keep PyTorch
 2.13's vector4 reduction and intermediate FP32 rounding; its CUDA autocast
 RMSNorm runs in FP32 even though the packed projection is BF16.
+When upgrading PyTorch, revalidate this rounding contract with
+tests/unit_test/auk/test_fused_rope.py.
 """
 import torch
 import triton
