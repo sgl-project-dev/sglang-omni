@@ -401,14 +401,16 @@ class DecodeKVReceiver:
         allocator: Any,
         admissions: queue.SimpleQueue[DecodeAdmission],
         resume_schema: str,
+        lifecycle_lock: Any | None = None,
     ) -> None:
         self.pool_id = pool_id
         self._allocator = allocator
         self._admissions = admissions
         self._resume_schema = resume_schema
-        self._lock = threading.Lock()
+        self._lock = lifecycle_lock or threading.RLock()
         self._reservations: dict[str, DecodeAdmission] = {}
         self._transfer_tombstones: dict[str, None] = {}
+        self._accepting_reservations = True
         self._closed = False
 
     def _remember_finished_transfer(self, transfer_id: str) -> None:
@@ -444,6 +446,8 @@ class DecodeKVReceiver:
         with self._lock:
             if self._closed:
                 raise RuntimeError("decode KV receiver is closed")
+            if not self._accepting_reservations:
+                raise RuntimeError("decode KV receiver is not accepting reservations")
             if (
                 request.transfer_id in self._reservations
                 or request.transfer_id in self._transfer_tombstones
@@ -505,10 +509,21 @@ class DecodeKVReceiver:
             self._allocator.free(reservation.allocation.slots)
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)
 
+    def has_reservations(self) -> bool:
+        with self._lock:
+            return bool(self._reservations)
+
+    def set_accepting_reservations(self, accepting: bool) -> bool:
+        with self._lock:
+            previous = self._accepting_reservations
+            self._accepting_reservations = accepting and not self._closed
+            return previous
+
     def close(self) -> None:
         # CommEngine must finish/abort an in-flight copy before its pages can
         # be freed. Closing only gates new reservations and admissions.
         with self._lock:
+            self._accepting_reservations = False
             self._closed = True
 
 

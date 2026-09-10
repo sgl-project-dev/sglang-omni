@@ -95,6 +95,7 @@ def test_real_allocator_free_cannot_restore_a_concurrent_reservation(
 def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     scheduler = object.__new__(OmniPrefillScheduler)
     scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_outstanding_releases = {"request-1"}
     scheduler.running_batch = SimpleNamespace(
         is_empty=lambda: True, batch_is_full=False
     )
@@ -103,7 +104,7 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
         (req, threading.get_ident())
     )
     monkeypatch.setattr(OmniScheduler, "get_next_batch_to_run", lambda self: None)
-    req = object()
+    req = SimpleNamespace(rid="request-1")
     lease = SGLangKVLease(req, scheduler._pd_due_releases)
     with ThreadPoolExecutor(2) as threads:
         list(threads.map(lambda _: lease.release(), range(4)))
@@ -111,6 +112,7 @@ def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     scheduler.get_next_batch_to_run()
     scheduler.get_next_batch_to_run()
     assert released == [(req, threading.get_ident())]
+    assert scheduler._pd_outstanding_releases == set()
 
 
 def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
@@ -119,6 +121,7 @@ def _prefill_scheduler_for_handoff(*, request_finished_callback=None):
     scheduler._pd_pool_id = "prefill:kv"
     scheduler._pd_partner_stage = "decode"
     scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_outstanding_releases = set()
     scheduler.req_to_token_pool = _ReqPool()
     scheduler.outbox = queue.Queue()
     scheduler.is_entry_rank = True
@@ -171,6 +174,7 @@ def test_prefill_handoff_runs_terminal_cleanup_and_closes_bookkeeping(
     finished_callback.assert_called_once_with(req.rid)
     model_path_end.assert_called_once_with(req.rid, status="success")
     scheduler._release_request_kv_cache.assert_not_called()
+    assert scheduler._pd_outstanding_releases == {req.rid}
     assert req._omni_data is None
     assert req.rid in scheduler._completed_request_ids
     assert req.rid not in scheduler._first_emit_done
@@ -205,6 +209,7 @@ def test_prefill_handoff_cleanup_failure_emits_error_and_releases_kv(
     finished_callback.assert_called_once_with(req.rid)
     model_path_end.assert_called_once_with(req.rid, status="error")
     scheduler._release_request_kv_cache.assert_called_once_with(req)
+    assert scheduler._pd_outstanding_releases == set()
     assert req._omni_data is None
     assert req.rid in scheduler._completed_request_ids
     assert req.rid not in scheduler._first_emit_done
@@ -240,8 +245,10 @@ def test_decode_abort_releases_on_the_scheduler_thread(monkeypatch):
     with ThreadPoolExecutor(1) as threads:
         threads.submit(scheduler.abort, "request-1").result(timeout=5)
     assert done == []
+    assert scheduler._pd_outstanding_releases == {"request-1"}
     scheduler.get_next_batch_to_run()
     assert done == [("request-1", threading.get_ident()), "admissions"]
+    assert scheduler._pd_outstanding_releases == set()
 
 
 def test_flush_cache_returns_deferred_rows_before_upstream_reads_idle(monkeypatch):
@@ -268,10 +275,40 @@ def test_a_failing_release_does_not_strand_the_rest_of_the_queue():
 
     scheduler._release_request_kv_cache = release
     for rid in ("first", "bad", "last"):
+        scheduler._pd_outstanding_releases.add(rid)
         scheduler._pd_due_releases.put(SimpleNamespace(rid=rid))
     scheduler._drain_due_releases()
     assert released == ["first", "last"]
     assert scheduler._pd_due_releases.empty()
+    assert scheduler._pd_outstanding_releases == {"bad"}
+
+
+def test_pd_owned_kv_blocks_idle_but_not_health_checks(monkeypatch):
+    scheduler = object.__new__(OmniPrefillScheduler)
+    scheduler._pd_outstanding_releases = {"request-1"}
+    monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, **kwargs: True)
+
+    assert scheduler.is_fully_idle() is False
+    assert scheduler.is_fully_idle(for_health_check=True) is True
+
+
+def test_decode_reports_committed_and_reserved_kv_as_not_idle(monkeypatch):
+    scheduler = _decode_scheduler()
+    monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, **kwargs: True)
+    assert scheduler.is_fully_idle() is True
+
+    message = _message()
+    destination = scheduler._pd_receiver.reserve(message)
+    assert scheduler.is_fully_idle() is False
+    assert scheduler.is_fully_idle(for_health_check=True) is True
+    scheduler._pd_receiver.abort(message, destination, RuntimeError("test cleanup"))
+
+    admission = DecodeAdmission(_continuation(), _allocation())
+    scheduler._pd_admissions.put(admission)
+    assert scheduler.is_fully_idle() is False
+    scheduler._pd_admissions.get_nowait()
+    scheduler._pd_deferred_admission = admission
+    assert scheduler.is_fully_idle() is False
 
 
 def _message(**updates):
@@ -344,6 +381,7 @@ def _decode_scheduler():
     scheduler = object.__new__(OmniDecodeScheduler)
     scheduler._pd_admissions = queue.SimpleQueue()
     scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_outstanding_releases = set()
     scheduler._pd_deferred_admission = None
     scheduler._pd_admission_lock = threading.RLock()
     scheduler._pd_kv_lock = threading.RLock()
@@ -353,7 +391,58 @@ def _decode_scheduler():
     scheduler.token_to_kv_pool_allocator = _KVAllocator()
     scheduler.waiting_queue = []
     scheduler.outbox = queue.Queue()
+    scheduler._pd_receiver = DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=scheduler.token_to_kv_pool_allocator,
+        admissions=scheduler._pd_admissions,
+        resume_schema="test-v1",
+        lifecycle_lock=scheduler._pd_admission_lock,
+    )
     return scheduler
+
+
+def test_decode_flush_rejects_new_reservations_until_it_finishes(monkeypatch):
+    scheduler = _decode_scheduler()
+    message = _message()
+
+    def upstream_flush(self):
+        with pytest.raises(RuntimeError, match="not accepting reservations"):
+            self._pd_receiver.reserve(message)
+        return True
+
+    monkeypatch.setattr(_Upstream, "flush_cache", upstream_flush)
+    assert scheduler.flush_cache() is True
+
+    destination = scheduler._pd_receiver.reserve(message)
+    scheduler._pd_receiver.abort(message, destination, RuntimeError("test cleanup"))
+
+
+def test_weight_update_waits_for_pd_kv_and_gates_reservations(monkeypatch):
+    scheduler = _decode_scheduler()
+
+    def run_update(self, payload, update_fn, result_data, **kwargs):
+        success, message = update_fn(payload)
+        return {"success": success, "message": message}
+
+    monkeypatch.setattr(OmniScheduler, "_run_weight_update_with_lifecycle", run_update)
+    update = Mock(return_value=(True, "updated"))
+    scheduler._pd_outstanding_releases.add("request-1")
+    result = scheduler._run_weight_update_with_lifecycle({}, update, {})
+    assert result == {"success": False, "message": "PD-owned KV is still in flight"}
+    update.assert_not_called()
+
+    scheduler._pd_outstanding_releases.clear()
+    message = _message()
+
+    def gated_update(payload):
+        with pytest.raises(RuntimeError, match="not accepting reservations"):
+            scheduler._pd_receiver.reserve(message)
+        return True, "updated"
+
+    result = scheduler._run_weight_update_with_lifecycle({}, gated_update, {})
+    assert result == {"success": True, "message": "updated"}
+    destination = scheduler._pd_receiver.reserve(message)
+    scheduler._pd_receiver.abort(message, destination, RuntimeError("test cleanup"))
 
 
 def test_deferred_admission_abort_frees_committed_pages_once():
