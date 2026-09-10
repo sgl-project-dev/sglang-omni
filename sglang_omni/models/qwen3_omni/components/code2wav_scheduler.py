@@ -152,6 +152,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
     ):
         self._model = model
+        self._snake_beta_guard = getattr(model, "_omni_snake_beta_guard", None)
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
         self._left_context_size = max(int(left_context_size), 0)
@@ -561,6 +562,9 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         graph_eligible: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         with torch.no_grad():
+            # Note (wenyao): Graph replay bypasses Python forwards and their state guards.
+            if self._snake_beta_guard is not None:
+                self._snake_beta_guard()
             if self._device.type != "cpu":
                 torch.get_device_module(self._device).set_device(self._device)
             if self._cuda_graph_runner is None:
@@ -970,8 +974,17 @@ def create_code2wav_scheduler(
     enable_output_overlap: bool = True,
     enable_cuda_graph: bool = False,
     total_gpu_memory_fraction: float | None = None,
+    snake_beta_implementation: str = "eager",
 ):
     """Factory: returns Code2WavScheduler."""
+    if type(snake_beta_implementation) is not str or snake_beta_implementation not in (
+        "eager",
+        "hoist",
+        "fused",
+    ):
+        raise ValueError(
+            "snake_beta_implementation must be 'eager', 'hoist', or 'fused'"
+        )
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
             "Code2Wav device graph requires gpu_memory_fraction "
@@ -986,6 +999,10 @@ def create_code2wav_scheduler(
     stream_chunk_size = max(int(stream_chunk_size), 1)
     left_context_size = max(int(left_context_size), 0)
     model = load_code2wav_model(model_path, device=device, dtype=dtype)
+    if snake_beta_implementation != "eager":
+        from .snake_beta import install_code2wav_snake_beta
+
+        install_code2wav_snake_beta(model, snake_beta_implementation)
     cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:
