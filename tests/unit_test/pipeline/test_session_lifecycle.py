@@ -8,7 +8,7 @@ import pytest
 from sglang_omni.admission import QueueFullError
 from sglang_omni.proto import OmniRequest
 from sglang_omni.proto.session import SessionLimits, TimedChunk
-from tests.unit_test.fixtures.session_pipeline import chunk, pipeline
+from tests.unit_test.fixtures.session_pipeline import block_async_call, chunk, pipeline
 
 
 @pytest.mark.asyncio
@@ -205,3 +205,31 @@ async def test_cross_modality_order_and_rejected_input_retry(tmp_path):
         with pytest.raises(ValueError, match="EOS"):
             await coordinator.append_session(ref, chunk(2))
         await output.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["close", "shutdown", "idle"])
+async def test_closing_rejects_input_before_cleanup(tmp_path, monkeypatch, trigger):
+    async with pipeline(tmp_path) as (coordinator, _, _):
+        ref = await coordinator.open_session(
+            OmniRequest(None),
+            stages=["source", "sink"],
+            limits=SessionLimits(idle_timeout_s=0.2 if trigger == "idle" else 300),
+        )
+        entered, release, _ = block_async_call(
+            monkeypatch, coordinator, "_cleanup_session"
+        )
+        task = None
+        if trigger == "close":
+            task = asyncio.create_task(coordinator.close_session(ref))
+        elif trigger == "shutdown":
+            task = asyncio.create_task(coordinator.shutdown_stages(["sink"]))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            with pytest.raises(RuntimeError, match="closing"):
+                await coordinator.append_session(ref, chunk(0))
+        finally:
+            release.set()
+            await asyncio.wait_for(
+                task if task is not None else coordinator.close_session(ref), 5
+            )

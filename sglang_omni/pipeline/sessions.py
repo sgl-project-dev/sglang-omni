@@ -6,6 +6,7 @@ import asyncio
 import secrets
 import uuid
 from collections import deque
+from collections.abc import Coroutine
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any, AsyncIterator
 
@@ -408,7 +409,12 @@ class CoordinatorSessions:
                 "session cleanup incomplete; capacity remains reserved"
             ) from session.cleanup_error
 
-    async def _close_session_state(self, session: _Session) -> None:
+    def _close_session_state(self, session: _Session) -> Coroutine[Any, Any, None]:
+        session.closing = True
+        session.wake.set()
+        return self._finish_session_close(session)
+
+    async def _finish_session_close(self, session: _Session) -> None:
         async with session.lock:
             if session.closed:
                 return
