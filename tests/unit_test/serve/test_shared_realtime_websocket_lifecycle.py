@@ -127,9 +127,11 @@ async def test_coordinator_cleanup_failure_stops_reader_but_keeps_native_owner(
             "mock",
             Capabilities(),
             lambda: adapter,
-            RuntimeLimits(cleanup_timeout_s=0.2),
+            RuntimeLimits(),
         )
         await runtime.update({}, "open")
+        runtime.limits = RuntimeLimits(cleanup_timeout_s=0.2)
+        adapter.set_limits(runtime.limits)
         await runtime.append(b"\0\0" * 320, 0, 0, "append")
         for _ in range(100):
             if adapter.active is not None:
