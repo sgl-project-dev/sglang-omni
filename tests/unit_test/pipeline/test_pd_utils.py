@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 import queue
-import threading
 from array import array
-from types import SimpleNamespace
+from dataclasses import replace
 
 import torch
 from sglang.srt.managers.schedule_batch import CaptureHiddenMode, Req
 from sglang.srt.sampling.sampling_params import SamplingParams
 
-from sglang_omni.comm import KVPageTransfer
-from sglang_omni.pipeline.stage.runtime import Stage
 from sglang_omni.proto import (
     KVBufferSpec,
     KVPoolLayout,
@@ -21,7 +18,6 @@ from sglang_omni.proto import (
     StagePayload,
 )
 from sglang_omni.scheduling.pd_utils import (
-    DecodeAdmission,
     DecodeContinuation,
     DecodeKVReceiver,
     ReservedKV,
@@ -130,6 +126,30 @@ def _allocation() -> ReservedKV:
     return ReservedKV(slots=slots, page_indices=(7, 8, 9), seq_len=3)
 
 
+def _message(*, transfer_id="transfer-1", **metadata):
+    continuation = replace(_continuation(), transfer_id=transfer_id)
+    return KVTransferPrepareMessage(
+        request_id=continuation.request_id,
+        transfer_id=continuation.transfer_id,
+        from_stage="prefill",
+        to_stage="decode",
+        source_pool_id="prefill:kv",
+        target_pool_id="decode:kv",
+        source_page_indices=(1, 2, 3),
+        source_layout=KVPoolLayout("test", 1, (KVBufferSpec("kv", 4),)),
+        metadata={"decode_continuation": continuation.encode(), **metadata},
+    )
+
+
+def _receiver(admissions=None):
+    return DecodeKVReceiver(
+        pool_id="decode:kv",
+        allocator=_KVAllocator(),
+        admissions=admissions if admissions is not None else queue.SimpleQueue(),
+        resume_schema="test-v1",
+    )
+
+
 def test_continuation_round_trip_rebuilds_prebuilt_request() -> None:
     continuation = DecodeContinuation.decode(_continuation().encode())
     req = req_from_continuation(
@@ -179,28 +199,8 @@ def test_continuation_strips_the_live_req_out_of_custom_params() -> None:
 
 def test_decode_receiver_commits_directly_to_admission_queue() -> None:
     admissions = queue.SimpleQueue()
-    receiver = DecodeKVReceiver(
-        pool_id="decode:kv",
-        allocator=_KVAllocator(),
-        admissions=admissions,
-        resume_schema="test-v1",
-    )
-    continuation = _continuation()
-    message = KVTransferPrepareMessage(
-        request_id=continuation.request_id,
-        transfer_id=continuation.transfer_id,
-        from_stage="prefill",
-        to_stage="decode",
-        source_pool_id="prefill:kv",
-        target_pool_id="decode:kv",
-        source_page_indices=(1, 2, 3),
-        source_layout=KVPoolLayout(
-            layout_id="test",
-            page_size=1,
-            buffers=(KVBufferSpec("kv", 4),),
-        ),
-        metadata={"decode_continuation": continuation.encode()},
-    )
+    receiver = _receiver(admissions)
+    message = _message()
 
     destination = receiver.reserve(message)
     receiver.commit(message, destination)
@@ -223,51 +223,3 @@ def test_prefill_defers_first_token_stop_policy_to_decode() -> None:
     assert req.sampling_params.max_new_tokens == original_max
     req.update_finish_state()
     assert req.finished()
-
-
-def test_decode_scheduler_admits_committed_request_without_controller(
-    monkeypatch,
-) -> None:
-    from sglang.srt import runtime_context
-
-    monkeypatch.setattr(runtime_context, "get_model", lambda: None, raising=False)
-    monkeypatch.setattr(runtime_context, "get_serving", lambda: None, raising=False)
-    from sglang_omni.scheduling.pd_scheduler import OmniDecodeScheduler
-
-    scheduler = object.__new__(OmniDecodeScheduler)
-    scheduler._pd_admissions = queue.SimpleQueue()
-    scheduler._pd_admissions.put(DecodeAdmission(_continuation(), _allocation()))
-    scheduler._pd_deferred_admission = None
-    scheduler._pd_admission_lock = threading.Lock()
-    scheduler._pd_state_restorer = lambda req, _data, _resume: setattr(
-        req, "tokenizer", None
-    )
-    scheduler._aborted_request_ids = set()
-    scheduler.req_to_token_pool = _ReqPool()
-    scheduler.token_to_kv_pool_allocator = _KVAllocator()
-    scheduler.waiting_queue = []
-    scheduler.outbox = queue.Queue()
-    scheduler.is_entry_rank = True
-
-    scheduler._drain_decode_admissions()
-
-    assert [req.rid for req in scheduler.waiting_queue] == ["request-1"]
-    assert scheduler.outbox.get_nowait().type == "admitted"
-
-
-def test_discarded_stage_transfer_releases_source_lease() -> None:
-    released = []
-    lease = SimpleNamespace(release=lambda: released.append(True))
-    transfer = KVPageTransfer(
-        request_id="request-1",
-        transfer_id="transfer-1",
-        source_pool_id="prefill:kv",
-        target_pool_id="decode:kv",
-        source_page_indices=(1,),
-        to_stage="decode",
-        lease=lease,
-    )
-
-    Stage._discard_kv_transfer(transfer)
-
-    assert released == [True]
