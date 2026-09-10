@@ -94,6 +94,7 @@ def test_real_allocator_free_cannot_restore_a_concurrent_reservation(
 def test_prefill_ack_releases_once_on_the_scheduler_thread(monkeypatch):
     scheduler = object.__new__(OmniPrefillScheduler)
     scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_leased_requests = set()
     scheduler.running_batch = SimpleNamespace(
         is_empty=lambda: True, batch_is_full=False
     )
@@ -172,6 +173,28 @@ def test_a_failing_release_does_not_strand_the_rest_of_the_queue():
     assert scheduler._pd_due_releases.empty()
 
 
+def test_prefill_reports_a_leased_request_as_not_idle(monkeypatch):
+    scheduler = object.__new__(OmniPrefillScheduler)
+    scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_leased_requests = {"request-1"}
+    monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, *a, **k: True)
+    assert scheduler.is_fully_idle() is False
+    scheduler._pd_leased_requests.clear()
+    assert scheduler.is_fully_idle() is True
+
+
+def test_decode_reports_committed_and_reserved_kv_as_not_idle(monkeypatch):
+    scheduler = _decode_scheduler()
+    scheduler._pd_receiver = SimpleNamespace(has_reservations=lambda: False)
+    monkeypatch.setattr(_Upstream, "is_fully_idle", lambda self, *a, **k: True)
+    assert scheduler.is_fully_idle() is True
+    scheduler._pd_admissions.put(DecodeAdmission(_continuation(), _allocation()))
+    assert scheduler.is_fully_idle() is False
+    scheduler._pd_admissions.get_nowait()
+    scheduler._pd_receiver = SimpleNamespace(has_reservations=lambda: True)
+    assert scheduler.is_fully_idle() is False
+
+
 def _message(**updates):
     from sglang_omni.proto import KVBufferSpec, KVPoolLayout, KVTransferPrepareMessage
 
@@ -242,6 +265,7 @@ def _decode_scheduler():
     scheduler = object.__new__(OmniDecodeScheduler)
     scheduler._pd_admissions = queue.SimpleQueue()
     scheduler._pd_due_releases = queue.SimpleQueue()
+    scheduler._pd_leased_requests = set()
     scheduler._pd_deferred_admission = None
     scheduler._pd_admission_lock = threading.RLock()
     scheduler._pd_kv_lock = threading.RLock()

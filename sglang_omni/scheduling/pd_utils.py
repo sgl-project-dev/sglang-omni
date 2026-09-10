@@ -505,6 +505,10 @@ class DecodeKVReceiver:
             self._allocator.free(reservation.allocation.slots)
         logger.warning("KV receive aborted for %s: %s", request.request_id, error)
 
+    def has_reservations(self) -> bool:
+        with self._lock:
+            return bool(self._reservations)
+
     def close(self) -> None:
         # CommEngine must finish/abort an in-flight copy before its pages can
         # be freed. Closing only gates new reservations and admissions.

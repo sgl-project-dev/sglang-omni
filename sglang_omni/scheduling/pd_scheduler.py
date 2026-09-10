@@ -36,7 +36,18 @@ class _PDReleaseOwner(OmniScheduler):
 
     def __init__(self, *args, **kwargs) -> None:
         self._pd_due_releases: queue.SimpleQueue = queue.SimpleQueue()
+        self._pd_leased_requests: set[str] = set()
         super().__init__(*args, **kwargs)
+
+    def _pd_holds_kv(self) -> bool:
+        return bool(self._pd_leased_requests) or not self._pd_due_releases.empty()
+
+    def is_fully_idle(self, *args, **kwargs):
+        # Note(Yue Yin): flush_cache() clears both pools once upstream reads
+        # idle, and PD holds KV that sits in none of the queues it reads.
+        if self._pd_holds_kv():
+            return False
+        return _Upstream.is_fully_idle(self, *args, **kwargs)
 
     def _drain_due_releases(self) -> None:
         while True:
@@ -44,6 +55,7 @@ class _PDReleaseOwner(OmniScheduler):
                 req = self._pd_due_releases.get_nowait()
             except queue.Empty:
                 return
+            self._pd_leased_requests.discard(getattr(req, "rid", None))
             try:
                 self._release_request_kv_cache(req)
             except Exception:
@@ -163,6 +175,7 @@ class OmniPrefillScheduler(_PDReleaseOwner):
                 self._emit_request_error(req.rid, exc)
                 continue
             _detach_request_data(req)
+            self._pd_leased_requests.add(req.rid)
             self.outbox.put(
                 OutgoingMessage(
                     request_id=req.rid,
@@ -213,6 +226,14 @@ class OmniDecodeScheduler(_PDReleaseOwner):
             queue=[], retracted_queue=[], num_tokens_pre_allocated=0
         )
         self.disagg_decode_transfer_queue = types.SimpleNamespace(queue=[])
+
+    def _pd_holds_kv(self) -> bool:
+        return (
+            self._pd_deferred_admission is not None
+            or not self._pd_admissions.empty()
+            or self._pd_receiver.has_reservations()
+            or super()._pd_holds_kv()
+        )
 
     def _initial_disaggregation_mode(self):
         from sglang.srt.disaggregation.utils import DisaggregationMode
