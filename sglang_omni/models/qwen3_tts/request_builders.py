@@ -170,6 +170,9 @@ class Qwen3TTSPreprocessingContext:
     # stream so it never queues behind the talker's step on the default
     # stream; the scheduler waits on the per-request event before reading.
     stream: Any = None
+    # Set only on the MLX path, where the engine's model is the MLX talker and
+    # has none of the Torch prompt builders.
+    mlx_preprocessor: Any = None
 
 
 _PREPROCESSING_CONTEXT: Qwen3TTSPreprocessingContext | None = None
@@ -186,12 +189,16 @@ def set_qwen3_tts_preprocessing_context(
     wrapper: Any,
     standalone: bool = False,
     device: torch.device | None = None,
+    mlx_preprocessor: Any = None,
 ) -> None:
     """Register model objects used by the preprocessing stage."""
 
     global _PREPROCESSING_CONTEXT
     with _PREPARED_REQUESTS_LOCK:
-        _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
+        if mlx_preprocessor is None:
+            # The ad-hoc reference service encodes reference audio with the Torch
+            # speech tokenizer; the MLX preprocessor owns that itself.
+            _get_qwen3_tts_adhoc_reference_service_locked(model, wrapper)
         _PREPROCESSING_CONTEXT = Qwen3TTSPreprocessingContext(
             model=model,
             wrapper=wrapper,
@@ -201,6 +208,7 @@ def set_qwen3_tts_preprocessing_context(
                 if device is not None and device.type == "cuda" and not standalone
                 else None
             ),
+            mlx_preprocessor=mlx_preprocessor,
         )
         _PREPARED_REQUESTS.clear()
 
@@ -1210,10 +1218,24 @@ def _prepare_qwen3_tts_request(
     model: Any,
     wrapper: Any,
     default_stream_codec_output: bool = True,
+    mlx_preprocessor: Any = None,
 ) -> Qwen3TTSPreparedRequest:
     state = build_qwen3_tts_state(
         payload, default_stream_codec_output=default_stream_codec_output
     )
+
+    if mlx_preprocessor is not None:
+        from sglang_omni.models.qwen3_tts.mlx.preprocessing import (
+            build_mlx_prepared_request,
+        )
+
+        return build_mlx_prepared_request(
+            mlx_preprocessor,
+            state,
+            gen_kwargs=mlx_preprocessor.merge_generate_kwargs(
+                **state.generation_kwargs
+            ),
+        )
 
     _validate_qwen3_tts_model_task(model, state)
     gen_kwargs = wrapper._merge_generate_kwargs(**state.generation_kwargs)
@@ -1307,6 +1329,7 @@ def preprocess_qwen3_tts_payload(
             model=context.model,
             wrapper=context.wrapper,
             default_stream_codec_output=default_stream_codec_output,
+            mlx_preprocessor=context.mlx_preprocessor,
         )
     else:
         with torch.cuda.stream(context.stream):
@@ -1315,6 +1338,7 @@ def preprocess_qwen3_tts_payload(
                 model=context.model,
                 wrapper=context.wrapper,
                 default_stream_codec_output=default_stream_codec_output,
+                mlx_preprocessor=context.mlx_preprocessor,
             )
             prepared.ready_event = torch.cuda.Event()
             prepared.ready_event.record(context.stream)

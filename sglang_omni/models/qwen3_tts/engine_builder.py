@@ -12,6 +12,7 @@ from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
+from sglang_omni.models.qwen3_tts.backend import Qwen3TTSBackend, get_qwen3_tts_backend
 from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
@@ -61,11 +62,20 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         self.prefill_coalesce_requests = prefill_coalesce_requests
         self.prefill_coalesce_wait_ms = prefill_coalesce_wait_ms
         self.wrapper: Any | None = None
+        self._torch_mps_model_runner: Any | None = None
         self._stream_output_builder: Any | None = None
         # note (luojiaxuan): the factory assigns this before generation_defaults
         # runs, but Qwen3TTSPipelineConfig.generation_admission_defaults builds a
         # bare builder just to read the admission keys, so it needs a value.
         self.checkpoint_dir: str = ""
+        self.device: str | None = None
+
+    def _uses_torch_mps(self) -> bool:
+        return (
+            get_qwen3_tts_backend() is Qwen3TTSBackend.TORCH
+            and self.device is not None
+            and torch.device(self.device).type == "mps"
+        )
 
     def resolve_checkpoint(self, model_path: str) -> str:
         qwen3_stages.apply_qwen_tts_transformers_compatibility_patches()
@@ -85,6 +95,40 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         *,
         dtype: str,
     ) -> dict[str, Any]:
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            # MLX owns evaluation and request-local caches. Torch graph capture,
+            # radix reuse, and split prefill do not apply to this runner.
+            return {
+                "max_running_requests": 16,
+                "max_queued_requests": 16,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "mem_fraction_static": 0.85,
+                "max_prefill_tokens": self.context_length,
+                "chunked_prefill_size": -1,
+                "trust_remote_code": True,
+            }
+        if self._uses_torch_mps():
+            return {
+                "max_running_requests": 1,
+                "max_queued_requests": 1,
+                "dtype": dtype,
+                "disable_cuda_graph": True,
+                "disable_overlap_schedule": True,
+                "disable_radix_cache": True,
+                "enable_torch_compile": False,
+                "context_length": 2048,
+                "max_total_tokens": 2048,
+                "max_prefill_tokens": 2048,
+                "chunked_prefill_size": -1,
+                "attention_backend": "torch_native",
+                "sampling_backend": "pytorch",
+                "trust_remote_code": True,
+            }
+
         defaults: dict[str, Any] = {
             "max_running_requests": 16,
             "max_queued_requests": 16,
@@ -122,12 +166,21 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         server_args: Any,
     ) -> None:
         del gpu_id
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            return
+
         from qwen_tts import Qwen3TTSModel
         from transformers import AutoProcessor
 
         # note(ratish): the tokenizer and the predictor graphs live for the whole
         # process, so they are attached before sglang reads free memory for the pool.
         model = model_worker.model_runner.model
+        if self._uses_torch_mps():
+            from sglang_omni.models.qwen3_tts.torch_mps_runner import (
+                install_torch_mps_talker,
+            )
+
+            install_torch_mps_talker(model, checkpoint_dir)
         speech_tokenizer = qwen3_stages._load_qwen3_tts_tokenizer(
             checkpoint_dir,
             device=device,
@@ -151,7 +204,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             wrapper=self.wrapper,
             device=torch.device(device),
         )
-        if bool(server_args.disable_cuda_graph):
+        if self._uses_torch_mps() or bool(server_args.disable_cuda_graph):
             return
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.
@@ -164,6 +217,33 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             top_p=subtalker.top_p,
         )
 
+    def _setup_mlx_model(self, *, model_worker: Any, checkpoint_dir: str) -> None:
+        """Register MLX-native preprocessing.
+
+        The engine's model here is the MLX talker, which has none of the Torch
+        prompt builders and cannot hold a Torch speech tokenizer, so prompts are
+        assembled from the MLX talker instead.
+        """
+        from transformers import AutoTokenizer
+
+        from sglang_omni.models.qwen3_tts.mlx.preprocessing import (
+            Qwen3TTSMlxPreprocessor,
+        )
+
+        talker = model_worker._mlx_runner.model
+        self.wrapper = None
+        preprocessor = Qwen3TTSMlxPreprocessor(
+            talker,
+            talker.model_config,
+            AutoTokenizer.from_pretrained(checkpoint_dir),
+            checkpoint_dir=checkpoint_dir,
+        )
+        request_builders.set_qwen3_tts_preprocessing_context(
+            model=talker,
+            wrapper=None,
+            mlx_preprocessor=preprocessor,
+        )
+
     def setup_model(
         self,
         *,
@@ -173,16 +253,32 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         gpu_id: int,
         server_args: Any,
     ) -> None:
-        # note(ratish): everything Qwen3-TTS attaches stays resident, so it all
-        # runs in before_memory_pool and nothing is left for after the pool.
-        del model_worker, checkpoint_dir, device, gpu_id, server_args
+        del device, gpu_id, server_args
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            self._setup_mlx_model(
+                model_worker=model_worker, checkpoint_dir=checkpoint_dir
+            )
 
     def adjust_overrides(self, overrides: dict[str, Any]) -> None:
+        if self._uses_torch_mps():
+            self.context_length = int(
+                overrides.pop("context_length", self.context_length)
+            )
+            overrides["enable_torch_compile"] = False
         if _is_truthy(overrides.get("enable_torch_compile", False)):
             raise ValueError("Qwen3-TTS torch.compile is not supported")
 
+    def validate_before_infrastructure(self, server_args: Any) -> None:
+        if self._uses_torch_mps() and server_args.max_running_requests != 1:
+            raise ValueError(
+                "Qwen3-TTS Torch MPS currently requires max_running_requests=1"
+            )
+        super().validate_before_infrastructure(server_args)
+
     def post_scheduler_setup(self, scheduler: Any, model_runner: Any) -> None:
         del model_runner
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            return
         schedule = get_schedule()
         running = int(schedule.max_running_requests)
         context = int(get_model().context_length)
@@ -200,6 +296,25 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
         )
 
     def make_model_runner(self, model_worker: Any, output_proc: Any) -> Any:
+        if get_qwen3_tts_backend() is Qwen3TTSBackend.MLX:
+            # The MLX talker keeps its own frame state, so it needs a different
+            # bridge than the Torch AR stage.
+            scheduler_runner_mod = importlib.import_module(
+                "sglang_omni.models.qwen3_tts.mlx.scheduler_runner"
+            )
+            return scheduler_runner_mod.Qwen3TTSMlxSchedulerModelRunner(
+                model_worker, output_proc
+            )
+        if self._uses_torch_mps():
+            from sglang_omni.models.qwen3_tts.torch_mps_runner import (
+                Qwen3TTSTorchMpsModelRunner,
+            )
+
+            self._torch_mps_model_runner = Qwen3TTSTorchMpsModelRunner(
+                model_worker, output_proc
+            )
+            return self._torch_mps_model_runner
+
         model_runner_mod = importlib.import_module(
             "sglang_omni.models.qwen3_tts.model_runner"
         )
@@ -218,11 +333,18 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
         return {
             "stream_output_builder": self._stream_output_builder,
-            "request_build_max_workers": 4,
+            "request_build_max_workers": 1 if self._uses_torch_mps() else 4,
             "request_build_max_pending": 16,
-            "prefill_coalesce_requests": self.prefill_coalesce_requests,
+            "prefill_coalesce_requests": (
+                0 if self._uses_torch_mps() else self.prefill_coalesce_requests
+            ),
             "prefill_coalesce_wait_ms": self.prefill_coalesce_wait_ms,
         }
 
     def make_abort_callback(self) -> Any | None:
-        return request_builders.cleanup_prepared_qwen3_tts_request
+        def cleanup(request_id: str) -> None:
+            request_builders.cleanup_prepared_qwen3_tts_request(request_id)
+            if self._torch_mps_model_runner is not None:
+                self._torch_mps_model_runner.abort_request(request_id)
+
+        return cleanup
