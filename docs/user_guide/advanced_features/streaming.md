@@ -64,6 +64,14 @@ transcript.text.done   # complete transcript and optional duration usage
 Do not request `verbose_json` while streaming. Long-audio chunking and maximum
 stream duration are model-specific.
 
+## Live PCM transcription
+
+For incremental audio input, enable `--enable-realtime` and connect to
+`/v1/realtime?intent=transcription`. Qwen3-ASR emits replacement segment
+hypotheses rather than append-only SSE deltas. See the
+[Qwen3-ASR live PCM guide](../../cookbook/qwen3_asr.md#live-pcm-transcription)
+for session configuration, commit/clear semantics, and reconnect behavior.
+
 ## Stateful speech WebSocket
 
 Use `/v1/audio/speech/stream` when text arrives over time and one connection

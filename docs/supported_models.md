@@ -20,7 +20,7 @@ Model status describes the maintained user contract, not CI coverage:
 | Higgs Audio v3 | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [Higgs TTS](./cookbook/higgs_tts.md) |
 | Fish Audio S2-Pro | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [Fish Audio S2-Pro](./cookbook/fishaudio_s2_pro.md) |
 | Voxtral-4B-TTS | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [Voxtral TTS](./cookbook/voxtral_tts.md) |
-| Qwen3-TTS | TTS | `/v1/audio/speech` | HTTP PCM or WebSocket output; Base checkpoints only | Supported | [Qwen3-TTS](./cookbook/qwen3_tts.md) |
+| Qwen3-TTS | TTS | `/v1/audio/speech` | HTTP PCM or WebSocket output; Base, CustomVoice, VoiceDesign | Supported | [Qwen3-TTS](./cookbook/qwen3_tts.md) |
 | Fun-CosyVoice3 | TTS | `/v1/audio/speech` | No | Experimental | [Fun-CosyVoice3](./cookbook/fun_cosyvoice3.md) |
 | MOSS-TTS v1.5 | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [MOSS-TTS](./cookbook/moss_tts.md) |
 | MOSS-TTS Local v1.5 | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [MOSS-TTS Local](./cookbook/moss_tts_local.md) |
@@ -29,7 +29,7 @@ Model status describes the maintained user contract, not CI coverage:
 | ZONOS2 | TTS | `/v1/audio/speech` | Audio output; see cookbook | Supported | [ZONOS2](./cookbook/zonos2.md) |
 | Audar-TTS-V1 Turbo | TTS | `/v1/audio/speech` | No | Supported | [Audar-TTS](./cookbook/audar_tts.md) |
 | MiniMax Music 3 | Music | `/v1/audio/speech` | No | Supported | [MiniMax Music 3](./cookbook/minimax_music3.md) |
-| Qwen3-ASR | ASR | `/v1/audio/transcriptions` | SSE transcript output | Supported | [Qwen3-ASR](./cookbook/qwen3_asr.md) |
+| Qwen3-ASR | ASR | `/v1/audio/transcriptions`, `/v1/realtime` | SSE transcripts and realtime WebSocket | Supported | [Qwen3-ASR](./cookbook/qwen3_asr.md) |
 | Fun-ASR-Nano | ASR | `/v1/audio/transcriptions` | SSE transcript output | Supported | [Fun-ASR-Nano](./cookbook/fun_asr.md) |
 | ARK-ASR-3B | ASR | `/v1/audio/transcriptions` | SSE transcript output | Supported | [ARK-ASR-3B](./cookbook/arkasr.md) |
 | MOSS-Transcribe-Diarize | ASR + diarization | `/v1/audio/transcriptions` | SSE transcript output | Supported | [MOSS-Transcribe-Diarize](./cookbook/moss_transcribe_diarize.md) |

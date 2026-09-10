@@ -9,4 +9,5 @@ Profile request execution and record reproducible model qualification evidence.
 Profiling <profiler.md>
 Model Qualification <model_qualification.md>
 Qwen3-ASR Concurrency Profile <qwen3_asr_concurrency_profile.md>
+Qwen3-TTS CustomVoice Benchmark <../benchmarks/qwen3_tts_customvoice.md>
 ```

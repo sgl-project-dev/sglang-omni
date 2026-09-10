@@ -31,6 +31,7 @@
 
 ## News
 
+- [2026/09] 🐧 Day-0 support for [AuK](https://huggingface.co/tencent/AuK) and [AuK-Flash](https://huggingface.co/tencent/AuK-Flash): text + voice instructions → 24 kHz speech on `/v1/audio/speech`, audio + editing instructions → edited speech on `/generate`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/auk.html)\]
 - [2026/09] 🚀 SGLang-Omni **v0.1.4** is on [PyPI](https://pypi.org/project/sglang-omni/). Install with `uv pip install --prerelease=allow "sglang-omni==0.1.4"`. \[[Installation](https://sgl-project.github.io/sglang-omni/get_started/installation.html)\]
 - [2026/08] 🎵 Day-0 support for [MiniMax Music 3](https://huggingface.co/MiniMaxAI/MiniMax-Music3): lyrics + caption → 32 kHz stereo song on `/v1/audio/speech`. \[[Cookbook](https://sgl-project.github.io/sglang-omni/cookbook/minimax_music3.html)\]
 - [2026/08] 🚀 TTS architecture refactor: shared pipeline state, engine construction, reference encoding, capability metadata, and vocoder scheduling. \[[Roadmap](https://github.com/sgl-project/sglang-omni/issues/985)\] \[[Blog](https://github.com/zhaochenyang20/Awesome-ML-SYS-Tutorial/blob/main/sglang/sglang-omni/tts-refactor.md)\]
@@ -101,7 +102,7 @@ definition and endpoint details.
 | Higgs Audio v3 | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/higgs_tts.md) |
 | Fish Audio S2-Pro | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/fishaudio_s2_pro.md) |
 | Voxtral-4B-TTS | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/voxtral_tts.md) |
-| Qwen3-TTS | TTS | HTTP PCM or WebSocket; Base checkpoints only | Supported | [Cookbook](./docs/cookbook/qwen3_tts.md) |
+| Qwen3-TTS | TTS | HTTP PCM or WebSocket; Base, CustomVoice, VoiceDesign | Supported | [Cookbook](./docs/cookbook/qwen3_tts.md) |
 | Fun-CosyVoice3 | TTS | No | Experimental | [Cookbook](./docs/cookbook/fun_cosyvoice3.md) |
 | MOSS-TTS v1.5 | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/moss_tts.md) |
 | MOSS-TTS Local v1.5 | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/moss_tts_local.md) |
@@ -110,7 +111,7 @@ definition and endpoint details.
 | ZONOS2 | TTS | Audio output; see guide | Supported | [Cookbook](./docs/cookbook/zonos2.md) |
 | Audar-TTS-V1 Turbo | TTS | No | Supported | [Cookbook](./docs/cookbook/audar_tts.md) |
 | MiniMax Music 3 | Music | No | Supported | [Cookbook](./docs/cookbook/minimax_music3.md) |
-| Qwen3-ASR | ASR | SSE transcript output | Supported | [Cookbook](./docs/cookbook/qwen3_asr.md) |
+| Qwen3-ASR | ASR | SSE transcripts + realtime WebSocket | Supported | [Cookbook](./docs/cookbook/qwen3_asr.md) |
 | Fun-ASR-Nano | ASR | SSE transcript output | Supported | [Cookbook](./docs/cookbook/fun_asr.md) |
 | ARK-ASR-3B | ASR | SSE transcript output | Supported | [Cookbook](./docs/cookbook/arkasr.md) |
 | MOSS-Transcribe-Diarize | ASR + diarization | SSE transcript output | Supported | [Cookbook](./docs/cookbook/moss_transcribe_diarize.md) |

@@ -70,6 +70,7 @@ The shared schema also accepts:
 - voice conditioning: `references`, `ref_audio`, `ref_text`,
   `x_vector_only_mode`
 - model modes: `task_type`, `language`, `instructions`
+- Qwen3-TTS streaming controls: `stream_codec_output`, `suppress_bootstrap_silence`
 - length and cadence: `max_new_tokens`, `token_count`, `duration_tokens`,
   `initial_codec_chunk_frames`
 - sampling: `temperature`, `top_p`, `top_k`, `repetition_penalty`, `seed`

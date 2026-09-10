@@ -10,7 +10,7 @@ API.
 |---|---|
 | Task | ASR |
 | Checkpoint(s) | CUDA: `Qwen/Qwen3-ASR-1.7B`; Apple examples: `Qwen/Qwen3-ASR-0.6B`, `mlx-community/Qwen3-ASR-0.6B-4bit` |
-| Endpoint(s) | `/v1/audio/transcriptions` |
+| Endpoint(s) | `/v1/audio/transcriptions`, `/v1/realtime?intent=transcription` |
 | Pipeline | audio preprocessing → ASR engine → response formatting |
 | Input / output | One uploaded audio file → text, JSON, or verbose JSON transcript |
 | Streaming | SSE transcript output; CUDA/MLX up to 1,200 seconds, Torch MPS up to 60 seconds |
@@ -27,7 +27,7 @@ model-specific package is required on CUDA.
 
 ### Apple Silicon
 
-Use the {ref}`Apple Silicon installer <macos-apple-silicon>`,
+Use macOS 14 or newer and the {ref}`Apple Silicon installer <macos-apple-silicon>`,
 which installs the pinned SGLang MLX/MPS dependencies and Homebrew's `ffmpeg@7`.
 At runtime, expose its libraries on the final `sgl-omni` process:
 
@@ -35,7 +35,7 @@ At runtime, expose its libraries on the final `sgl-omni` process:
 export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}"
 ```
 
-The versioned formula is required because the pinned `torchcodec==0.11.1`
+The versioned formula is required because the pinned `torchcodec==0.15.0`
 supports FFmpeg 4 through 8, while the unversioned Homebrew formula currently
 installs FFmpeg 9. This path uses MLX through SGLang and does not use the
 `mlx-audio` package.
@@ -152,6 +152,70 @@ uploads return HTTP 400. Use non-streaming mode for longer CUDA or MLX files. Se
 [Streaming](../user_guide/advanced_features/streaming.md) for the shared SSE
 event contract.
 
+### Live PCM transcription
+
+The SSE mode above starts decoding after a complete multipart upload. For live
+audio ingestion, mount the realtime WebSocket endpoint:
+
+```bash
+sgl-omni serve \
+  --model-path Qwen/Qwen3-ASR-1.7B \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --enable-realtime \
+  --port 8000
+```
+
+Connect to `/v1/realtime?intent=transcription`, configure the session, and
+append base64-encoded mono 16 kHz PCM16 packets. `input_audio_buffer.commit`
+finalizes the active segment manually; server VAD also finalizes after the
+configured silence interval. Send `transcription.done` after the final packet
+to receive `transcription.completed`. `input_audio_buffer.clear` discards the
+current segment and any partial hypothesis derived from it while keeping the
+WebSocket session open for new audio.
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "language": "English",
+    "turn_detection": {
+      "type": "server_vad",
+      "threshold": 0.5,
+      "prefix_padding_ms": 300,
+      "silence_duration_ms": 500
+    }
+  }
+}
+```
+
+Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
+in the active segment. After the first two refreshes, the server rolls five
+tokens back from the prior hypothesis and uses the retained text as the next
+prompt prefix. No decoder KV cache or worker affinity is retained. Segments are
+also finalized at the configured `audio_chunking.max_audio_clip_s` boundary
+(30 seconds by default).
+
+Partial results are full replacements, not append-only deltas:
+
+```json
+{
+  "type": "transcription.segment",
+  "event_index": 7,
+  "segment_id": 0,
+  "text": "hello wor",
+  "is_final": false
+}
+```
+
+A later event for the same `segment_id` replaces this text. An event with
+`is_final=true` is immutable. `transcription.completed` contains the joined
+text from all final segments.
+
+Append events are not idempotent. After a transport failure, reconnect and
+restart the transcription rather than retrying packets on the old session.
+Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
+rollback state.
+
 ## Configuration
 
 The checked-in `examples/configs/qwen3_asr_rtx4090.yaml` profile keeps BF16,
@@ -168,8 +232,10 @@ config files and dotted CLI overrides follow the shared
 [configuration contract](../developer_reference/config.md); command-line
 overrides take precedence over the checked-in profile.
 
-`prompt` is accepted for OpenAI compatibility but Qwen3-ASR ignores it. Audio
-is resampled to 16 kHz before transcription.
+`prompt` supplies vocabulary biasing, such as names or technical terms likely
+in the recording. Keep the list short and relevant: unrelated terms can reduce
+accuracy, and longer prompts add prefill latency. Audio is resampled to 16 kHz
+before transcription.
 
 The Apple paths currently use one device (`tp_size=1`) and greedy decoding.
 They do not provide sampling penalties or token logprobs. MLX does not use
@@ -186,7 +252,6 @@ uses the eager `torch_native`/`sdpa` profile with a 2,048-token KV budget and a
   seconds; Torch MPS is limited to 60 seconds for streaming and non-streaming
   requests.
 - Timestamps are chunk-level; the model does not emit word timestamps.
-- `prompt` does not affect transcription.
 
 ## Benchmark
 
