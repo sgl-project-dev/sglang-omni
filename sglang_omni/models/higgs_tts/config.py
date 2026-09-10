@@ -59,7 +59,7 @@ class HiggsTtsPipelineConfig(PipelineConfig):
             factory=FactoryArgs(
                 device=current_platform.device_type,
                 max_new_tokens=2048,
-                enable_async_decode=True,
+                enable_async_decode=current_platform.device_type != "mps",
             ),
             gpu=0,
             gpu_memory_fraction=0.85,
@@ -68,10 +68,10 @@ class HiggsTtsPipelineConfig(PipelineConfig):
         ),
         StageConfig(
             name="vocoder",
-            # Keep the LM and vocoder in one device context by default.  Splitting
-            # them into same-GPU processes time-slices the accelerator at ordinary
-            # serving concurrency and prevents decode/vocoder overlap.
-            process="pipeline",
+            # MLX/MPS bridge operations cannot overlap arbitrary Torch MPS work
+            # in the same process. Isolate the Apple vocoder so streaming does
+            # not race the language-model bridge. CUDA keeps a shared context.
+            process="vocoder" if current_platform.device_type == "mps" else "pipeline",
             factory_path=f"{_PKG}.stages.create_vocoder_executor",
             factory=FactoryArgs(device=current_platform.device_type),
             gpu=0,
