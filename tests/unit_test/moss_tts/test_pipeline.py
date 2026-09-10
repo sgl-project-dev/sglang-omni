@@ -916,6 +916,7 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
     )
     encoder = SimpleNamespace()
     loaded: list[tuple[str, str, torch.dtype | None]] = []
+    resolved: list[tuple[str | None, int | None]] = []
 
     def load_encoder(
         model_path,
@@ -930,6 +931,11 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
 
     monkeypatch.setattr(stages, "_load_moss_processor", lambda model_path: processor)
     monkeypatch.setattr(stages, "load_moss_audio_encoder", load_encoder)
+    monkeypatch.setattr(
+        stages,
+        "resolve_device_spec",
+        lambda device, gpu_id: resolved.append((device, gpu_id)) or "resolved:2",
+    )
 
     try:
         stages.create_preprocessing_executor(
@@ -943,7 +949,8 @@ def test_moss_tts_preprocessing_uses_placement_gpu_id(
     finally:
         rb.clear_moss_tts_preprocessing_context()
 
-    assert loaded == [("codec", "cuda:2", torch.bfloat16)]
+    assert resolved == [(None, 2)]
+    assert loaded == [("codec", "resolved:2", torch.bfloat16)]
 
 
 def test_moss_tts_pathlike_reference_uses_separate_codec() -> None:
