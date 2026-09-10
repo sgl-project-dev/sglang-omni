@@ -33,6 +33,7 @@ def test_registered_pipeline_is_connected(architecture):
     assert conditioning.next == engine.name == ENGINE_STAGE
     assert engine.next == decode.name == DECODE_STAGE
     assert config.terminal_stages == [decode.name]
+    assert conditioning.factory.dtype == "float32"
     for stage in config.stages:
         module, name = stage.factory_path.rsplit(".", 1)
         assert callable(getattr(importlib.import_module(module), name))
