@@ -204,24 +204,24 @@ def test_pipeline_factory_kwargs_receive_resolved_values(monkeypatch) -> None:
     monkeypatch.setattr(local_config, "_uses_rocm_wsl_dxg", lambda: True)
     config = MossTTSNanoPipelineConfig(
         model_path="OpenMOSS-Team/MOSS-TTS-Nano",
-        cuda_graph=None,
-        cuda_graph_frames=[25, 10, 5],
-        cuda_graph_min_free_gb=1.5,
+        vocoder_cuda_graph=None,
+        vocoder_cuda_graph_frames=[25, 10, 5],
+        vocoder_cuda_graph_min_free_gb=1.5,
         ref_audio_cache=False,
         ref_audio_cache_max_items=17,
         ref_audio_cache_max_bytes=4096,
     )
 
-    assert config.cuda_graph is None
+    assert config.vocoder_cuda_graph is None
     assert config.stage_factory_kwargs("preprocessing") == {
         "ref_audio_cache": False,
         "ref_audio_cache_max_items": 17,
         "ref_audio_cache_max_bytes": 4096,
     }
     assert config.stage_factory_kwargs("vocoder") == {
-        "cuda_graph": False,
-        "cuda_graph_frames": [25, 10, 5],
-        "cuda_graph_min_free_gb": 1.5,
+        "vocoder_cuda_graph": False,
+        "vocoder_cuda_graph_frames": [25, 10, 5],
+        "vocoder_cuda_graph_min_free_gb": 1.5,
     }
 
 
@@ -234,7 +234,7 @@ def test_pipeline_rejects_unsafe_explicit_dxg_graph_enable(monkeypatch) -> None:
     ):
         MossTTSNanoPipelineConfig(
             model_path="OpenMOSS-Team/MOSS-TTS-Nano",
-            cuda_graph=True,
+            vocoder_cuda_graph=True,
         )
 
 
@@ -497,7 +497,6 @@ def _nano_audio_tokenizer_class():
                 "sglang_omni.models.moss_tts.attention",
                 "sglang_omni.models.moss_tts.audio_tokenizer",
                 "sglang_omni.models.moss_tts.vocoder_kernels",
-                "sglang_omni.models.moss_tts_local.audio_tokenizer",
                 "sglang_omni.models.moss_tts_nano.audio_tokenizer",
             }:
                 sys.modules.pop(name, None)
@@ -513,6 +512,43 @@ def test_audio_tokenizer_preserves_amplitude_without_loudness_normalization() ->
 
     assert tuple(encoded[0].shape) == (8, N_VQ)
     torch.testing.assert_close(model.prepared_wavs[0], mono.repeat(2, 1))
+
+
+def test_audio_tokenizer_load_paths_falls_back_without_torchcodec(
+    monkeypatch, tmp_path
+) -> None:
+    sf = pytest.importorskip("soundfile")
+    samples = torch.stack(
+        [
+            torch.linspace(-0.5, 0.5, 16),
+            torch.linspace(0.25, -0.25, 16),
+        ],
+        dim=1,
+    ).numpy()
+    path = tmp_path / "reference.wav"
+    sf.write(path, samples, 48000, subtype="FLOAT")
+
+    def missing_torchcodec(_path):
+        raise ImportError("TorchCodec is required for load_with_torchcodec")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "torchaudio",
+        types.SimpleNamespace(load=missing_torchcodec),
+    )
+
+    with _nano_audio_tokenizer_class() as tokenizer_cls:
+        tokenizer = tokenizer_cls(_FakeAudioTokenizerModel(), device="cpu")
+        loaded = tokenizer.load_paths([str(path)])
+
+    assert len(loaded) == 1
+    waveform, sample_rate = loaded[0]
+    assert sample_rate == 48000
+    assert tuple(waveform.shape) == (2, 16)
+    torch.testing.assert_close(
+        waveform,
+        torch.from_numpy(samples.transpose().copy()),
+    )
 
 
 def _payload() -> StagePayload:

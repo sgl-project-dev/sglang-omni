@@ -9,11 +9,11 @@ from typing import Any
 
 import torch
 
-from sglang_omni.models.moss_tts.audio_tokenizer import resolve_moss_audio_dtype
-from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
-from sglang_omni.models.moss_tts_local.audio_tokenizer import (
-    load_moss_tts_local_audio_vocoder,
+from sglang_omni.models.moss_tts.audio_tokenizer import (
+    load_moss_audio_vocoder,
+    resolve_moss_audio_dtype,
 )
+from sglang_omni.models.moss_tts.hf_loading import moss_transformers_processor_compat
 from sglang_omni.models.moss_tts_local.config import resolve_vocoder_cuda_graph
 from sglang_omni.models.moss_tts_local.stages import (
     _BatchedReferenceEncoder,
@@ -214,12 +214,12 @@ def create_vocoder_executor(
     stream_chunk_frames: int = 25,
     initial_chunk_frames: int = 5,
     coalesce_floor_frames: int = 5,
-    cuda_graph: bool | None = None,
-    cuda_graph_frames: list[int] | None = None,
-    cuda_graph_min_free_gb: float = 3.0,
+    vocoder_cuda_graph: bool | None = None,
+    vocoder_cuda_graph_frames: list[int] | None = None,
+    vocoder_cuda_graph_min_free_gb: float = 3.0,
 ) -> MossTTSLocalStreamingVocoderScheduler:
-    cuda_graph = resolve_vocoder_cuda_graph(
-        cuda_graph,
+    vocoder_cuda_graph = resolve_vocoder_cuda_graph(
+        vocoder_cuda_graph,
         model_name="MOSS-TTS-Nano",
     )
     device = _resolve_codec_device(device, gpu_id)
@@ -231,7 +231,7 @@ def create_vocoder_executor(
         name="compute_dtype",
         allow_none=True,
     )
-    audio_vocoder = load_moss_tts_local_audio_vocoder(
+    audio_vocoder = load_moss_audio_vocoder(
         _resolve_audio_tokenizer_model_path(model_config, codec_model_path),
         device=device,
         decoder_dtype=decoder_dtype,
@@ -251,9 +251,9 @@ def create_vocoder_executor(
         coalesce_floor_frames=coalesce_floor_frames,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
-        cuda_graph=cuda_graph,
-        cuda_graph_frames=cuda_graph_frames,
-        cuda_graph_min_free_gb=cuda_graph_min_free_gb,
+        vocoder_cuda_graph=vocoder_cuda_graph,
+        vocoder_cuda_graph_frames=vocoder_cuda_graph_frames,
+        vocoder_cuda_graph_min_free_gb=vocoder_cuda_graph_min_free_gb,
     )
     scheduler.warmup_now()
     device_index = torch.device(device).index

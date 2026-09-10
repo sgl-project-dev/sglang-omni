@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import torch
 
@@ -13,26 +12,39 @@ from sglang_omni.models.moss_tts.audio_tokenizer import (
     MossAudioEncoder,
     load_moss_audio_encoder,
 )
-from sglang_omni.models.moss_tts_local.audio_tokenizer import MossTTSLocalAudioTokenizer
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MOSS_TTS_NANO_AUDIO_TOKENIZER = "OpenMOSS-Team/MOSS-Audio-Tokenizer-Nano"
 
 
-class MossTTSNanoAudioTokenizer(MossTTSLocalAudioTokenizer):
+class MossTTSNanoAudioTokenizer(MossAudioEncoder):
     """Encode references without the Local-v1.5 loudness adjustment."""
 
-    def __init__(
-        self,
-        model: Any,
-        *,
-        device: str,
-        encoder: MossAudioEncoder | None = None,
-    ) -> None:
-        super().__init__(model, device=device, encoder=encoder)
-        config = getattr(model, "config", None)
-        self.number_channels = int(getattr(config, "number_channels", 2))
+    def load_paths(self, paths: list[str]) -> list[tuple[torch.Tensor, int]]:
+        import torchaudio
+
+        waveforms = []
+        for path in paths:
+            try:
+                waveform, sample_rate = torchaudio.load(path)
+            except ImportError:
+                import soundfile as sf
+
+                samples, sample_rate = sf.read(
+                    path,
+                    dtype="float32",
+                    always_2d=True,
+                )
+                waveform = torch.from_numpy(samples.transpose().copy())
+            if int(sample_rate) != self.sample_rate:
+                waveform = torchaudio.functional.resample(
+                    waveform=waveform,
+                    orig_freq=int(sample_rate),
+                    new_freq=self.sample_rate,
+                )
+            waveforms.append((waveform, self.sample_rate))
+        return waveforms
 
     def _prepare_waveform(self, wav: torch.Tensor, sample_rate: int) -> torch.Tensor:
         if wav.ndim == 1:
@@ -85,5 +97,4 @@ def load_moss_tts_nano_audio_tokenizer(
     return MossTTSNanoAudioTokenizer(
         encoder.model,
         device=device,
-        encoder=encoder,
     )
