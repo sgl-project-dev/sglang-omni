@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.4" />
-    <meta name="docbuild:last-update" content="Sep 09, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 10, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -546,6 +546,12 @@
 <span class="w">  </span>--port<span class="w"> </span><span class="m">8008</span>
 </pre></div>
 </div>
+<p>Multimodal preprocessing (tokenization, image/video/audio feature extraction)
+runs serially by default. Add <code class="docutils literal notranslate"><span class="pre">--preprocessing.factory.max_concurrency</span> <span class="pre">4</span></code> to
+run it on a thread pool when CPU preprocessing is the bottleneck under
+concurrent load. Threaded preprocessing changes how requests arrive at the
+thinker, so greedy outputs of the bf16 MoE can differ from the serial default;
+keep the default when comparing accuracy across runs.</p>
 <p>For MMSU-style audio-input / text-output benchmarks with short requests, use
 the fused text-path config so the full text path stays inside one worker
 process:</p>
@@ -1308,7 +1314,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 09, 2026.
+  Last updated on Sep 10, 2026.
   <br/>
 </p>
   </div>
