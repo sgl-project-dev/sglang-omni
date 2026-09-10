@@ -149,8 +149,12 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         batch_ceiling: int = 8,
         enable_output_overlap: bool = True,
         enable_cuda_graph: bool = False,
+        enable_eos_cuda_graph: bool = False,
         _cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
+        _eos_cuda_graph_runner: Code2WavCudaGraphRunner | None = None,
     ):
+        if enable_eos_cuda_graph and not enable_cuda_graph:
+            raise ValueError("EOS CUDA graph replay requires enable_cuda_graph")
         self._model = model
         self._device = torch.device(device)
         self._stream_chunk_size = max(int(stream_chunk_size), 1)
@@ -159,6 +163,10 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         self._total_upsample = int(model.total_upsample)
         self._cuda_graph_runner = (
             _cuda_graph_runner if bool(enable_cuda_graph) else None
+        )
+        self._enable_eos_cuda_graph = bool(enable_eos_cuda_graph)
+        self._eos_cuda_graph_runner = (
+            _eos_cuda_graph_runner if self._enable_eos_cuda_graph else None
         )
         super().__init__(
             None,
@@ -328,7 +336,8 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         codes = window.transpose(0, 1).unsqueeze(0)
         wav, execution_metadata = self._forward_codes(
             codes,
-            graph_eligible=not is_final,
+            graph_eligible=not is_final or self._enable_eos_cuda_graph,
+            is_final=is_final,
         )
         wav = wav[..., -(end - start) * self._total_upsample :]
         samples = int(wav.numel())
@@ -559,11 +568,24 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         codes: torch.Tensor,
         *,
         graph_eligible: bool = False,
+        is_final: bool = False,
     ) -> tuple[torch.Tensor, dict[str, Any]]:
+        runner = self._cuda_graph_runner
+        if (
+            is_final
+            and self._enable_eos_cuda_graph
+            and self._eos_cuda_graph_runner is not None
+            and int(codes.shape[0]) == 1
+            and runner is not None
+            and 1 not in runner.available_batch_sizes(int(codes.shape[-1]))
+            and 1
+            in self._eos_cuda_graph_runner.available_batch_sizes(int(codes.shape[-1]))
+        ):
+            runner = self._eos_cuda_graph_runner
         with torch.no_grad():
             if self._device.type != "cpu":
                 torch.get_device_module(self._device).set_device(self._device)
-            if self._cuda_graph_runner is None:
+            if runner is None:
                 result = Code2WavRunResult(
                     output=self._model(codes),
                     execution_mode="eager",
@@ -571,7 +593,7 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
                     fallback_reason=None,
                 )
             else:
-                result = self._cuda_graph_runner.run(
+                result = runner.run(
                     codes,
                     eligible=graph_eligible,
                 )
@@ -954,6 +976,74 @@ class Code2WavScheduler(StreamingVocoderBase[Code2WavStreamState, "list[int]"]):
         return audio_samples, execution_metadata
 
 
+def _build_eos_cuda_graph_runner(
+    model: Any,
+    *,
+    baseline: Code2WavCudaGraphRunner,
+    device: torch.device,
+    total_gpu_memory_fraction: float | None,
+    max_frames: int,
+) -> Code2WavCudaGraphRunner | None:
+    baseline_stats = baseline.stats()
+    report: dict[str, Any] = {
+        "max_frames": max_frames,
+        "baseline_published_graph_count": baseline_stats["build"][
+            "published_graph_count"
+        ],
+        "optional_requested_keys": [],
+        "optional_published_keys": [],
+    }
+    runner = None
+    if not baseline_stats["enabled"]:
+        report["skip_reason"] = "baseline_disabled"
+    elif max_frames == 0:
+        report["skip_reason"] = "existing_keys_only"
+    else:
+        keys = tuple(
+            GraphKey(batch_size=1, frames=frames)
+            for frames in range(1, max_frames + 1)
+            if 1 not in baseline.available_batch_sizes(frames)
+        )
+        memory = baseline_stats["memory"]
+        remaining = max(
+            0,
+            memory["stage_budget_bytes"]
+            - memory["loaded_model_footprint_bytes"]
+            - memory["graph_footprint_bytes"],
+        )
+        report.update(
+            baseline_graph_footprint_bytes=memory["graph_footprint_bytes"],
+            remaining_graph_budget_bytes=remaining,
+            optional_requested_keys=[
+                {"batch_size": key.batch_size, "frames": key.frames} for key in keys
+            ],
+        )
+        if not keys:
+            report["skip_reason"] = "no_missing_keys"
+        elif remaining == 0:
+            report["skip_reason"] = "no_remaining_graph_budget"
+        else:
+            runner = Code2WavCudaGraphRunner.build(
+                model,
+                device=device,
+                num_quantizers=int(model.config.num_quantizers),
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                graph_keys=keys,
+                graph_memory_budget_bytes=remaining,
+            )
+            report["optional_runner"] = runner.stats()
+            report["optional_published_keys"] = [
+                {"batch_size": key.batch_size, "frames": key.frames}
+                for key in keys
+                if 1 in runner.available_batch_sizes(key.frames)
+            ]
+    logger.info(
+        "Code2Wav optional EOS graph startup stats=%s",
+        json.dumps(report, sort_keys=True, separators=(",", ":")),
+    )
+    return runner
+
+
 def create_code2wav_scheduler(
     model_path: str,
     *,
@@ -969,9 +1059,18 @@ def create_code2wav_scheduler(
     batch_ceiling: int = 8,
     enable_output_overlap: bool = True,
     enable_cuda_graph: bool = False,
+    enable_eos_cuda_graph: bool = False,
+    eos_cuda_graph_max_frames: int = 35,
     total_gpu_memory_fraction: float | None = None,
 ):
     """Factory: returns Code2WavScheduler."""
+    if enable_eos_cuda_graph and not enable_cuda_graph:
+        raise ValueError("EOS CUDA graph replay requires enable_cuda_graph")
+    if (
+        type(eos_cuda_graph_max_frames) is not int
+        or not 0 <= eos_cuda_graph_max_frames <= 48
+    ):
+        raise ValueError("eos_cuda_graph_max_frames must be an integer from 0 to 48")
     if enable_cuda_graph and total_gpu_memory_fraction is None:
         raise ValueError(
             "Code2Wav device graph requires gpu_memory_fraction "
@@ -987,6 +1086,7 @@ def create_code2wav_scheduler(
     left_context_size = max(int(left_context_size), 0)
     model = load_code2wav_model(model_path, device=device, dtype=dtype)
     cuda_graph_runner = None
+    eos_cuda_graph_runner = None
     if enable_cuda_graph:
         if enable_batching:
             graph_keys = _batched_graph_keys(
@@ -1025,6 +1125,14 @@ def create_code2wav_scheduler(
                 separators=(",", ":"),
             ),
         )
+        if enable_eos_cuda_graph:
+            eos_cuda_graph_runner = _build_eos_cuda_graph_runner(
+                model,
+                baseline=cuda_graph_runner,
+                device=concrete_device,
+                total_gpu_memory_fraction=total_gpu_memory_fraction,
+                max_frames=eos_cuda_graph_max_frames,
+            )
     return Code2WavScheduler(
         model,
         device=device,
@@ -1037,5 +1145,7 @@ def create_code2wav_scheduler(
         batch_ceiling=batch_ceiling,
         enable_output_overlap=enable_output_overlap,
         enable_cuda_graph=enable_cuda_graph,
+        enable_eos_cuda_graph=enable_eos_cuda_graph,
         _cuda_graph_runner=cuda_graph_runner,
+        _eos_cuda_graph_runner=eos_cuda_graph_runner,
     )

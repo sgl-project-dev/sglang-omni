@@ -255,6 +255,7 @@ class Code2WavCudaGraphRunner:
         total_gpu_memory_fraction: float | None,
         graph_keys: tuple[GraphKey, ...],
         device_api: Any | None = None,
+        graph_memory_budget_bytes: int | None = None,
     ) -> Code2WavCudaGraphRunner:
         """Build the configured serving-reachable serial graphs."""
 
@@ -265,10 +266,18 @@ class Code2WavCudaGraphRunner:
             graph_keys=graph_keys,
             device_api=_TorchDeviceApi() if device_api is None else device_api,
         )
-        runner._build(total_gpu_memory_fraction)
+        runner._build(total_gpu_memory_fraction, graph_memory_budget_bytes)
         return runner
 
-    def _build(self, total_gpu_memory_fraction: float | None) -> None:
+    def _build(
+        self,
+        total_gpu_memory_fraction: float | None,
+        graph_memory_budget_bytes: int | None = None,
+    ) -> None:
+        if graph_memory_budget_bytes is not None and (
+            type(graph_memory_budget_bytes) is not int or graph_memory_budget_bytes < 0
+        ):
+            raise ValueError("graph_memory_budget_bytes must be a nonnegative integer")
         fraction = self._valid_fraction(total_gpu_memory_fraction)
         if fraction is None:
             self._disable_reason = "invalid_total_gpu_memory_fraction"
@@ -299,6 +308,11 @@ class Code2WavCudaGraphRunner:
         stage_budget = int(before["total_bytes"] * fraction)
         loaded_model_footprint = before["allocated_bytes"]
         graph_budget = max(0, stage_budget - loaded_model_footprint)
+        if graph_memory_budget_bytes is not None:
+            graph_budget = min(graph_budget, graph_memory_budget_bytes)
+            self._memory_stats["graph_memory_budget_cap_bytes"] = (
+                graph_memory_budget_bytes
+            )
         self._memory_stats.update(
             {
                 "stage_budget_bytes": stage_budget,
