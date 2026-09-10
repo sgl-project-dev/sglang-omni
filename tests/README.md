@@ -870,3 +870,24 @@ that happened to contain an older version of the test.
   fences cover shutdown during abort/append hooks and the open/append window
   between the final hook check and owner unlock, requiring exactly-once cleanup
   after native work returns without blocking shutdown.
+
+Shared realtime protocol (CPU, no model weights):
+
+```bash
+python -m pytest tests/unit_test/serve/test_shared_realtime*.py tests/unit_test/serve/test_realtime*.py -q
+```
+
+These tests use an independent JSON/WebSocket client against the actual
+`create_app` mount, an existing turn-computation fake completion client, and
+real Coordinator/multiprocess mock stages. They cover strict admission,
+capabilities, sample clocks, queue rejection, EOS accounting, cancel generations,
+playback ACK, transcription revision/final boundaries and cleanup. To also run
+the actual existing Rust router against the shared endpoint, build
+`sglang_omni_router/rust` and set `OMNI_ROUTER_TEST_BINARY` to its
+`sgl-omni-router` executable. See `docs/basic_usage/realtime_sessions.md` for the
+supported configuration and wire subset.
+
+The shared runtime tests are grouped by input accounting, cancellation/output,
+lifecycle cleanup, and turn-based history. Mounted WebSocket tests are grouped
+by protocol, lifecycle, and adapter/router integration; their endpoint and
+producer helpers live in `unit_test/fixtures/realtime_websocket.py`.
