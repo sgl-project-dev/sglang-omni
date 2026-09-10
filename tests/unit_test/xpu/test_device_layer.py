@@ -1,5 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Unit tests for device-spec retargeting (no accelerator required)."""
+"""Unit tests for device-spec retargeting (no accelerator required).
+
+The tests here run against Python objects only and never construct a real
+XPU context, so they are the safe target for exercising the pull path of
+omni-xpu-ci.yaml on source-only PRs.
+"""
 
 from __future__ import annotations
 
