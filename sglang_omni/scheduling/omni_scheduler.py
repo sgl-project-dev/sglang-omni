@@ -689,8 +689,8 @@ class OmniScheduler:
         )
         self.output_streamer = types.SimpleNamespace(
             stream_output=self.stream_output,
-            _stream_output_generation=lambda reqs, return_logprob, **_kwargs: (
-                self.stream_output(reqs, return_logprob)
+            _stream_output_generation=lambda reqs, return_logprob, **_kwargs: self.stream_output(
+                reqs, return_logprob
             ),
         )
         self.init_beam_coordinator()
@@ -2484,7 +2484,8 @@ class OmniScheduler:
             prefill_input_ids_cpu = batch.prefill_input_ids_cpu
             if input_ids is None and prefill_input_ids_cpu is None:
                 raise RuntimeError(
-                    "extend batch carries neither input_ids nor prefill_input_ids_cpu"
+                    "extend batch carries neither input_ids nor "
+                    "prefill_input_ids_cpu"
                 )
             prefix_lens = batch.prefix_lens
             extend_logprob_start_lens = batch.extend_logprob_start_lens
