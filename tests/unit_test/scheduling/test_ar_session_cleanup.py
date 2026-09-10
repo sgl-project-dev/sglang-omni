@@ -327,3 +327,31 @@ def test_adapter_state_follows_core_session_lifetime():
     b.command(payload("close", epoch=1))
     b.command(payload("close", epoch=1))
     assert calls == [("open", "s"), ("close", "s")]
+
+
+def test_queued_cancel_detaches_request_without_releasing_session_kv():
+    from sglang.srt.session.streaming_session import SessionSlot
+
+    b = bridge()
+    b.command(payload("open"))
+    p = payload("append")
+    b.accept(p)
+    d = data()
+    b.materialize(p, d)
+    slot = SessionSlot()
+    slot.kv.req_pool_idx = 1
+    slot.kv.kv_allocated_len = 2
+    slot.restore_to_req(d.req)
+    b.scheduler.tree_cache.slots["s"] = slot
+    b.scheduler.waiting_queue = [d.req]
+    b.requests["r"].enqueued = True
+
+    def abort(rid):
+        assert not d.req.kv.holds_kv
+        assert d.req.kv is not slot.kv
+
+    b.scheduler.abort = abort
+    b.cancel("r")
+    assert slot.kv.holds_kv
+    assert slot.kv.kv_allocated_len == 2
+    assert not b.requests

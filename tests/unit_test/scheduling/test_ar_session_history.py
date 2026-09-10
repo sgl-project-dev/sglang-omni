@@ -189,3 +189,25 @@ def test_admission_counts_retained_kv_from_native_session_slot(available, exhaus
     )
     error = b.capacity_error(p.request_id)
     assert error == ("session KV capacity exhausted" if exhausted else None)
+
+
+@pytest.mark.parametrize("free_slots, exhausted", [(2, True), (3, False)])
+def test_admission_reserves_rows_for_other_unallocated_sessions(free_slots, exhausted):
+    b = bridge()
+    for sid, rid in [("s", "r"), ("other", "other-r")]:
+        opened = payload("open", "open-" + rid)
+        opened.request.metadata["omni_session"]["ref"]["session_id"] = sid
+        b.command(opened)
+        p = payload("append", rid)
+        p.request.metadata["omni_session"]["ref"]["session_id"] = sid
+        b.accept(p)
+        b.materialize(p, data(rid))
+    b.scheduler.tree_cache.evictable_size = lambda: 0
+    b.scheduler.req_to_token_pool = SimpleNamespace(free_slots=list(range(free_slots)))
+    b.scheduler.token_to_kv_pool_allocator = SimpleNamespace(available_size=lambda: 8)
+    error = b.capacity_error("r")
+    assert error == (
+        "session request slot capacity exhausted (one admission slot reserved)"
+        if exhausted
+        else None
+    )

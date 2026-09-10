@@ -289,7 +289,7 @@ class ARSessionBridge:
             )
             if queued:
                 # Note (Junnan Li): A failed prefill admission may have restored the prior slot.
-                req.req_pool_idx = req.kv = None
+                req.detach_kv()
                 req.session = None
             self.scheduler.abort(rid)
             self._drain()
@@ -318,7 +318,7 @@ class ARSessionBridge:
         unallocated = sum(
             other is not owner
             and other.req is not None
-            and other.req.req_pool_idx is None
+            and not other.req.kv.holds_kv
             and self.native_id(other.ref) not in cache.slots
             for other in self.requests.values()
         )
