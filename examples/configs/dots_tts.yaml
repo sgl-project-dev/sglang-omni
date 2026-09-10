@@ -24,6 +24,8 @@ stages:
   latent_engine:
     factory:
       optimize: true
+      # note (0xtoward): Padding reserves an extra row of acoustic state.
+      enable_acoustic_tail_batch_padding: false
     engine:
       mem_fraction_static: 0.20
       max_running_requests: 16
