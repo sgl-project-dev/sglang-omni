@@ -1,8 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import builtins
+import sys
 from contextlib import nullcontext
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 import torch
@@ -36,6 +39,60 @@ class _VendorDeviceMixin(DeviceMixin):
 
 class _VendorSRTPlatform(SRTPlatform, _VendorDeviceMixin):
     pass
+
+
+@pytest.mark.parametrize(
+    "platform_type",
+    [
+        OmniPlatform,
+        CPUOmniPlatform,
+        ROCMOmniPlatform,
+        XPUOmniPlatform,
+        platforms.NPUOmniPlatform,
+        platforms.MUSAOmniPlatform,
+        platforms.AppleOmniPlatform,
+    ],
+)
+def test_joint_rope_is_unavailable_without_a_platform_provider(
+    monkeypatch: pytest.MonkeyPatch, platform_type
+) -> None:
+    cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
+    monkeypatch.setattr(CUDAOmniPlatform, "get_joint_rope_inplace", cuda_provider)
+
+    assert platform_type().get_joint_rope_inplace() is None
+    cuda_provider.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "sglang.kernels.ops.attention.rope"
+    rope_module = ModuleType(module_name)
+    kernel = Mock(side_effect=AssertionError("Getter must not execute the kernel"))
+    rope_module.apply_rope_inplace = kernel
+    monkeypatch.setitem(sys.modules, module_name, rope_module)
+
+    assert CUDAOmniPlatform().get_joint_rope_inplace() is kernel
+    kernel.assert_not_called()
+
+
+def test_cuda_joint_rope_getter_propagates_import_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+    error = ImportError("Joint RoPE provider is unavailable")
+
+    def import_without_rope(name, *args, **kwargs):
+        if name == "sglang.kernels.ops.attention.rope":
+            raise error
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_rope)
+
+    with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
+        CUDAOmniPlatform().get_joint_rope_inplace()
+
+    assert raised.value is error
 
 
 def test_npu_probe_handles_torch_without_npu(monkeypatch) -> None:
