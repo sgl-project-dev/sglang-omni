@@ -756,7 +756,7 @@ class MingTTSSGLangModel(nn.Module):
         super().__init__()
         # Note(yzxiao): Ming-TTS requires a platform joint-RoPE implementation;
         # this release provides CUDA. Resolve it before constructing the model.
-        rope_kernel = current_platform.get_joint_rope_inplace()
+        rope_kernel = current_platform.get_joint_rope_inplace_kernel()
         if rope_kernel is None:
             raise RuntimeError(
                 "Ming-TTS requires a joint in-place RoPE kernel, but "

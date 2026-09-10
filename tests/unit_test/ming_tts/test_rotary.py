@@ -189,7 +189,7 @@ def test_shared_acoustic_components_keep_native_default(
     from sglang_omni.platforms import current_platform
 
     provider = Mock(side_effect=AssertionError("Native must not query joint RoPE"))
-    monkeypatch.setattr(current_platform, "get_joint_rope_inplace", provider)
+    monkeypatch.setattr(current_platform, "get_joint_rope_inplace_kernel", provider)
     component = component_type(
         in_channels=4,
         hidden_size=8,

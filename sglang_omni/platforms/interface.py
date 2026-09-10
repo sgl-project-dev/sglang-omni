@@ -20,14 +20,15 @@ if TYPE_CHECKING:
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
 
 
-# Note(yzxiao): Joint full-head RoPE mutates same-dtype Q/K shaped [T, Hq, D]
-# and [T, Hk, D]. Their last dimension is contiguous and head strides match.
+# Note(yzxiao): Joint RoPE rotates all supplied Q/K heads in place. Same-dtype
+# Q/K have shapes [T, Hq, D] and [T, Hk, D], a contiguous last dimension,
+# and matching head strides.
 # The contiguous FP32 [P, D] cache stores cos then sin; contiguous int32/int64
 # positions [T] index its rows. All tensors share a device. Cache and positions
 # are read-only; this operation does not apply Q/K norm or write KV caches.
 # is_neox selects half-split (True) or interleaved (False) rotation. Providers
 # use the caller's stream and support graph capture after their real warmup.
-class JointRopeKernel(Protocol):
+class JointRopeInplaceKernel(Protocol):
     def __call__(
         self,
         q: torch.Tensor,
@@ -68,7 +69,7 @@ class OmniPlatform(DeviceMixin):
         """
         return None
 
-    def get_joint_rope_inplace(self) -> JointRopeKernel | None:
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel | None:
         # Note(yzxiao): None means this platform has no implementation. The
         # model decides whether this capability is required or optional.
         return None

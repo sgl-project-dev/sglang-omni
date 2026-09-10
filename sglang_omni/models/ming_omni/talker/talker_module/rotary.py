@@ -9,24 +9,26 @@ import torch
 from x_transformers.x_transformers import RotaryEmbedding, apply_rotary_pos_emb
 
 if TYPE_CHECKING:
-    from sglang_omni.platforms.interface import JointRopeKernel
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 
 @dataclass(frozen=True)
 class RotaryInputs:
     cos_sin_cache: torch.Tensor
     positions: torch.Tensor
-    kernel: JointRopeKernel
+    kernel: JointRopeInplaceKernel
 
 
 def validate_rotary_config(
-    kernel: JointRopeKernel | None,
+    kernel: JointRopeInplaceKernel | None,
     *,
     num_heads: int,
     qk_norm: str | None,
     pe_attn_head: int | None,
     grad_checkpointing: bool = False,
 ) -> None:
+    # Note(yzxiao): Ming's joint-RoPE path supports full-head rotation without
+    # Q/K norm or gradient checkpointing; these are model integration limits.
     if kernel is None:
         return
     if (
@@ -47,7 +49,7 @@ class CachedRotaryEmbedding(RotaryEmbedding):
         self,
         dim: int,
         *,
-        kernel: JointRopeKernel,
+        kernel: JointRopeInplaceKernel,
         seq_len: int,
         max_batch_size: int,
     ) -> None:
@@ -78,7 +80,7 @@ class CachedRotaryEmbedding(RotaryEmbedding):
 def build_rotary_embedding(
     dim: int,
     *,
-    kernel: JointRopeKernel | None = None,
+    kernel: JointRopeInplaceKernel | None = None,
     seq_len: int | None = None,
     max_batch_size: int | None = None,
 ) -> RotaryEmbedding:

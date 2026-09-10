@@ -16,7 +16,7 @@ from sglang_omni.vendor.sglang.server_args import override_server_args
 if TYPE_CHECKING:
     from sglang_omni.pipeline.stage_workers import StageLaunchConfig
     from sglang_omni.platforms.device_graph import DeviceGraphBackend
-    from sglang_omni.platforms.interface import JointRopeKernel
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ class CUDAOmniPlatform(CudaDeviceMixin, OmniPlatform):
 
         return fused_qk_norm_rope
 
-    def get_joint_rope_inplace(self) -> JointRopeKernel:
+    def get_joint_rope_inplace_kernel(self) -> JointRopeInplaceKernel:
         from sglang.kernels.ops.attention.rope import apply_rope_inplace
 
         return apply_rope_inplace

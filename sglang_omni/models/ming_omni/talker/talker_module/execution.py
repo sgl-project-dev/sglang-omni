@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from sglang_omni.platforms.interface import JointRopeKernel
+    from sglang_omni.platforms.interface import JointRopeInplaceKernel
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,6 @@ class TalkerExecutionConfig:
     # Note(yzxiao): None keeps the shared Ming-Omni native path. Binding a
     # kernel selects full-head GPT-J rotation without Q/K norm or gradient
     # checkpointing in these acoustic components.
-    rope_kernel: JointRopeKernel | None = None
+    rope_kernel: JointRopeInplaceKernel | None = None
     rope_seq_len: int | None = None
     rope_max_batch_size: int | None = None

@@ -87,7 +87,7 @@ def test_ming_tts_owns_tail_execution_geometry(
     monkeypatch.setattr(
         sglang_model,
         "current_platform",
-        SimpleNamespace(get_joint_rope_inplace=provider),
+        SimpleNamespace(get_joint_rope_inplace_kernel=provider),
     )
     monkeypatch.setattr(sglang_model, "MingBailingMoeTextModel", Backbone)
     monkeypatch.setattr(sglang_model, "Aggregator", CapturingAggregator)

@@ -57,9 +57,11 @@ def test_joint_rope_is_unavailable_without_a_platform_provider(
     monkeypatch: pytest.MonkeyPatch, platform_type
 ) -> None:
     cuda_provider = Mock(side_effect=AssertionError("Must not use NVIDIA provider"))
-    monkeypatch.setattr(CUDAOmniPlatform, "get_joint_rope_inplace", cuda_provider)
+    monkeypatch.setattr(
+        CUDAOmniPlatform, "get_joint_rope_inplace_kernel", cuda_provider
+    )
 
-    assert platform_type().get_joint_rope_inplace() is None
+    assert platform_type().get_joint_rope_inplace_kernel() is None
     cuda_provider.assert_not_called()
 
 
@@ -72,7 +74,7 @@ def test_cuda_joint_rope_getter_returns_upstream_kernel_without_calling_it(
     rope_module.apply_rope_inplace = kernel
     monkeypatch.setitem(sys.modules, module_name, rope_module)
 
-    assert CUDAOmniPlatform().get_joint_rope_inplace() is kernel
+    assert CUDAOmniPlatform().get_joint_rope_inplace_kernel() is kernel
     kernel.assert_not_called()
 
 
@@ -90,7 +92,7 @@ def test_cuda_joint_rope_getter_propagates_import_failure(
     monkeypatch.setattr(builtins, "__import__", import_without_rope)
 
     with pytest.raises(ImportError, match="Joint RoPE provider") as raised:
-        CUDAOmniPlatform().get_joint_rope_inplace()
+        CUDAOmniPlatform().get_joint_rope_inplace_kernel()
 
     assert raised.value is error
 
