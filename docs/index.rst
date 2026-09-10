@@ -114,6 +114,8 @@ Supported Models
    cookbook/ming_omni.md
    cookbook/nemotron_voicechat.md
    cookbook/llada2_uni.md
+   cookbook/fun_cosyvoice3.md
+   cookbook/auk.md
 
 .. toctree::
    :maxdepth: 1
