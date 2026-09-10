@@ -62,9 +62,11 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         *,
         max_new_tokens: int,
         ras_window: int,
+        enable_async_decode: bool = False,
     ) -> None:
         self.max_new_tokens = max_new_tokens
         self.ras_window = ras_window
+        self.enable_async_decode = enable_async_decode
         self.adapter: Any | None = None
         self.tokenizer: Any | None = None
 
@@ -199,4 +201,7 @@ class FishS2ProEngineBuilder(TtsEngineBuilder):
         return request_builder, result_adapter
 
     def extra_scheduler_kwargs(self) -> dict[str, Any]:
-        return {"stream_output_builder": self._stream_output_builder}
+        return {
+            "stream_output_builder": self._stream_output_builder,
+            "enable_async_decode": self.enable_async_decode,
+        }
