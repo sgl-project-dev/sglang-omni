@@ -816,3 +816,55 @@ Co-authored-by: JiaxinD <49501057+JiaxinD@users.noreply.github.com>
 合并成一条(`5578169739`,另一条已删),并把正文里 T-PR8/T-PR9 移进 Landed、
 T-PR15 更新为 #1900+#1907 已合入、T-PR19 的 observability 半边标为已落地。
 
+
+### 第十五轮:#1998 的重测与两条方法教训(2026-09-10 16:30 PT)
+
+**背景**:#1907、#1997 已于 09-07 19:48 PT 合入 main;#1997 引入的跨进程 ready-event 漏洞由
+Ratish1 在 #2046(09-08 18:15 PT)修好,#2042 修了图池吃掉 KV slack、#2057 让 rope kernel 直接写
+predictor cache。#1998(full prefill 图)仍未合。
+
+**重测口径**:eval-h100(一张 H100 80GB)、CustomVoice 1.7B、seed-tts-eval、开环泊松到达;
+每臂都打印它实际捕获的 backend(eager 臂无捕获行,另两臂 `backend=breakable` / `backend=full`),
+确认测的是被改的那条路径。
+
+r20 三 seed(100% 完成,每 seed 786-795 请求):
+
+| backend | underrun | first playable p50 | p95 | 可闻 TTFA p50 |
+|---|---|---|---|---|
+| breakable | 0.13 / 0.13 / 0.00% | 52.5 / 53.0 / 52.9 ms | 72.4 / 72.7 / 69.1 | 55.5 / 58.6 / 55.8 |
+| full | 0.00 / 0.38 / 0.13% | 49.6 / 49.7 / 50.0 ms | 64.4 / 67.4 / 66.1 | 52.2 / 52.2 / 52.2 |
+
+**underrun 两边都在地板上**(0-0.4%),所以 #1998 在 r20 的理由只剩首帧:p50 −3ms、p95 −5ms、
+可闻 TTFA −4ms,臂内三 seed 离散度 <1ms。PR 正文早先写的"2.32% → 0.37%"作废:那是 #2046/#2042/
+#2057 之前测的,现在 breakable 自己就 0.09%。
+
+rps 2 一致性(56 请求/臂,client seed 7 + 请求 seed 1234,五个 server):
+
+| 对比 | 贪心相同 | 采样相同 | 首秒 corr<0.9 |
+|---|---|---|---|
+| eager 重启(控制) | 82% | 93% | 0 |
+| breakable 重启(控制) | 90% | 79% | 0 |
+| full 对 breakable | 84% | 82% | 0 |
+| breakable 对 eager | 72% | 80% | 0 |
+| full 对 eager | 80% | 75% | 0 |
+
+**教训一:没有同配置重启控制的"一致率"是废数**。同一配置重启一次就有 7-21% 的整段音频不同
+(cohort 批次组成随时序变化 → 浮点细节变化 → 早期 argmax 翻转),所有跨 backend 的对比都落在
+这个带里。我 09-08 报给 PR 的"92% → 74%"就是把 run-to-run 噪声读成了 backend 效应,已在 PR 正文
+更正。JiaxinD 当时的判断(那是 #1907 之前被捕进图的 QK-norm/RoPE)方向对,但真正的问题是我的
+度量缺控制。
+
+**教训二:hyper01 上那次重测的 eager 臂是坏样本**。它的 first playable p95 达 1180ms(其余臂
+50-80ms),并且它与包括自己 pre-#1907 版本在内的所有四个臂都在同样 22 条 prompt 上首秒不同;
+H100 上换成健康的 eager 臂后,首秒差异归零。**臂内尾部异常就是该臂不可用作参照的信号**。
+
+**CI 覆盖缺口**:`tests/test_model/tts_ci_config.py` 的 `qwen3-tts` preset 只有
+`Qwen3-TTS-12Hz-1.7B-Base`,而 full 默认只对 CustomVoice 生效,所以 TTS CI **结构上测不到这条
+路径**(#1900 的 breakable 默认同样没被覆盖过)。已在 PR 正文点名,建议单开一条 PR 给 CI 轮换
+加 CustomVoice 臂。
+
+**主机纪律**:eval-h100 现有四个 runner 安装、`omni-autoscaler.yaml` 的 `max_runners: 3`,三条
+lane(2,3 / 4,5 / 6,7)在跑作业时各有 reaper 会 SIGKILL 外来 GPU 进程。测量期间我把 max_runners
+临时降到 2(备份 `omni-autoscaler.yaml.bak-luojiaxuan-pfull-20260910T2249Z`),**但降 cap 不绑定
+lane**——runner 仍可占任一 lane,我在 GPU 4 上还是被杀过一次,换到当时无 reaper 的 GPU 3 才跑完。
+测完已把 max_runners 恢复为 3、容器删除、map 清理。
