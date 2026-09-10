@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """Omni communication engine facade used by pipeline stages."""
+
 from __future__ import annotations
 
 import asyncio
@@ -61,6 +62,8 @@ class _PendingTransfer(msgspec.Struct):
     lease: KVPageLease | None = None
     retain_pending_on_failure: bool = False
     receiver_terminal: bool = False
+    # Resolved only by the peer, or by close(). A local failure must not.
+    terminal: asyncio.Future[None] | None = None
 
 
 class _PayloadSendJob(msgspec.Struct, frozen=True):
@@ -125,8 +128,10 @@ class CommEngine:
         self._send_workers: dict[str, asyncio.Task] = {}
         self._pending: dict[str, _PendingTransfer] = {}
         self._stream_send_sequence = count()
-        # Failed pending KV transfers stay pinned until this dying process exits.
-        self._retained_pending_kv_transfers: list[_PendingTransfer] = []
+        # Note(Yue Yin): key retained transfers by object_id so a late ack can
+        # still settle one after the local send failed.
+        self._retained_pending_kv_transfers: dict[str, _PendingTransfer] = {}
+        self._retained_settle_tasks: set[asyncio.Task] = set()
         self._kv_pools: dict[str, KVPool] = {}
         self._kv_receivers: dict[str, KVReceiver] = {}
         self._kv_ready: dict[str, asyncio.Future[KVTransferReadyMessage]] = {}
@@ -791,6 +796,14 @@ class CommEngine:
         for object_id in list(self._pending):
             self._fail_pending(object_id, RuntimeError("comm engine closed"))
         close_error = RuntimeError("comm engine closed")
+        # Note(Yue Yin): end every retained transfer and wait for its task, so
+        # the source pages come back with the engine, not with the process.
+        for pending in list(self._retained_pending_kv_transfers.values()):
+            if pending.terminal is not None and not pending.terminal.done():
+                pending.terminal.set_exception(close_error)
+        settle_tasks = tuple(self._retained_settle_tasks)
+        if settle_tasks:
+            await asyncio.gather(*settle_tasks, return_exceptions=True)
         for state in self._inbound_kv.values():
             with suppress(Exception):
                 state.receiver.abort(state.request, state.destination, close_error)
@@ -808,7 +821,9 @@ class CommEngine:
             raise ValueError(
                 f"data_ack for {ack.to_stage!r} delivered to {self.router.stage_name!r}"
             )
-        pending = self._pending.get(ack.object_id)
+        pending = self._pending.get(ack.object_id) or (
+            self._retained_pending_kv_transfers.get(ack.object_id)
+        )
         if pending is None:
             logger.debug(
                 "Ignoring stale data_ack for %s from %s to %s",
@@ -818,16 +833,25 @@ class CommEngine:
             )
             return
         if ack.success:
-            pending.receiver_terminal = True
-            if not pending.ack.done():
-                pending.ack.set_result(None)
+            self._mark_receiver_terminal(pending, None)
             return
         error = ack.error
         if error is None:
             raise ValueError("failed data_ack is missing error")
+        self._mark_receiver_terminal(pending, RuntimeError(error))
+
+    @staticmethod
+    def _mark_receiver_terminal(
+        pending: _PendingTransfer, error: BaseException | None
+    ) -> None:
         pending.receiver_terminal = True
-        if not pending.ack.done():
-            pending.ack.set_exception(RuntimeError(error))
+        for future in (pending.ack, pending.terminal):
+            if future is None or future.done():
+                continue
+            if error is None:
+                future.set_result(None)
+            else:
+                future.set_exception(error)
 
     def _send_queue_for(
         self, queue_key: str
@@ -1094,7 +1118,17 @@ class CommEngine:
         error: BaseException,
     ) -> None:
         self._pending.pop(object_id, None)
-        self._retained_pending_kv_transfers.append(pending)
+        # Note(Yue Yin): wait on a signal only the peer or close() can set.
+        # cleanup() resolves pending.ack with a locally made error, and the
+        # peer may still be reading the source pages.
+        pending.terminal = asyncio.get_running_loop().create_future()
+        self._retained_pending_kv_transfers[object_id] = pending
+        task = asyncio.create_task(
+            self._settle_retained_kv_transfer(object_id, pending)
+        )
+        self._retained_settle_tasks.add(task)
+        task.add_done_callback(self._retained_settle_tasks.discard)
+        self._track_task(task, f"comm kv retained {object_id}")
         _comm_trace(
             "comm_kv_pending_retained",
             object_id=object_id,
@@ -1107,6 +1141,32 @@ class CommEngine:
             object_id,
             error,
         )
+
+    async def _settle_retained_kv_transfer(
+        self, object_id: str, pending: _PendingTransfer
+    ) -> None:
+        # Note(Yue Yin): log a failure instead of raising it. A tracked task
+        # that raises stops the whole Stage, and a late ack is normal.
+        error: BaseException | None = None
+        try:
+            try:
+                await pending.terminal
+            except Exception as exc:
+                error = exc
+                logger.warning("Retained KV transfer %s ended: %s", object_id, exc)
+            for op in pending.ops:
+                with suppress(Exception):
+                    if error is None:
+                        op.mark_receiver_done()
+                    else:
+                        op.mark_receiver_failed(error)
+            for op in pending.ops:
+                with suppress(Exception):
+                    await op.wait_for_completion(timeout=self._ack_timeout_s)
+        finally:
+            self._retained_pending_kv_transfers.pop(object_id, None)
+            if pending.lease is not None:
+                pending.lease.release()
 
     def _fail_pending(self, object_id: str, exc: BaseException) -> None:
         pending = self._pending.get(object_id)

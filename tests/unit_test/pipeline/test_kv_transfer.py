@@ -20,6 +20,7 @@ from sglang_omni.pipeline.control_plane import (
     serialize_message,
 )
 from sglang_omni.proto import (
+    DataAckMessage,
     DataReadyMessage,
     KVBufferSpec,
     KVPoolLayout,
@@ -571,27 +572,33 @@ def test_kv_transfer_rejects_layout_mismatch() -> None:
     asyncio.run(_run())
 
 
-def test_kv_ack_timeout_retains_pending_sender_resources(
+async def _pair_without_data_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[_PagedRelay, CommEngine, CommEngine]:
+    """Start a pair whose DataReady never reaches the destination."""
+
+    relay, source, destination = await _start_pair()
+
+    async def drop_data_ready(
+        sockets: dict[str, Any], target_endpoint: str, message: Any
+    ) -> None:
+        if isinstance(message, DataReadyMessage):
+            return
+        await send_to_endpoint(sockets, target_endpoint, message)
+
+    monkeypatch.setattr("sglang_omni.comm.engine.send_to_endpoint", drop_data_ready)
+    source.register_kv_pool(_pool("source_pool"))
+    destination.register_kv_pool(_pool("destination_pool"))
+    destination.register_kv_receiver("destination_pool", _Receiver((0,)))
+    return relay, source, destination
+
+
+def test_kv_ack_timeout_retains_sender_resources_until_a_late_ack(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async def _run() -> None:
-        relay, source, destination = await _start_pair()
-
-        async def drop_data_ready(
-            sockets: dict[str, Any], target_endpoint: str, message: Any
-        ) -> None:
-            if isinstance(message, DataReadyMessage):
-                return
-            await send_to_endpoint(sockets, target_endpoint, message)
-
-        monkeypatch.setattr(
-            "sglang_omni.comm.engine.send_to_endpoint",
-            drop_data_ready,
-        )
+        relay, source, destination = await _pair_without_data_ready(monkeypatch)
         source._ack_timeout_s = 0.1
-        source.register_kv_pool(_pool("source_pool"))
-        destination.register_kv_pool(_pool("destination_pool"))
-        destination.register_kv_receiver("destination_pool", _Receiver((0,)))
         lease = Mock()
 
         try:
@@ -611,6 +618,59 @@ def test_kv_ack_timeout_retains_pending_sender_resources(
             assert relay.put_ops[0].failed is None
             assert "transfer" not in source._pending
             assert len(source._retained_pending_kv_transfers) == 1
+            source.ack_transfer(
+                DataAckMessage(
+                    request_id="request",
+                    from_stage="destination",
+                    to_stage="source",
+                    object_id="transfer",
+                )
+            )
+            for _ in range(100):
+                await asyncio.sleep(0)
+                if lease.release.call_count:
+                    break
+            lease.release.assert_called_once()
+            assert source._retained_pending_kv_transfers == {}
+        finally:
+            await source.close()
+            await destination.close()
+
+    asyncio.run(_run())
+
+
+def test_a_local_abort_keeps_the_source_pages_until_the_peer_answers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _run() -> None:
+        _, source, destination = await _pair_without_data_ready(monkeypatch)
+        lease = Mock()
+
+        transfer = asyncio.create_task(
+            source.send_kv_pages(
+                request_id="request",
+                transfer_id="transfer",
+                source_pool_id="source_pool",
+                source_page_indices=(1,),
+                target_pool_id="destination_pool",
+                to_stage="destination",
+                lease=lease,
+            )
+        )
+        try:
+            for _ in range(200):
+                await asyncio.sleep(0)
+                pending = source._pending.get("transfer")
+                if pending is not None and pending.task is not None:
+                    break
+
+            source.cleanup("request")
+            with pytest.raises(RuntimeError):
+                await asyncio.wait_for(transfer, 5)
+            for _ in range(100):
+                await asyncio.sleep(0)
+            lease.release.assert_not_called()
+            assert "transfer" in source._retained_pending_kv_transfers
         finally:
             await source.close()
             await destination.close()
