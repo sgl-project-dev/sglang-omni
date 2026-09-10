@@ -134,9 +134,13 @@ def _code2wav_stage(*, gpu: int, process: str) -> StageConfig:
 def _default_stages() -> list[StageConfig]:
     return [
         _preprocessing_stage(process="pipeline"),
+        # Config order is construction order inside one process. The thinker's
+        # sglang engine must initialize the tensor-parallel group first; the
+        # encoders' srt vision layers then reuse it (initialize_model_parallel
+        # asserts the group does not already exist).
+        _thinker_stage(gpu=0, process="pipeline"),
         _image_encoder_stage(process="pipeline", gpu=0),
         _audio_encoder_stage(process="pipeline", gpu=0),
-        _thinker_stage(gpu=0, process="pipeline"),
         _decode_stage(process="pipeline"),
     ]
 
@@ -144,9 +148,10 @@ def _default_stages() -> list[StageConfig]:
 def _speech_stages() -> list[StageConfig]:
     return [
         _preprocessing_stage(process="pipeline"),
+        # Thinker before the encoders: see _default_stages.
+        _thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         _image_encoder_stage(process="pipeline", gpu=0),
         _audio_encoder_stage(process="pipeline", gpu=0),
-        _thinker_stage(gpu=0, process="pipeline", speech_enabled=True),
         _decode_stage(process="pipeline"),
         # The sglang talker is a second engine; it cannot share the thinker's
         # process (one torch tensor-parallel group per process).

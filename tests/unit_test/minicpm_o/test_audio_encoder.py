@@ -15,10 +15,12 @@ from pathlib import Path
 
 import pytest
 import torch
+from transformers import PretrainedConfig
 
 from sglang_omni.models.minicpm_o.components.audio_encoder import (
     MiniCPMWhisperEncoder,
     MultiModalProjector,
+    _audio_config_object,
     _chunked_causal_mask,
     _fuse_qkv,
 )
@@ -62,6 +64,20 @@ def _small_whisper_config():
         max_source_positions=1500,
         activation_function="gelu",
     )
+
+
+def test_audio_config_object_preserves_config_instances() -> None:
+    audio_config = PretrainedConfig(d_model=64, num_mel_bins=80)
+    config = PretrainedConfig(audio_config=audio_config)
+    assert _audio_config_object(config) is audio_config
+
+
+def test_audio_config_object_converts_shim_dict() -> None:
+    config = PretrainedConfig(audio_config={"d_model": 64, "num_mel_bins": 80})
+    audio_config = _audio_config_object(config)
+    assert isinstance(audio_config, PretrainedConfig)
+    assert audio_config.d_model == 64
+    assert audio_config.num_mel_bins == 80
 
 
 def _native_state_from_hf(encoder: torch.nn.Module) -> dict[str, torch.Tensor]:

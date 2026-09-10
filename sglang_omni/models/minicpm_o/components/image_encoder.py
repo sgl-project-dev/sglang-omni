@@ -20,7 +20,7 @@ import logging
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoConfig
+from transformers import AutoConfig, PretrainedConfig
 
 from sglang_omni.models.weight_loader import (
     load_weights_by_prefix,
@@ -36,6 +36,13 @@ _STACKED_QKV = [
     ("self_attn.qkv_proj", "self_attn.k_proj", "k"),
     ("self_attn.qkv_proj", "self_attn.v_proj", "v"),
 ]
+
+
+def _vision_config_object(config: PretrainedConfig) -> PretrainedConfig:
+    vision_config = config.vision_config
+    if isinstance(vision_config, dict):
+        return PretrainedConfig.from_dict(vision_config)
+    return vision_config
 
 
 def _init_sglang_tp() -> None:
@@ -149,7 +156,8 @@ class MiniCPMOImageEncoder(nn.Module):
         from sglang.srt.models.idefics2 import Idefics2VisionTransformer
         from sglang.srt.models.minicpmv import Resampler2_5
 
-        vpm = Idefics2VisionTransformer(config.vision_config)
+        vision_config = _vision_config_object(config)
+        vpm = Idefics2VisionTransformer(vision_config)
         if getattr(config, "drop_vision_last_layer", False):
             vpm.encoder.layers = vpm.encoder.layers[:-1]
         _load_srt_weights(vpm, load_weights_by_prefix(model_dir, prefix=("vpm.",)))
@@ -160,7 +168,7 @@ class MiniCPMOImageEncoder(nn.Module):
             num_queries=config.query_num,
             embed_dim=embed_dim,
             num_heads=embed_dim // 128,
-            kv_dim=config.vision_config.hidden_size,
+            kv_dim=vision_config.hidden_size,
         )
         _load_srt_weights(
             resampler, load_weights_by_prefix(model_dir, prefix=("resampler.",))

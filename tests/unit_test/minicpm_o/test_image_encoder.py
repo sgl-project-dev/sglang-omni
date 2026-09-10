@@ -16,6 +16,11 @@ from pathlib import Path
 
 import pytest
 import torch
+from transformers import PretrainedConfig
+
+from sglang_omni.models.minicpm_o.components.image_encoder import (
+    _vision_config_object,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -42,6 +47,20 @@ def test_patch_attn_mask_vectorization_matches_loop() -> None:
         torch.arange(max_patches)[None, :] < patch_counts[:, None]
     ).unsqueeze(1)
     assert torch.equal(got, ref)
+
+
+def test_vision_config_object_preserves_config_instances() -> None:
+    vision_config = PretrainedConfig(hidden_size=128, patch_size=14)
+    config = PretrainedConfig(vision_config=vision_config)
+    assert _vision_config_object(config) is vision_config
+
+
+def test_vision_config_object_converts_shim_dict() -> None:
+    config = PretrainedConfig(vision_config={"hidden_size": 128, "patch_size": 14})
+    vision_config = _vision_config_object(config)
+    assert isinstance(vision_config, PretrainedConfig)
+    assert vision_config.hidden_size == 128
+    assert vision_config.patch_size == 14
 
 
 def _build_remote_encoder(checkpoint: Path, device: torch.device, dtype: torch.dtype):

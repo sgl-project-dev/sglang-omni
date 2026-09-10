@@ -18,7 +18,7 @@ import logging
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoConfig
+from transformers import AutoConfig, PretrainedConfig
 from transformers.activations import ACT2FN
 
 from sglang_omni.models.weight_loader import (
@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 _MASK_MIN = -1e9
 
 _QKV_SHARDS = {"q_proj": 0, "k_proj": 1, "v_proj": 2}
+
+
+def _audio_config_object(config: PretrainedConfig) -> PretrainedConfig:
+    audio_config = config.audio_config
+    if isinstance(audio_config, dict):
+        return PretrainedConfig.from_dict(audio_config)
+    return audio_config
 
 
 def _chunked_causal_mask(
@@ -216,7 +223,7 @@ class MiniCPMOAudioEncoder(nn.Module):
         self._device = torch.device(device)
         self._dtype = torch_dtype
 
-        audio_config = config.audio_config
+        audio_config = _audio_config_object(config)
         self.apm = MiniCPMWhisperEncoder(audio_config)
         apm_state = _fuse_qkv(load_weights_by_prefix(model_dir, prefix=("apm.",)))
         self.apm.load_state_dict(apm_state, strict=True)
