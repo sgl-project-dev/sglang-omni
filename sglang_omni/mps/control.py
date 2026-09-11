@@ -6,6 +6,8 @@ from __future__ import annotations
 import fcntl
 import os
 import subprocess
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from sglang_omni.mps.manager import (
@@ -17,6 +19,8 @@ from sglang_omni.mps.manager import (
 
 _CONTROL_BINARY = "nvidia-cuda-mps-control"
 _QUERY_TIMEOUT_SECONDS = 10
+_SNAPSHOT_RETRY_DELAYS_SECONDS = (0.05, 0.15)
+_CONTROL_LOCK_NAME = ".control.lock"
 
 
 def _stat_says_alive(stat_text: str) -> bool:
@@ -41,7 +45,27 @@ class SubprocessMpsControlClient:
         env["CUDA_MPS_PIPE_DIRECTORY"] = str(pipe_dir)
         return env
 
-    def _query(self, pipe_dir: Path, command: str) -> str:
+    @contextmanager
+    def _control_transaction(self, pipe_dir: Path):
+        lock_path = pipe_dir.parent / _CONTROL_LOCK_NAME
+        try:
+            lock_file = lock_path.open("a+")
+        except OSError as exc:
+            raise MpsControlError(
+                f"cannot open MPS control lock {lock_path}: {exc}"
+            ) from exc
+
+        with lock_file:
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX)
+            except OSError as exc:
+                raise MpsControlError(
+                    f"cannot lock MPS control transaction {lock_path}: {exc}"
+                ) from exc
+
+            yield
+
+    def _query_unlocked(self, pipe_dir: Path, command: str) -> str:
         try:
             result = subprocess.run(
                 [_CONTROL_BINARY],
@@ -61,6 +85,10 @@ class SubprocessMpsControlClient:
                 f"(rc={result.returncode}): {result.stderr.strip()}"
             )
         return result.stdout
+
+    def _query(self, pipe_dir: Path, command: str) -> str:
+        with self._control_transaction(pipe_dir):
+            return self._query_unlocked(pipe_dir, command)
 
     def start_daemon(self, pipe_dir: Path, log_dir: Path, gpu_uuid: str) -> None:
         env = self._control_env(pipe_dir)
@@ -119,19 +147,54 @@ class SubprocessMpsControlClient:
             )
         return pid
 
-    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
-        """Return one strict server/client snapshot from the selected daemon."""
-
+    def _snapshot_unlocked(self, pipe_dir: Path) -> set[MpsClientRef]:
         servers = _parse_pid_list(
-            self._query(pipe_dir, "get_server_list"), "get_server_list"
+            self._query_unlocked(pipe_dir, "get_server_list"), "get_server_list"
         )
         clients: set[MpsClientRef] = set()
         for server_pid in servers:
             command = f"get_client_list {server_pid}"
-            client_pids = _parse_pid_list(self._query(pipe_dir, command), command)
+            client_pids = _parse_pid_list(
+                self._query_unlocked(pipe_dir, command), command
+            )
             for client_pid in client_pids:
                 clients.add(MpsClientRef(server_pid, client_pid))
         return clients
+
+    def snapshot(self, pipe_dir: Path) -> set[MpsClientRef]:
+        """Return one identity-stable, serialized server/client snapshot."""
+
+        expected_daemon_pid = self.read_daemon_identity(pipe_dir)
+        last_error: MpsControlError | None = None
+        attempts = len(_SNAPSHOT_RETRY_DELAYS_SECONDS) + 1
+
+        for attempt in range(attempts):
+            try:
+                with self._control_transaction(pipe_dir):
+                    clients = self._snapshot_unlocked(pipe_dir)
+            except MpsControlError as exc:
+                last_error = exc
+            else:
+                last_error = None
+
+            current_daemon_pid = self.read_daemon_identity(pipe_dir)
+            if current_daemon_pid != expected_daemon_pid:
+                identity_error = MpsControlError(
+                    "MPS daemon identity changed during control snapshot "
+                    f"from {expected_daemon_pid} to {current_daemon_pid}"
+                )
+                if last_error is not None:
+                    raise identity_error from last_error
+                raise identity_error
+            if last_error is None:
+                return clients
+            if attempt < len(_SNAPSHOT_RETRY_DELAYS_SECONDS):
+                time.sleep(_SNAPSHOT_RETRY_DELAYS_SECONDS[attempt])
+
+        assert last_error is not None
+        raise MpsControlError(
+            f"MPS control snapshot failed after {attempts} attempts: {last_error}"
+        ) from last_error
 
     def terminate_client(self, pipe_dir: Path, client: MpsClientRef) -> None:
         command = f"terminate_client {client.server_pid} {client.client_pid}"

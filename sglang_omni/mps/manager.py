@@ -467,7 +467,7 @@ class MpsManager:
         return targets
 
     def probe(self, lease: MpsLease) -> str | None:
-        """Return the first failed health proof, or ``None`` when healthy."""
+        """Check steady state daemon identity without enumerating MPS clients."""
 
         self._require_live_lease(lease)
         try:
@@ -475,13 +475,7 @@ class MpsManager:
         except MpsControlError as exc:
             return f"daemon identity query failed: {exc}"
         if daemon_pid != lease.daemon_pid:
-            return (
-                f"daemon identity changed from {lease.daemon_pid} " f"to {daemon_pid}"
-            )
-        try:
-            self.client.snapshot(self.paths.pipe_dir)
-        except MpsControlError as exc:
-            return f"client snapshot query failed: {exc}"
+            return f"daemon identity changed from {lease.daemon_pid} to {daemon_pid}"
         return None
 
     def release(

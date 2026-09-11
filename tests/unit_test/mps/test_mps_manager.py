@@ -419,7 +419,7 @@ def test_probe_allows_a_verified_client_to_exit(short_root):
     assert manager.probe(lease) is None
 
 
-def test_probe_distinguishes_identity_and_snapshot_failures(short_root):
+def test_probe_checks_identity_without_client_snapshot(short_root):
     client = FakeControlClient()
     manager, lease = start_serving(short_root, client)
 
@@ -439,10 +439,9 @@ def test_probe_distinguishes_identity_and_snapshot_failures(short_root):
 
     client.daemons[str(manager.paths.pipe_dir)] = lease.daemon_pid
     daemon_pid_file(manager.paths).write_text(str(lease.daemon_pid))
-    client.snapshot_error = "control socket unavailable"
-    assert manager.probe(lease) == (
-        "client snapshot query failed: control socket unavailable"
-    )
+
+    client.snapshot_error = "unexpected snapshot"
+    assert manager.probe(lease) is None
 
 
 def test_dead_root_with_live_descendant_persists_dirty_and_reports_cleanup(
