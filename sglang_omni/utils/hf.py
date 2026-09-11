@@ -29,6 +29,7 @@ _CONFIG_MODEL_TYPE_TO_ARCH = {
     "qwen3_tts": "Qwen3TTSForConditionalGeneration",
     "voxtral_tts": "VoxtralTTSForConditionalGeneration",
     "zonos2": "Zonos2ForCausalLM",
+    "voxtral": "VoxtralRealtimeForConditionalGeneration",
 }
 
 _COSYVOICE3_LAYOUT_MARKER = "cosyvoice3.yaml"
