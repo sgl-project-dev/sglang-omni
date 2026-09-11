@@ -190,10 +190,11 @@ class Attention(nn.Module):
 
     def _attend(self, q, k, v, mask: torch.Tensor | None):
         """SDPA with an optional broadcast key mask, then merge heads."""
-        batch, heads = q.shape[0], q.shape[1]
+        batch = q.shape[0]
         if self.attn_mask_enabled and mask is not None:
+            # Broadcast over heads/queries; expanding here can make SDPA
+            # materialize a quadratic-size numeric mask.
             attn_mask = mask.unsqueeze(1).unsqueeze(1)
-            attn_mask = attn_mask.expand(batch, heads, q.shape[-2], k.shape[-2])
         else:
             attn_mask = None
         out = F.scaled_dot_product_attention(
