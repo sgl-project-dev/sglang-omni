@@ -312,7 +312,14 @@ The example sets a 65,536-token context limit for both preprocessing and model
 execution. Adjust it and the GPU configuration for the selected videos and
 available hardware; see [Qwen3-Omni configuration](../docs/basic_usage/qwen3_omni.md).
 Run the benchmark on the server host or use a shared filesystem with identical
-media paths. `--base-url` is the server root, such as `http://localhost:8000`.
+media paths. `--base-url` accepts the server root, such as
+`http://localhost:8000`, or the same address ending in `/v1` or
+`/v1/chat/completions`. Readiness checks use the server's `/health` route.
+
+Level 1 parses the last non-empty response line, matching the prompt's
+`Answer: X` format; preceding explanations are ignored. Ambiguous final answers
+remain unparseable. A malformed completion response is recorded as a request
+failure even when the server returns HTTP 200.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
 endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.

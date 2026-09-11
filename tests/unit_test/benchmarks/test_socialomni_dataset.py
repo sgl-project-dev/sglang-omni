@@ -2,6 +2,8 @@
 
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import av
@@ -214,6 +216,79 @@ def test_prefix_command_reencodes_video_and_audio(tmp_path: Path) -> None:
     assert "-c:a" in command and "aac" in command
     assert "copy" not in command
     assert command[command.index("-t") + 1] == "1.250000"
+
+
+def test_prepare_import_does_not_require_imageio_ffmpeg() -> None:
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.modules['imageio_ffmpeg'] = None; "
+            "from benchmarks.dataset import prepare",
+        ],
+        check=True,
+        timeout=10,
+        cwd=Path(__file__).resolve().parents[3],
+    )
+
+
+def test_system_ffmpeg_does_not_require_imageio_ffmpeg(monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    monkeypatch.setattr(socialomni.shutil, "which", lambda _: "/usr/bin/ffmpeg")
+
+    assert socialomni.resolve_ffmpeg_executable() == "/usr/bin/ffmpeg"
+
+
+@pytest.mark.asyncio
+async def test_cancel_prefix_stops_process_and_removes_temporary(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Cancellation must leave neither an encoder process nor a partial cache file."""
+    source = tmp_path / "source.mp4"
+    source.touch()
+    cache = tmp_path / "cache"
+    started = asyncio.Event()
+    processes = []
+    create_subprocess = asyncio.create_subprocess_exec
+
+    async def start_process(*command, **kwargs):
+        process = await create_subprocess(*command, **kwargs)
+        processes.append(process)
+        assert await process.stdout.readline() == b"ready\n"
+        started.set()
+        return process
+
+    monkeypatch.setattr(socialomni, "resolve_ffmpeg_executable", lambda: sys.executable)
+    monkeypatch.setattr(
+        socialomni,
+        "build_ffmpeg_prefix_command",
+        lambda ffmpeg, source, timestamp, output: [
+            ffmpeg,
+            "-c",
+            "import pathlib, sys, time; "
+            "pathlib.Path(sys.argv[1]).write_bytes(b'partial'); "
+            "print('ready', flush=True); time.sleep(60)",
+            str(output),
+        ],
+    )
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", start_process)
+
+    task = asyncio.create_task(socialomni.create_video_prefix(source, 1, cache))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=10)
+        assert list(cache.glob("*.tmp.mp4"))
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=10)
+
+        assert processes[0].returncode is not None
+        assert not list(cache.iterdir())
+    finally:
+        task.cancel()
+        for process in processes:
+            if process.returncode is None:
+                process.kill()
+            await process.communicate()
 
 
 @pytest.mark.asyncio

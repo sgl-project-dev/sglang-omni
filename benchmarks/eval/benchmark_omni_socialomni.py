@@ -128,7 +128,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
     output: dict[str, Any] = {
         "config": {
             **asdict(config),
-            "dataset_root": str(Path(config.dataset_root).resolve()),
+            "dataset_root": str(Path(config.dataset_root).expanduser().resolve()),
             "judge_config": None,
             "dataset_id": SOCIALOMNI_DATASET_ID,
             "expected_dataset_revision": SOCIALOMNI_DATASET_REVISION,
@@ -328,7 +328,12 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = _parser().parse_args()
     config = SocialOmniEvalConfig(**vars(args))
-    wait_for_service(config.base_url, timeout=config.timeout_s)
+    server_url = config.base_url.rstrip("/")
+    for suffix in ("/v1/chat/completions", "/chat/completions", "/v1"):
+        if server_url.endswith(suffix):
+            server_url = server_url[: -len(suffix)]
+            break
+    wait_for_service(server_url, timeout=config.timeout_s)
     output = asyncio.run(run_socialomni(config))
     commit = output["provenance"]["repository"]["commit"] or "unknown"
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

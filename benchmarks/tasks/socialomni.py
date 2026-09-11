@@ -115,24 +115,29 @@ def validate_judge_credentials(judges: Sequence[JudgeSpec]) -> None:
 
 
 def _response_text(body: dict[str, Any]) -> str:
+    if "error" in body:
+        raise ValueError("response contains an error")
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
-        return ""
+        raise ValueError("choices must be a non-empty list")
     if not isinstance(choices[0], dict):
-        return ""
+        raise ValueError("choices[0] must be an object")
     message = choices[0].get("message")
     if not isinstance(message, dict):
-        return ""
+        raise ValueError("choices[0].message must be an object")
     content = message.get("content")
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
-        return "\n".join(
-            str(part.get("text", "")).strip()
+        if any(
+            not isinstance(part, dict)
+            or part.get("type") != "text"
+            or not isinstance(part.get("text"), str)
             for part in content
-            if isinstance(part, dict) and part.get("type") == "text"
-        ).strip()
-    return ""
+        ):
+            raise ValueError("message content parts must contain text strings")
+        return "\n".join(part["text"].strip() for part in content).strip()
+    raise ValueError("message content must be a string or a list of text parts")
 
 
 async def request_chat_completion(
@@ -182,6 +187,14 @@ async def request_chat_completion(
                             )
                             retry = True
                         else:
+                            try:
+                                text = _response_text(body)
+                            except ValueError as exc:
+                                return RequestResult(
+                                    request_id=request_id,
+                                    latency_s=time.perf_counter() - request_started,
+                                    error=f"invalid completion response: {exc}",
+                                )
                             usage = body.get("usage") or {}
                             if not isinstance(usage, dict):
                                 usage = {}
@@ -202,7 +215,7 @@ async def request_chat_completion(
                             elapsed = time.perf_counter() - request_started
                             return RequestResult(
                                 request_id=request_id,
-                                text=_response_text(body),
+                                text=text,
                                 is_success=True,
                                 latency_s=elapsed,
                                 engine_time_s=elapsed,
@@ -248,8 +261,8 @@ def build_level1_result_records(
             "sample_id": sample.sample_id,
             "gold_answer": sample.gold_answer,
             "predicted_answer": (
-                parse_choice(result.text, ("A", "B", "C", "D"))
-                if result.is_success
+                parse_choice(result.text.strip().splitlines()[-1], ("A", "B", "C", "D"))
+                if result.is_success and result.text.strip()
                 else ""
             ),
             "visibility": sample.visibility,

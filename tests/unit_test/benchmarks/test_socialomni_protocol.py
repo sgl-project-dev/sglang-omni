@@ -2,8 +2,11 @@
 
 import asyncio
 import json
+import sys
 from dataclasses import asdict, replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
@@ -17,6 +20,7 @@ from benchmarks.tasks.socialomni import (
     JUDGE_PARSE_ATTEMPTS,
     JudgeSpec,
     build_judge_prompt,
+    build_level1_result_records,
     build_response_prompt,
     build_when_prompt,
     judge_payload,
@@ -195,6 +199,24 @@ def test_judge_payload_allows_reasoning_before_score() -> None:
 )
 def test_choice_parser_is_strict(raw: str, expected: str) -> None:
     assert parse_choice(raw, ("A", "B", "C", "D")) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("The speaker is on the left.\nAnswer: A\n\n", "A"),
+        ("B is not the speaker.\nAnswer: A", "A"),
+        ("Explanation.\nAnswer: A or B", ""),
+        ("Answer: A\nThere is no final answer here.", ""),
+        ("", ""),
+    ],
+)
+def test_level1_parses_only_the_final_answer_line(raw, expected) -> None:
+    """Accept the final-line format requested by the Level 1 prompt."""
+    result = RequestResult(request_id="one", text=raw, is_success=True)
+    record = build_level1_result_records([_level1()], [result])[0]
+    assert record["predicted_answer"] == expected
+    assert record["raw_response"] == raw
 
 
 @pytest.mark.parametrize(
@@ -551,6 +573,130 @@ async def test_malformed_success_response_does_not_escape() -> None:
     )
     assert not result.is_success
     assert "invalid JSON response object" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"error": {"message": "backend failed"}},
+        {"choices": []},
+        {"choices": {}},
+        {"choices": [None]},
+        {"choices": [{}]},
+        {"choices": [{"message": "A"}]},
+        {"choices": [{"message": {}}]},
+        *[
+            {"choices": [{"message": {"content": content}}]}
+            for content in (None, 3, {}, [None], [{"type": "text", "text": 3}])
+        ],
+    ],
+)
+async def test_malformed_completion_is_recorded_as_failure(body) -> None:
+    """HTTP 200 alone must not count as a completed model request."""
+    result = await request_chat_completion(
+        _Session(_Response(200, json.dumps(body))),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="malformed",
+    )
+    assert not result.is_success
+    assert "invalid completion response" in result.error
+    assert result.completion_tokens == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [(" A ", "A"), ("", ""), ([], ""), ([{"type": "text", "text": "A"}], "A")],
+)
+async def test_valid_completion_content(content, expected) -> None:
+    result = await request_chat_completion(
+        _Session(
+            _Response(200, json.dumps({"choices": [{"message": {"content": content}}]}))
+        ),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="valid",
+    )
+    assert result.is_success
+    assert result.text == expected
+
+
+@pytest.mark.parametrize(
+    "suffix", ["", "/", "/v1", "/v1/", "/v1/chat/completions", "/v1/chat/completions/"]
+)
+def test_cli_checks_server_root_and_preserves_completion_url(
+    tmp_path, monkeypatch, capsys, suffix
+) -> None:
+    """Accepted API URLs must reach both health and completion routes through the CLI."""
+    routes = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            routes.append(self.path)
+            self.send_response(200 if self.path == "/health" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            routes.append(self.path)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200 if self.path == "/v1/chat/completions" else 404)
+            self.end_headers()
+            self.wfile.write(b'{"choices":[{"message":{"content":"Answer: A"}}]}')
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(
+        target=lambda: server.serve_forever(poll_interval=0.01), daemon=True
+    )
+    thread.start()
+    monkeypatch.setenv("no_proxy", "127.0.0.1")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(
+        entrypoint, "load_socialomni_level1_samples", lambda *_a, **_k: [_level1()]
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "inspect_socialomni_dataset",
+        lambda *_a, **_k: {"metadata_matches_expected_revision": False},
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "socialomni",
+            "--dataset-root",
+            "~/dataset",
+            "--model",
+            "test",
+            "--base-url",
+            f"http://127.0.0.1:{server.server_port}{suffix}",
+            "--level",
+            "level1",
+            "--warmup",
+            "0",
+            "--timeout-s",
+            "2",
+            "--disable-tqdm",
+            "--output-dir",
+            str(tmp_path / "results"),
+        ],
+    )
+    try:
+        entrypoint.main()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+    output = json.loads(capsys.readouterr().out)
+    saved = json.loads(Path(output["result"]).read_text())
+    assert routes == ["/health", "/v1/chat/completions"]
+    assert saved["per_sample"]["level1"][0]["predicted_answer"] == "A"
+    assert saved["config"]["dataset_root"] == str(tmp_path / "dataset")
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,10 @@ tests/
 └── unit_test/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
-    │   └── test_runtime_metrics.py
+    │   ├── test_runtime_metrics.py
+    │   ├── test_socialomni_dataset.py
+    │   ├── test_socialomni_metrics.py
+    │   └── test_socialomni_protocol.py
     ├── test_tune_ci_thresholds.py
     ├── ci/
     │   ├── test_cpu_contention.py
@@ -460,6 +463,10 @@ that happened to contain an older version of the test.
     in `unit_test/pipeline/` integration tests and GPU benchmarks.
 - `unit_test/benchmarks/`: Benchmark dataset/loading regression tests plus
   runtime resource-monitoring, PID-scoping, aggregation, and provenance coverage.
+  SocialOmni tests cover dataset identity and paths, video-prefix cancellation
+  cleanup, final-line answers, completion validation, judge completeness, and
+  CLI health/completion routing. Small local HTTP servers and media fixtures
+  exercise these paths without model weights or accelerator hardware.
 - `unit_test/test_tune_ci_thresholds.py`: Unit tests for
   `.claude/skills/tune-ci-thresholds/tune.py` calibration tooling — sample-scope
   discovery (`CONCURRENCY` must not be treated as a sample count), GPU cleanup

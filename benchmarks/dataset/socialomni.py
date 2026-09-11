@@ -16,8 +16,6 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
-import imageio_ffmpeg
-
 PREFIX_ENCODING = {
     "video_codec": "libx264",
     "preset": "fast",
@@ -355,6 +353,8 @@ def resolve_ffmpeg_executable() -> str | None:
     system = shutil.which("ffmpeg")
     if system:
         return system
+    import imageio_ffmpeg
+
     bundled = Path(imageio_ffmpeg.get_ffmpeg_exe())
     return str(bundled) if bundled.is_file() and os.access(bundled, os.X_OK) else None
 
@@ -425,7 +425,20 @@ async def create_video_prefix(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await process.communicate()
+    try:
+        _, stderr = await process.communicate()
+    except asyncio.CancelledError:
+        try:
+            if process.returncode is None:
+                process.terminate()
+            try:
+                await asyncio.wait_for(process.communicate(), timeout=5)
+            except asyncio.TimeoutError:
+                process.kill()
+                await process.communicate()
+        finally:
+            temporary.unlink(missing_ok=True)
+        raise
     if process.returncode or not temporary.is_file() or not temporary.stat().st_size:
         temporary.unlink(missing_ok=True)
         raise RuntimeError(
