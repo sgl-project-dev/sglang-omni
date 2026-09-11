@@ -254,8 +254,8 @@ def parse_socialomni_timestamp(value: Any) -> float:
             seconds = int(minutes) * 60 + int(tail) + int(centiseconds) / 100
         else:
             raise ValueError(f"Invalid SocialOmni timestamp: {value!r}")
-    if seconds <= 0:
-        raise ValueError(f"SocialOmni timestamp must be positive: {value!r}")
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise ValueError(f"SocialOmni timestamp must be finite and positive: {value!r}")
     return seconds
 
 

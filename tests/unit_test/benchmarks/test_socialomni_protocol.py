@@ -251,6 +251,28 @@ def test_judge_score_parser(raw: str, expected: int | None) -> None:
     assert parse_judge_score(raw) == expected
 
 
+@pytest.mark.parametrize("concurrency", [True, False, 0, -1, 1.5, "1"])
+def test_judge_config_rejects_invalid_concurrency(tmp_path, concurrency) -> None:
+    path = tmp_path / "judges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "judges": [
+                    {
+                        "name": name,
+                        "model": name,
+                        "base_url": "http://localhost:8000",
+                        "max_concurrency": concurrency,
+                    }
+                    for name in entrypoint.SOCIALOMNI_JUDGE_NAMES
+                ]
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="max_concurrency"):
+        load_judge_config(path)
+
+
 def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("SECRET_VALUE", "must-not-appear")
     path = tmp_path / "judges.json"
@@ -276,6 +298,46 @@ def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) 
     public = [asdict(judge) for judge in load_judge_config(path)]
     assert "must-not-appear" not in json.dumps(public)
     assert public[0]["api_key_env"] == "SECRET_VALUE"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("level", ["level1", "level2"])
+@pytest.mark.parametrize("warmup", [None, 0])
+async def test_model_failures_follow_shared_warmup_policy(monkeypatch, level, warmup):
+    """Warmup fails fast; explicitly disabling it retains failed measured samples."""
+    monkeypatch.setattr(
+        entrypoint, "load_socialomni_level1_samples", lambda *_a, **_k: [_level1()]
+    )
+    monkeypatch.setattr(
+        entrypoint, "load_socialomni_level2_samples", lambda *_a, **_k: [_level2()]
+    )
+    monkeypatch.setattr(
+        entrypoint,
+        "inspect_socialomni_dataset",
+        lambda *_a, **_k: {"metadata_matches_expected_revision": False},
+    )
+    calls = []
+
+    async def prefix(*_args):
+        return Path("/tmp/prefix.mp4")
+
+    async def failed(*_args, request_id, **_kwargs):
+        calls.append(request_id)
+        return RequestResult(request_id=request_id, error="server failed")
+
+    monkeypatch.setattr("benchmarks.tasks.socialomni.create_video_prefix", prefix)
+    monkeypatch.setattr("benchmarks.tasks.socialomni.request_chat_completion", failed)
+    config = _config(level=level, warmup=warmup, disable_tqdm=True)
+    if warmup is None:
+        with pytest.raises(ValueError, match="Warmup failed"):
+            await entrypoint.run_socialomni(config)
+    else:
+        output = await entrypoint.run_socialomni(config)
+        assert len(output["per_sample"][level]) == 1
+        assert len(output["failures"]) == 1
+        metrics = output["summary"][level]["metrics"]
+        assert (metrics if level == "level1" else metrics["when"])["total_samples"] == 1
+    assert len(calls) == 1
 
 
 @pytest.mark.asyncio
@@ -675,6 +737,8 @@ def test_cli_checks_server_root_and_preserves_completion_url(
             "test",
             "--model-revision",
             "weights-commit",
+            "--launch-command",
+            "python -m sglang_omni.cli serve --model-path /models/qwen",
             "--base-url",
             f"http://127.0.0.1:{server.server_port}{suffix}",
             "--level",
@@ -700,6 +764,9 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     assert saved["per_sample"]["level1"][0]["predicted_answer"] == "A"
     assert saved["config"]["dataset_root"] == str(tmp_path / "dataset")
     assert saved["config"]["model_revision"] == "weights-commit"
+    assert saved["config"]["launch_command"] == saved["provenance"]["launch_command"]
+    assert saved["provenance"]["launch_command"].endswith("--model-path /models/qwen")
+    assert saved["provenance"]["declared_server_config"]["trust_env"] is True
     assert (
         saved["provenance"]["artifacts"]["declared_model_revision"] == "weights-commit"
     )
@@ -794,11 +861,12 @@ async def test_judges_preserve_raw_results(monkeypatch) -> None:
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
     )
-    _, failures = await run_judges([sample], [record], judges, timeout_s=30)
+    requests, failures = await run_judges([sample], [record], judges, timeout_s=30)
     assert not failures
     assert record["gold_judge_scores"] == {name.name: 75 for name in judges}
     result = record["judge_results"]["gpt-4o"]
     assert set(result) == {
+        "request",
         "score",
         "raw_response",
         "is_success",
@@ -808,6 +876,7 @@ async def test_judges_preserve_raw_results(monkeypatch) -> None:
         "error",
     }
     assert result["raw_response"] == "75"
+    assert result["request"] == asdict(requests[0])
 
 
 @pytest.mark.asyncio

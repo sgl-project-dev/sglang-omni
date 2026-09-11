@@ -62,6 +62,7 @@ class SocialOmniEvalConfig:
     warmup: int | None = None
     disable_tqdm: bool = False
     model_revision: str | None = None
+    launch_command: str | None = None
 
 
 def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None:
@@ -115,7 +116,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             if dataset_identity["metadata_matches_expected_revision"]
             else None
         ),
-        launch_command=None,
+        launch_command=config.launch_command,
         server_config={
             "base_url": config.base_url,
             "max_concurrency": config.max_concurrency,
@@ -124,6 +125,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "timeout_s": config.timeout_s,
             "temperature": 0.0,
             "use_audio_in_video": True,
+            "trust_env": True,
         },
     )
     output: dict[str, Any] = {
@@ -316,6 +318,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Declared model weight revision for provenance; not verified against the server.",
     )
     parser.add_argument("--base-url", default="http://localhost:8000")
+    parser.add_argument(
+        "--launch-command",
+        help="Server launch command to record in provenance; not executed.",
+    )
     parser.add_argument("--level", choices=("level1", "level2", "both"), default="both")
     parser.add_argument("--judge-config")
     parser.add_argument(

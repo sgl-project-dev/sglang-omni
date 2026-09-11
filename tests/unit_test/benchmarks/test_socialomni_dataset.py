@@ -202,7 +202,9 @@ def test_parse_timestamp(raw: object, expected: float) -> None:
     assert parse_socialomni_timestamp(raw) == expected
 
 
-@pytest.mark.parametrize("raw", [True, "", "bad", 0, -1])
+@pytest.mark.parametrize(
+    "raw", [True, "", "bad", 0, -1, float("nan"), float("inf"), float("-inf")]
+)
 def test_parse_timestamp_rejects_invalid_values(raw: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         parse_socialomni_timestamp(raw)

@@ -381,6 +381,10 @@ Use `--model-revision` to record the served weight revision in the result
 configuration and provenance. This is a user declaration, not a server-verified
 identity; `--model` remains the serving name. Prefix preparation failures stay
 in per-sample results but are excluded from model request speed statistics.
+`--launch-command` records the server command without executing it. Proxy
+handling is recorded as `trust_env: true`; proxy URLs and credentials are not
+copied into the result. Each judge result also retains the full shared request
+record used for speed aggregation under `request`.
 
 The public dataset downloader pins Hugging Face revision
 `3b76009b45090eaa54007454c93a831f3cc8e1e6`.
@@ -432,7 +436,10 @@ Level 2 prepares all video prefixes before timing, then runs the turn-entry
 decisions and forced gold-positive responses as separate phases. Each nonempty
 model phase repeats its first sample once per concurrent worker for warmup;
 `--warmup N` overrides the count and `--warmup 0` disables it. Warmup results
-are discarded by the shared runner. Judges use no warmup to avoid duplicate
+are discarded by the shared runner. As in other benchmarks, a failed warmup
+aborts the run before its measured phase. Fixed-denominator accounting applies
+to measured requests; use `--warmup 0` to evaluate without this precondition.
+Judges use no warmup to avoid duplicate
 paid scoring requests. Model wall time sums the two measured runner phases
 and excludes media preparation, warmup, and judge scoring.
 Prefix preparation failures stay in the sample records and fixed denominator.

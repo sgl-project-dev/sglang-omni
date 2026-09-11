@@ -70,7 +70,7 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
             if not isinstance(row.get(field), str) or not row[field].strip():
                 raise ValueError(f"judges[{index}].{field} must be non-empty")
         concurrency = row.get("max_concurrency", 1)
-        if not isinstance(concurrency, int) or concurrency < 1:
+        if type(concurrency) is not int or concurrency < 1:
             raise ValueError(f"judges[{index}].max_concurrency must be >= 1")
         api_key_env = row.get("api_key_env")
         if api_key_env is not None and (
@@ -556,6 +556,7 @@ async def run_judges(
             score = parse_judge_score(result.text) if result.is_success else None
             results.append(result)
             record["judge_results"][judge.name] = {
+                "request": asdict(result),
                 "score": score,
                 "raw_response": result.text,
                 "is_success": result.is_success,
