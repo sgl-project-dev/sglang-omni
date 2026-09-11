@@ -895,3 +895,42 @@ gate、具名音色必须带 voice 而克隆臂必须不带、workflow 的 rotat
 (`/data/cache/huggingface` 下 4.3GB),不额外下载。
 
 **收尾**:测试用的 CPU 容器已删、map 已清;`max_runners` 保持 3。
+
+## 第十七轮:#1998 的 MMSU 红灯不是 #1998 的问题,是判据推导本身有 bug(PR #2095)
+
+**背景**:#1998(full prefill graph)的 board 上唯一的红灯是
+`Qwen3-Omni CI / stage 5 - MMSU accuracy + speed`,与 Qwen3-TTS 无关。它连着两次
+在同一个 commit 上失败,失败行是:
+
+```
+1. latency_mean_s 0.203 > 0.2 at concurrency 16
+1. latency_mean_s 0.211 > 0.2 at concurrency 16
+```
+
+**根因**:`tests/utils/apply_slack` 把 lower-is-better 判据算成
+`round(P95 * 1.125, 1)`。MMSU 文本臂的 P95 参照是 **0.201 s**,于是
+`round(0.201 * 1.125, 1) = round(0.226, 1) = 0.2`——**判据落到了它自己的参照以下**。
+也就是说,一个跑出与标定完全一致的延迟的 run 会失败。这是全树里唯一一个低于自身参照的
+判据,但同一个取整对每一个上界判据都有最多 0.05 的扰动;对亚秒级参照来说,0.05 与
+政策本身想给的 12.5% slack 同量级(0.755 s 的参照实际只拿到 6% 余量)。
+
+**修法(PR #2095)**:`latency_mean_s_max` 与 `rtf_mean_max` 走
+`readable_upper_gate(reference, slack, digits)`,只在取整**放松**时保留好读的整数值,
+否则直接用 `reference * slack`。关键性质:**没有任何判据变严**,所以这个改动不可能引入
+新的 CI 失败;13 个判据放松不到 0.05(回到政策本来要给的 slack),MMSU 那一个不再低于
+自身参照(0.2 → 0.226125)。
+
+**为什么不干脆全部不取整**:那会让 6 个现存判据变严——最差的是 moss stream 的
+`latency_mean_s_max` 从 1.1 收到 1.0676(严 2.9%)。higher-is-better 一侧同理,
+`output_tok_per_req_s` 6.1 的判据会从 5.3 收到 5.3375。这是 bugfix 不是重标定,
+所以只动"取整会收紧"的那一侧,min 判据一行不改。
+
+**教训**:判据的 readability 取整是个没人要求的启发式,而它的误差在小参照上与 slack
+同量级。判据推导里任何"为了好看"的变换,都要能回答"它最坏能把判据挪多远、挪的方向
+是松还是紧"。这条与 `gate-calibration-lessons` 里那批教训同源:判据本身也是代码,
+也需要契约测试(`tests/unit_test/test_ci_threshold_slack.py`)。
+
+**收尾**:eval-h100 上跑单元测试的 CPU 容器 `sglang-omni-jaxan-1` 已删、map 行已清
+(容器数 0 == map 条目数 0);`actions-runner-h100` 的 `omni-autoscaler.yaml`
+`max_runners` 维持 3,我的备份文件比对一致后已删,四个 runner 安装回到我动手前的状态
+(h100=3,-2/-3/-4=4)。
