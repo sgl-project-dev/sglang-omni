@@ -54,6 +54,7 @@ class AuKPipelineConfig(PipelineConfig):
                 max_seconds=C.MAX_SECONDS,
                 max_batch_size=16,
                 max_batch_wait_ms=10,
+                precast_dit_compute_weights=False,
             ),
             gpu=0,
             next=DECODE_STAGE,

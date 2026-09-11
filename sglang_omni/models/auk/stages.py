@@ -64,8 +64,14 @@ def _load_vae(checkpoint: str, device: str):
     return vae.to(device=device).eval().requires_grad_(False)
 
 
+def _precast_dit_compute_weights(dit, dtype):
+    for module in dit.modules():
+        if isinstance(module, (torch.nn.Linear, torch.nn.Conv1d)):
+            module.to(dtype=dtype)
+
+
 @lru_cache(maxsize=None)
-def _load_flow(checkpoint: str, device: str):
+def _load_flow(checkpoint: str, device: str, compute_weight_dtype: str | None = None):
     config = make_runtime_config(checkpoint)
     with safe_open(str(resolve_weight_file(checkpoint)), framework="pt") as weights:
         key = next(key for key in weights.keys() if key.endswith("layer_weights"))
@@ -74,7 +80,12 @@ def _load_flow(checkpoint: str, device: str):
     dit = AuKDit(**{**dit_config.__dict__, "latent_dim": config.latent_dim})
     flow = AuKFlowMatching(dit, num_llm_layers=num_llm_layers)
     load_dit_weights(flow, checkpoint)
-    return flow.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
+    flow = flow.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
+    if compute_weight_dtype is not None:
+        _precast_dit_compute_weights(
+            flow.transformer, getattr(torch, compute_weight_dtype)
+        )
+    return flow
 
 
 def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
@@ -216,11 +227,16 @@ def create_auk_engine_executor(
     max_seconds: float = C.MAX_SECONDS,
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
+    precast_dit_compute_weights: bool = False,
 ) -> SimpleScheduler:
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
     device = torch.device(resolve_device_spec(device, gpu_id))
-    flow = _load_flow(checkpoint, str(device))
+    flow = _load_flow(
+        checkpoint,
+        str(device),
+        "bfloat16" if precast_dit_compute_weights else None,
+    )
     sampling = dict(
         steps=C.FLASH_NFE if config.is_flash else nfe,
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
