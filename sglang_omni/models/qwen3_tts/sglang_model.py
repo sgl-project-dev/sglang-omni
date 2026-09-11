@@ -1704,9 +1704,8 @@ class Qwen3TTSTalker(Qwen3TTSPromptBuilderMixin, nn.Module):
     ) -> torch.Tensor:
         hidden_size = token_embeds.shape[-1]
         positions = self._predictor_position_rows[cache_len, :batch_size]
-        # note(ratish): the add of each mlp output rides in the norm that
-        # follows it, sglang's fused add and norm, which every backend runs
-        # on 2D rows and may apply in place on both operands.
+        # note(ratish): 2D rows for the fused add and norm, which every
+        # backend's kernel expects and which writes both operands in place.
         residual = token_embeds
         mlp_out: torch.Tensor | None = None
         for layer_idx, layer in enumerate(self.code_predictor.model.layers):
