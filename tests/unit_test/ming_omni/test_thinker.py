@@ -269,6 +269,33 @@ def test_ming_preprocessor_uses_config_image_patch_token_id(monkeypatch) -> None
     assert processor._image_patch_id == 222
 
 
+def test_ming_video_preprocessor_uses_transformers_5_contract(monkeypatch) -> None:
+    from transformers import Qwen2VLVideoProcessor
+
+    from sglang_omni.preprocessing.video import load_video_path
+
+    module = _load_preprocessor_with_fake_deps(monkeypatch)
+    processor = module.MingPreprocessor.__new__(module.MingPreprocessor)
+    processor._vision_config = SimpleNamespace(
+        patch_size=16,
+        temporal_patch_size=2,
+        spatial_merge_size=2,
+    )
+    processor._video_processor = None
+    video, _ = load_video_path(
+        Path("tests/data/draw.mp4"),
+        fps=2.0,
+        max_frames=8,
+    )
+
+    pixel_values, grid_thw, token_counts = processor._process_videos([video])
+
+    assert isinstance(processor._video_processor, Qwen2VLVideoProcessor)
+    assert grid_thw.tolist() == [[4, 36, 64]]
+    assert pixel_values.shape == (9216, 1536)
+    assert token_counts == [2304]
+
+
 def test_ming_config_and_stages_do_not_import_ming_runner() -> None:
     runner_module = "sglang_omni.model_runner.ming_thinker_model_runner"
     sys.modules.pop(runner_module, None)
