@@ -62,8 +62,8 @@ def validate_endpoint_url(base_url: str) -> None:
         valid = False
     if not valid:
         raise ValueError(
-            "base_url must be an HTTP(S) URL without userinfo, query or fragment; "
-            "use api_key_env for judge credentials"
+            "base_url must be an HTTP(S) URL with a valid host and port, "
+            "without userinfo, query or fragment"
         )
 
 
@@ -251,6 +251,7 @@ async def request_chat_completion(
                                 return finish(
                                     RequestResult(
                                         request_id=request_id,
+                                        text=text,
                                         latency_s=time.perf_counter() - request_started,
                                         error=f"invalid token usage: {exc}",
                                     )

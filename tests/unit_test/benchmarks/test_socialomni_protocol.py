@@ -336,8 +336,10 @@ def test_endpoint_credentials_are_rejected_without_echoing_url(tmp_path, url):
     with pytest.raises(ValueError, match="base_url") as caught:
         load_judge_config(path)
     assert "secret" not in str(caught.value)
-    with pytest.raises(ValueError, match="base_url"):
+    assert "api_key_env" not in str(caught.value)
+    with pytest.raises(ValueError, match="base_url") as model_error:
         _config(base_url=url)
+    assert str(model_error.value) == str(caught.value)
 
 
 @pytest.mark.parametrize("rate", [0, -1, float("nan"), -float("inf")])
@@ -897,21 +899,28 @@ def test_cli_checks_server_root_and_preserves_completion_url(
 )
 async def test_invalid_usage_becomes_a_request_failure(field, invalid_count) -> None:
     usage = {field: invalid_count}
+    attempts = []
     body = json.dumps({"choices": [{"message": {"content": "YES"}}], "usage": usage})
     result = await request_chat_completion(
         _Session(_Response(200, body)),
         api_url="http://example/v1/chat/completions",
         payload={},
         request_id="one",
+        attempt_records=attempts,
     )
     assert not result.is_success
     assert result.request_id == "one"
     assert "invalid token usage" in result.error
+    assert result.text == "YES"
+    assert len(attempts) == 1
+    assert attempts[0]["text"] == "YES"
+    assert attempts[0]["is_success"] is False
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("usage", [None, [], [1], "", "invalid", 0, False])
 async def test_non_object_usage_is_a_request_failure(usage) -> None:
+    attempts = []
     result = await request_chat_completion(
         _Session(
             _Response(
@@ -927,9 +936,14 @@ async def test_non_object_usage_is_a_request_failure(usage) -> None:
         api_url="http://example/v1/chat/completions",
         payload={},
         request_id="usage",
+        attempt_records=attempts,
     )
     assert not result.is_success
     assert "usage must be an object" in result.error
+    assert result.text == "A"
+    assert len(attempts) == 1
+    assert attempts[0]["text"] == "A"
+    assert attempts[0]["is_success"] is False
 
 
 @pytest.mark.parametrize("api_key_env", ["", " ", " KEY", "KEY ", 1])
