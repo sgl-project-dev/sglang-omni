@@ -74,7 +74,8 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
 
 
 @pytest.mark.asyncio
-async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize("retry", [None, "score", "http"])
+async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch, retry) -> None:
     samples = [replace(_level2(0), gold_when="YES"), _level2(1)]
     seen = []
     runner_configs = []
@@ -91,6 +92,14 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
         seen.append(payload)
         limit = payload["max_tokens"]
         text = {32: "Answer: A", 8: "Answer: B", 256: "candidate", 8192: "75"}[limit]
+        if (
+            retry
+            and payload["model"] == "gpt-4o"
+            and sum(item["model"] == "gpt-4o" for item in seen) == 1
+        ):
+            if retry == "http":
+                return web.Response(status=503, text="temporarily unavailable")
+            text = "not a score"
         if limit != JUDGE_MAX_TOKENS:
             assert payload["use_audio_in_video"] is True
             assert payload["videos"]
@@ -162,9 +171,17 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
         result["provenance"]["declared_server_config"]["judge_request_rate"] == 10000.0
     )
     assert not result["failures"]
-    assert len(seen) == 7
+    assert len(seen) == 7 + int(bool(retry))
+    speed = result["summary"]["level2"]["speed"]["judges"]
+    assert speed["total_requests"] == 3 + int(bool(retry))
+    assert speed["failed_requests"] == int(retry == "http")
     assert len(result["per_sample"]["level1"]) == 1
     positive, negative = result["per_sample"]["level2"]
+    attempts = positive["judge_results"]["gpt-4o"]["attempts"]
+    assert [attempt["text"] for attempt in attempts] == (
+        ["", "75"] if retry == "http" else ["not a score", "75"] if retry else ["75"]
+    )
+    assert len({attempt["request_id"] for attempt in attempts}) == len(attempts)
     assert positive["predicted_when"] == "NO"
     assert positive["gold_response"] == "candidate"
     assert positive["gold_judge_scores"] == dict.fromkeys(
@@ -591,13 +608,15 @@ async def test_judge_runners_limit_each_endpoint_without_warmup(monkeypatch) -> 
     calls = []
 
     async def fake_request(*_args, request_id, **_kwargs):
-        name = request_id.rsplit(":", 1)[-1]
+        name = request_id.split(":judge:", 1)[1].split(":attempt:", 1)[0]
         active[name] += 1
         maximum[name] = max(maximum[name], active[name])
         calls.append(request_id)
         await asyncio.sleep(0.01)
         active[name] -= 1
-        return RequestResult(request_id=request_id, text="75", is_success=True)
+        result = RequestResult(request_id=request_id, text="75", is_success=True)
+        _kwargs["attempt_records"].append(asdict(result))
+        return result
 
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
@@ -953,9 +972,11 @@ async def test_judges_preserve_raw_results(monkeypatch) -> None:
     ]
 
     async def fake_request(*_args, request_id: str, **_kwargs):
-        return RequestResult(
+        result = RequestResult(
             request_id=request_id, text="75", is_success=True, latency_s=0.1
         )
+        _kwargs["attempt_records"].append(asdict(result))
+        return result
 
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
@@ -966,6 +987,7 @@ async def test_judges_preserve_raw_results(monkeypatch) -> None:
     result = record["judge_results"]["gpt-4o"]
     assert set(result) == {
         "request",
+        "attempts",
         "score",
         "raw_response",
         "is_success",
@@ -999,12 +1021,14 @@ async def test_judges_preserve_failure_phase_and_error(
     async def fake_request(*_args, request_id: str, **_kwargs):
         nonlocal calls
         calls += 1
-        return RequestResult(
+        result = RequestResult(
             request_id=request_id,
             text="" if request_failed else "Score: 80",
             is_success=not request_failed,
             error="connection failed" if request_failed else None,
         )
+        _kwargs["attempt_records"].append(asdict(result))
+        return result
 
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
@@ -1022,6 +1046,8 @@ async def test_judges_preserve_failure_phase_and_error(
     assert result["score"] is None
     assert result["raw_response"] == ("" if request_failed else "Score: 80")
     assert result["is_success"] is False
+    assert len(result["attempts"]) == calls
+    assert result["attempts"][-1]["text"] == result["raw_response"]
     if request_failed:
         assert result["error"] == "connection failed"
         assert calls == 1
@@ -1050,7 +1076,7 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
 
     async def fake_request(*_args, request_id: str, **_kwargs):
         clock[0] += 0.1
-        return RequestResult(
+        result = RequestResult(
             request_id=request_id,
             text=next(responses),
             is_success=True,
@@ -1059,6 +1085,8 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
             prompt_tokens=2,
             completion_tokens=1,
         )
+        _kwargs["attempt_records"].append(asdict(result))
+        return result
 
     async def no_sleep(_seconds: float) -> None:
         clock[0] += _seconds
@@ -1075,6 +1103,11 @@ async def test_judge_parse_retry_stops_after_valid_score(monkeypatch) -> None:
     assert results[0].tok_per_s == pytest.approx(10)
     assert results[0].prompt_tokens == 4
     assert results[0].completion_tokens == 2
+    attempts = record["judge_results"]["gpt-4o"]["attempts"]
+    assert [attempt["text"] for attempt in attempts] == ["not a score", "75"]
+    assert [attempt["completion_tokens"] for attempt in attempts] == [1, 1]
+    assert [attempt["engine_time_s"] for attempt in attempts] == [0.1, 0.1]
+    assert len({attempt["request_id"] for attempt in attempts}) == 2
 
 
 @pytest.mark.asyncio

@@ -383,8 +383,15 @@ identity; `--model` remains the serving name. Prefix preparation failures stay
 in per-sample results but are excluded from model request speed statistics.
 `--launch-command` records the server command without executing it. Proxy
 handling is recorded as `trust_env: true`; proxy URLs and credentials are not
-copied into the result. Each judge result also retains the full shared request
-record used for speed aggregation under `request`.
+copied into the result. Each judge result retains the full shared request
+record under `request`.
+For judges, `request` aggregates one scoring operation, while `attempts` retains
+each completion request, including network and score-format retries, with its
+own ID, response, error, timing and token counts. Judge speed statistics count
+these individual attempts. A successful completion with an invalid score remains
+a successful request in speed statistics; score validity is reported separately.
+Judge request rates schedule scoring operations, with retries inside each operation;
+provenance records this scope as `logical_scores`.
 
 The public dataset downloader pins Hugging Face revision
 `3b76009b45090eaa54007454c93a831f3cc8e1e6`.

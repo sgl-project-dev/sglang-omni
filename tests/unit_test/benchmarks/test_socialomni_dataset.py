@@ -364,6 +364,38 @@ async def test_cancel_prefix_stops_process_and_removes_temporary(
 
 
 @pytest.mark.asyncio
+async def test_prefix_rename_failure_removes_temporary(tmp_path, monkeypatch):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    retained = cache / "existing.mp4"
+    retained.write_bytes(b"keep")
+
+    class Encoder:
+        returncode = 0
+
+        async def communicate(self):
+            return b"", b""
+
+    async def encode(*command, **kwargs):
+        Path(command[-1]).write_bytes(b"encoded")
+        return Encoder()
+
+    def fail_replace(path, output):
+        assert path.is_file()
+        raise PermissionError("rename denied")
+
+    monkeypatch.setattr(socialomni, "resolve_ffmpeg_executable", lambda: "ffmpeg")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", encode)
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    with pytest.raises(PermissionError, match="rename denied"):
+        await create_video_prefix(source, 1, cache)
+    assert list(cache.iterdir()) == [retained]
+    assert retained.read_bytes() == b"keep"
+
+
+@pytest.mark.asyncio
 async def test_prefix_media_ends_at_query_time(tmp_path: Path, monkeypatch) -> None:
     ffmpeg = resolve_ffmpeg_executable()
     if not ffmpeg:

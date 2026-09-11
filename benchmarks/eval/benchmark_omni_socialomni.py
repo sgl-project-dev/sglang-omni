@@ -139,6 +139,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "server_timeout": config.server_timeout,
             "request_rate": recorded_rate,
             "judge_request_rate": recorded_rate,
+            "judge_request_rate_scope": "logical_scores",
             "temperature": 0.0,
             "use_audio_in_video": True,
             "trust_env": True,
@@ -247,6 +248,12 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 disable_tqdm=config.disable_tqdm,
             )
             judge_wall_s = time.perf_counter() - judge_started
+            judge_requests = [
+                RequestResult(**attempt)
+                for record in records
+                for judge_result in record["judge_results"].values()
+                for attempt in judge_result["attempts"]
+            ]
             output["failures"].extend(judge_failures)
         for record in records:
             if record["when_success"] and not record["predicted_when"]:

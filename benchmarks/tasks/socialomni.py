@@ -9,7 +9,7 @@ import os
 import re
 import time
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -171,11 +171,27 @@ async def request_chat_completion(
     request_id: str,
     api_key_env: str | None = None,
     max_attempts: int = 3,
+    attempt_records: list[dict[str, Any]] | None = None,
 ) -> RequestResult:
     """Send a chat completion, retrying transient errors up to max_attempts."""
     request_started = time.perf_counter()
     last = RequestResult(request_id=request_id, error="not attempted")
+
+    def finish(result: RequestResult) -> RequestResult:
+        if attempt_records is not None:
+            elapsed = time.perf_counter() - attempt_started
+            physical = replace(
+                result,
+                request_id=f"{request_id}:http:{attempt + 1}",
+                latency_s=elapsed,
+                engine_time_s=elapsed if result.is_success else 0.0,
+                tok_per_s=result.completion_tokens / elapsed if elapsed else 0.0,
+            )
+            attempt_records.append(asdict(physical))
+        return result
+
     for attempt in range(max_attempts):
+        attempt_started = time.perf_counter()
         try:
             async with session.post(
                 api_url, json=payload, headers=_headers(api_key_env)
@@ -213,10 +229,12 @@ async def request_chat_completion(
                             try:
                                 text = _response_text(body)
                             except ValueError as exc:
-                                return RequestResult(
-                                    request_id=request_id,
-                                    latency_s=time.perf_counter() - request_started,
-                                    error=f"invalid completion response: {exc}",
+                                return finish(
+                                    RequestResult(
+                                        request_id=request_id,
+                                        latency_s=time.perf_counter() - request_started,
+                                        error=f"invalid completion response: {exc}",
+                                    )
                                 )
                             usage = body.get("usage", {})
                             try:
@@ -230,29 +248,35 @@ async def request_chat_completion(
                                             "token counts must be non-negative integers"
                                         )
                             except (TypeError, ValueError, OverflowError) as exc:
-                                return RequestResult(
-                                    request_id=request_id,
-                                    latency_s=time.perf_counter() - request_started,
-                                    error=f"invalid token usage: {exc}",
+                                return finish(
+                                    RequestResult(
+                                        request_id=request_id,
+                                        latency_s=time.perf_counter() - request_started,
+                                        error=f"invalid token usage: {exc}",
+                                    )
                                 )
                             elapsed = time.perf_counter() - request_started
-                            return RequestResult(
-                                request_id=request_id,
-                                text=text,
-                                is_success=True,
-                                latency_s=elapsed,
-                                engine_time_s=elapsed,
-                                tok_per_s=(
-                                    completion_tokens / elapsed if elapsed else 0.0
-                                ),
-                                prompt_tokens=prompt_tokens,
-                                completion_tokens=completion_tokens,
+                            return finish(
+                                RequestResult(
+                                    request_id=request_id,
+                                    text=text,
+                                    is_success=True,
+                                    latency_s=elapsed,
+                                    engine_time_s=elapsed,
+                                    tok_per_s=(
+                                        completion_tokens / elapsed if elapsed else 0.0
+                                    ),
+                                    prompt_tokens=prompt_tokens,
+                                    completion_tokens=completion_tokens,
+                                )
                             )
         except RuntimeError as exc:
-            return RequestResult(
-                request_id=request_id,
-                latency_s=time.perf_counter() - request_started,
-                error=str(exc),
+            return finish(
+                RequestResult(
+                    request_id=request_id,
+                    latency_s=time.perf_counter() - request_started,
+                    error=str(exc),
+                )
             )
         except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
             last = RequestResult(
@@ -261,6 +285,7 @@ async def request_chat_completion(
                 error=f"{type(exc).__name__}: {exc}",
             )
             retry = True
+        finish(last)
         if not retry or attempt + 1 == max_attempts:
             return last
         await asyncio.sleep(2**attempt)
@@ -505,7 +530,7 @@ async def run_judges(
     request_rate: float = float("inf"),
     disable_tqdm: bool = False,
 ) -> tuple[list[RequestResult], list[dict[str, str]]]:
-    """Score responses with each judge's configured concurrency limit."""
+    """Return logical scores and retain each physical request in the records."""
     by_id = {sample.sample_id: sample for sample in samples}
     eligible = [
         record
@@ -514,6 +539,7 @@ async def run_judges(
         and record["gold_response_success"]
         and str(record["gold_response"]).strip()
     ]
+    attempts_by_score: dict[tuple[str, str], list[dict[str, Any]]] = {}
 
     async def run_judge(judge: JudgeSpec) -> list[RequestResult]:
         async def send(
@@ -525,19 +551,24 @@ async def run_judges(
             total_prompt_tokens = 0
             total_completion_tokens = 0
             score = None
+            attempts = attempts_by_score[(str(record["sample_id"]), judge.name)] = []
+            score_id = f"{sample.sample_id}:judge:{judge.name}"
             for attempt in range(JUDGE_PARSE_ATTEMPTS):
+                attempt_start = len(attempts)
                 result = await request_chat_completion(
                     session,
                     api_url=chat_completions_url(judge.base_url),
                     payload=judge_payload(
                         judge, build_judge_prompt(sample, str(record["gold_response"]))
                     ),
-                    request_id=f"{sample.sample_id}:judge:{judge.name}",
+                    request_id=f"{score_id}:attempt:{attempt + 1}",
                     api_key_env=judge.api_key_env,
+                    attempt_records=attempts,
                 )
-                total_engine_time += result.engine_time_s
-                total_prompt_tokens += result.prompt_tokens
-                total_completion_tokens += result.completion_tokens
+                for physical in attempts[attempt_start:]:
+                    total_engine_time += physical["engine_time_s"]
+                    total_prompt_tokens += physical["prompt_tokens"]
+                    total_completion_tokens += physical["completion_tokens"]
                 if not result.is_success:
                     break
                 score = parse_judge_score(result.text)
@@ -545,6 +576,7 @@ async def run_judges(
                     break
                 if attempt + 1 < JUDGE_PARSE_ATTEMPTS:
                     await asyncio.sleep(2**attempt)
+            result = replace(result, request_id=score_id)
             result.latency_s = time.perf_counter() - started
             result.engine_time_s = total_engine_time
             result.tok_per_s = (
@@ -584,6 +616,7 @@ async def run_judges(
             results.append(result)
             record["judge_results"][judge.name] = {
                 "request": asdict(result),
+                "attempts": attempts_by_score[(str(record["sample_id"]), judge.name)],
                 "score": score,
                 "raw_response": result.text,
                 "is_success": result.is_success,

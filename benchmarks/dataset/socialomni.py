@@ -471,5 +471,8 @@ async def create_video_prefix(
             f"ffmpeg prefix generation failed for {source}: "
             f"{stderr.decode(errors='replace')[:2000]}"
         )
-    temporary.replace(output)
+    try:
+        temporary.replace(output)
+    finally:
+        temporary.unlink(missing_ok=True)
     return output
