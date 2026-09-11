@@ -307,3 +307,36 @@ def test_qwen3_omni_talker_stage_keeps_greedy_selection_off_aiter_on_rocm(
 
         assert _stage(config, "talker_ar").env == expected_env
         assert _stage(config, "thinker").env == {}
+
+
+def test_qwen3_omni_xpu_b60_example_config_loads_and_plans() -> None:
+    config_path = _REPO_ROOT / "examples" / "configs" / "qwen3_omni_speech_xpu_b60.yaml"
+
+    manager = ConfigManager.from_file(str(config_path))
+    config = manager.config
+    plan = build_stage_placement_plan(config)
+    topology = build_compiled_process_topology(config)
+
+    assert isinstance(config, Qwen3OmniSpeechPipelineConfig)
+    assert config.name == "qwen3-omni-speech-xpu-b60"
+    assert [group.name for group in topology.groups] == [
+        "preprocessing",
+        "image_encoder",
+        "audio_encoder",
+        "decode",
+        "talker_ar",
+        "code2wav",
+    ]
+
+    thinker = _stage(config, "thinker")
+    assert thinker.tp_size == 8
+    assert thinker.gpu == [0, 1, 2, 3, 4, 5, 6, 7]
+    assert thinker.engine.mem_fraction_static == pytest.approx(0.55)
+    assert _stage(config, "talker_ar").engine.mem_fraction_static == pytest.approx(0.35)
+
+    assert _stage(config, "talker_ar").gpu == 6
+    assert _stage(config, "code2wav").gpu == 7
+    assert _stage(config, "code2wav").gpu_memory_fraction == pytest.approx(0.05)
+    assert plan.stages["thinker"].gpu_ids == tuple(range(8))
+    assert plan.stages["talker_ar"].gpu_ids == (6,)
+    assert plan.stages["code2wav"].gpu_ids == (7,)
