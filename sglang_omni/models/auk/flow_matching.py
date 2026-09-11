@@ -80,6 +80,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        cache_reference_audio_embedding: bool = False,
     ) -> torch.Tensor:
         return self.sample_batch(
             [item],
@@ -87,6 +88,7 @@ class AuKFlowMatching(nn.Module):
             cfg_strength=cfg_strength,
             sway_sampling_coef=sway_sampling_coef,
             t_grid=t_grid,
+            cache_reference_audio_embedding=cache_reference_audio_embedding,
         )[0]
 
     @torch.no_grad()
@@ -98,6 +100,7 @@ class AuKFlowMatching(nn.Module):
         cfg_strength: float,
         sway_sampling_coef: float | None = None,
         t_grid: Sequence[float] | None = None,
+        cache_reference_audio_embedding: bool = False,
     ) -> list[torch.Tensor]:
         device = next(self.parameters()).device
         dim = self.transformer.latent_dim
@@ -181,6 +184,7 @@ class AuKFlowMatching(nn.Module):
                 ref=ref,
                 ref_mask=ref_mask,
                 cache=True,
+                cache_reference_audio_embedding=cache_reference_audio_embedding,
                 audio_positions=audio_positions,
                 joint_positions=joint_positions,
             )

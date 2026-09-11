@@ -216,6 +216,7 @@ def create_auk_engine_executor(
     max_seconds: float = C.MAX_SECONDS,
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
+    cache_reference_audio_embedding: bool = False,
 ) -> SimpleScheduler:
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
@@ -226,6 +227,7 @@ def create_auk_engine_executor(
         cfg_strength=C.FLASH_CFG_STRENGTH if config.is_flash else cfg_strength,
         sway_sampling_coef=None if config.is_flash else sway_sampling_coef,
         t_grid=C.FLASH_T_GRID if config.is_flash else None,
+        cache_reference_audio_embedding=cache_reference_audio_embedding,
     )
     return _scheduler(
         lambda payloads: _sample_batch(
