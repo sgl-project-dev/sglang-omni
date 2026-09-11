@@ -372,58 +372,73 @@ def _with_predictor_layers(talker: Qwen3TTSTalker, num_layers: int) -> Qwen3TTST
     return talker
 
 
-def _predictor_one_token_add_then_norm(
+def _predictor_one_token_out_of_place(
     talker: Qwen3TTSTalker, token_embeds: torch.Tensor, *, cache_len: int
 ) -> torch.Tensor:
-    """The predictor layer stack with every residual add as its own op."""
+    """The predictor layer stack in the residual form on cloned operands.
+
+    Same norm calls as the talker's forward, but every operand the fused add
+    and norm or the o_proj epilogue would overwrite is a fresh clone, so the
+    result carries no aliasing."""
     batch_size, _, hidden_size = token_embeds.shape
-    hidden = token_embeds
     positions = talker._predictor_position_rows[cache_len, :batch_size]
+    residual = token_embeds.clone()
+    mlp_out = None
     for layer_idx, layer in enumerate(talker.code_predictor.model.layers):
-        residual = hidden
-        normed = layer.input_layernorm(hidden.reshape(-1, hidden_size))
+        if mlp_out is None:
+            normed = layer.input_layernorm(residual.reshape(-1, hidden_size).clone())
+        else:
+            normed, residual = layer.input_layernorm(
+                mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+            )
+            residual = residual.reshape(batch_size, 1, hidden_size)
         attn_input = talker._predictor_cached_self_attention(
             layer_idx=layer_idx,
             attn=layer.self_attn,
-            hidden_states=normed.reshape(batch_size, 1, hidden_size),
+            hidden_states=normed.reshape(batch_size, 1, hidden_size).clone(),
             positions=positions,
             batch_size=batch_size,
             cache_len=cache_len,
         )
-        hidden = talker._predictor_o_proj_add_residual(
-            layer.self_attn.o_proj, attn_input, residual
+        residual = talker._predictor_o_proj_add_residual(
+            layer.self_attn.o_proj, attn_input, residual.clone()
         )
-        normed = layer.post_attention_layernorm(hidden.reshape(-1, hidden_size))
-        hidden = hidden + layer.mlp(normed).reshape(batch_size, 1, hidden_size)
-    normed = talker.code_predictor.model.norm(hidden.reshape(-1, hidden_size))
+        normed = layer.post_attention_layernorm(
+            residual.reshape(-1, hidden_size).clone()
+        )
+        mlp_out = layer.mlp(normed)
+    normed, _ = talker.code_predictor.model.norm(
+        mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
+    )
     return normed.reshape(batch_size, 1, hidden_size)
 
 
 @pytest.mark.accelerator
 @pytest.mark.parametrize("num_layers, batch_size", [(1, 1), (3, 2), (3, 16)])
-def test_eager_predictor_fused_residual_norms_match_add_then_norm(
+def test_eager_predictor_in_place_residual_norms_match_the_out_of_place_form(
     num_layers: int, batch_size: int
 ):
     device = torch.device("cuda")
-    fused = _with_predictor_layers(_build_talker(device), num_layers)
-    plain = _with_predictor_layers(_build_talker(device), num_layers)
+    in_place = _with_predictor_layers(_build_talker(device), num_layers)
+    reference = _with_predictor_layers(_build_talker(device), num_layers)
     generator = torch.Generator(device="cpu").manual_seed(num_layers * 100 + batch_size)
     embeds = torch.randn(
         batch_size, 1, HIDDEN, generator=generator, dtype=torch.float32
     ).to(device, DTYPE)
 
     with torch.no_grad():
-        expected = _predictor_one_token_add_then_norm(
-            plain, embeds.clone(), cache_len=0
+        expected = _predictor_one_token_out_of_place(
+            reference, embeds.clone(), cache_len=0
         )
-        actual = fused._predictor_forward_one_token(
+        actual = in_place._predictor_forward_one_token(
             token_embeds=embeds.clone(), batch_size=batch_size, cache_len=0
         )
 
     assert actual.shape == (batch_size, 1, HIDDEN)
     assert actual.dtype == DTYPE
-    torch.testing.assert_close(actual, expected)
-    torch.testing.assert_close(fused._predictor_k_cache, plain._predictor_k_cache)
+    assert torch.equal(actual, expected)
+    assert torch.equal(in_place._predictor_k_cache, reference._predictor_k_cache)
+    assert torch.equal(in_place._predictor_v_cache, reference._predictor_v_cache)
 
 
 @pytest.mark.accelerator
