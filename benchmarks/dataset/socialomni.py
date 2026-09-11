@@ -61,12 +61,13 @@ class SocialOmniLevel2Sample:
 def _level_dir(root: Path, level: str, metadata: str) -> Path:
     candidates = [root / "data" / level, root / level]
     if root.name == level:
-        candidates.insert(0, root)
     for candidate in candidates:
-        if (candidate / metadata).is_file():
+        metadata_path = candidate / metadata
+        if metadata_path.is_file():
             resolved = candidate.resolve()
-            if not resolved.is_relative_to(root):
-                raise ValueError(f"SocialOmni {level} directory escapes dataset root")
+            resolved_metadata = metadata_path.resolve()
+            if not resolved.is_relative_to(root) or not resolved_metadata.is_relative_to(root):
+                raise ValueError(f"SocialOmni {level} metadata escapes dataset root")
             return resolved
     raise FileNotFoundError(
         f"SocialOmni metadata not found: {candidates[0] / metadata}"
