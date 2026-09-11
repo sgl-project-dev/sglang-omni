@@ -77,6 +77,14 @@ def _config(**overrides) -> entrypoint.SocialOmniEvalConfig:
 async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
     samples = [replace(_level2(0), gold_when="YES"), _level2(1)]
     seen = []
+    runner_configs = []
+    original_init = entrypoint.BenchmarkRunner.__init__
+
+    def capture_config(self, config):
+        runner_configs.append(config)
+        original_init(self, config)
+
+    monkeypatch.setattr(entrypoint.BenchmarkRunner, "__init__", capture_config)
 
     async def completion(request):
         payload = await request.json()
@@ -138,6 +146,7 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
                 level="both",
                 base_url=base_url,
                 judge_config=str(config_path),
+                request_rate=10000.0,
                 warmup=0,
                 disable_tqdm=True,
             )
@@ -145,6 +154,13 @@ async def test_complete_protocol_over_http(tmp_path: Path, monkeypatch) -> None:
     finally:
         await server.cleanup()
     assert result["summary"]["status"] == "complete"
+    assert len(runner_configs) == 6
+    assert all(config.request_rate == 10000.0 for config in runner_configs)
+    assert result["config"]["request_rate"] == 10000.0
+    assert result["provenance"]["declared_server_config"]["request_rate"] == 10000.0
+    assert (
+        result["provenance"]["declared_server_config"]["judge_request_rate"] == 10000.0
+    )
     assert not result["failures"]
     assert len(seen) == 7
     assert len(result["per_sample"]["level1"]) == 1
@@ -271,6 +287,76 @@ def test_judge_config_rejects_invalid_concurrency(tmp_path, concurrency) -> None
     )
     with pytest.raises(ValueError, match="max_concurrency"):
         load_judge_config(path)
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:secret@example.com/v1",
+        "https://secret@example.com/v1",
+        "https://example.com/v1?api_key=secret",
+        "https://example.com/v1?token=secret",
+        "https://example.com/v1#secret",
+        "file:///secret",
+    ],
+)
+def test_endpoint_credentials_are_rejected_without_echoing_url(tmp_path, url):
+    path = tmp_path / "judges.json"
+    path.write_text(
+        json.dumps(
+            {
+                "judges": [
+                    {"name": name, "model": name, "base_url": url}
+                    for name in entrypoint.SOCIALOMNI_JUDGE_NAMES
+                ]
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="base_url") as caught:
+        load_judge_config(path)
+    assert "secret" not in str(caught.value)
+    with pytest.raises(ValueError, match="base_url"):
+        _config(base_url=url)
+
+
+@pytest.mark.parametrize("rate", [0, -1, float("nan"), -float("inf")])
+def test_invalid_request_rate_is_rejected(rate):
+    with pytest.raises(ValueError, match="request_rate"):
+        _config(request_rate=rate)
+
+
+def test_service_timeout_is_independent_from_request_timeout(monkeypatch):
+    observed = []
+
+    def wait(url, timeout):
+        observed.append((url, timeout))
+        raise RuntimeError("stop before evaluation")
+
+    monkeypatch.setattr(entrypoint, "wait_for_service", wait)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "socialomni",
+            "--dataset-root",
+            ".",
+            "--model",
+            "test",
+            "--timeout-s",
+            "2",
+            "--server-timeout",
+            "600",
+            "--request-rate",
+            "3",
+        ],
+    )
+    parsed = entrypoint.SocialOmniEvalConfig(**vars(entrypoint._parser().parse_args()))
+    assert parsed.timeout_s == 2
+    assert parsed.request_rate == 3
+    assert _config(timeout_s=2).server_timeout == 300
+    with pytest.raises(RuntimeError, match="stop before evaluation"):
+        entrypoint.main()
+    assert observed == [("http://localhost:8000", 600)]
 
 
 def test_judge_config_has_only_fixed_public_fields(tmp_path: Path, monkeypatch) -> None:

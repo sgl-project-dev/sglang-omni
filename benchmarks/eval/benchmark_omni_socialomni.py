@@ -42,6 +42,7 @@ from benchmarks.tasks.socialomni import (
     make_level1_send_fn,
     run_judges,
     run_level2_model,
+    validate_endpoint_url,
     validate_judge_credentials,
 )
 
@@ -63,6 +64,15 @@ class SocialOmniEvalConfig:
     disable_tqdm: bool = False
     model_revision: str | None = None
     launch_command: str | None = None
+    server_timeout: int = 300
+    request_rate: float = float("inf")
+
+    def __post_init__(self) -> None:
+        validate_endpoint_url(self.base_url)
+        if not self.request_rate > 0:
+            raise ValueError("request_rate must be positive")
+        if self.server_timeout <= 0:
+            raise ValueError("server_timeout must be positive")
 
 
 def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None:
@@ -123,6 +133,9 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "warmup_per_nonempty_model_phase": warmup,
             "judge_warmup": 0,
             "timeout_s": config.timeout_s,
+            "server_timeout": config.server_timeout,
+            "request_rate": config.request_rate,
+            "judge_request_rate": config.request_rate,
             "temperature": 0.0,
             "use_audio_in_video": True,
             "trust_env": True,
@@ -162,6 +175,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
         runner = BenchmarkRunner(
             RunConfig(
                 max_concurrency=config.max_concurrency,
+                request_rate=config.request_rate,
                 timeout_s=config.timeout_s,
                 warmup=config.warmup,
                 disable_tqdm=config.disable_tqdm,
@@ -205,6 +219,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             prefix_cache_dir=config.prefix_cache_dir,
             max_concurrency=config.max_concurrency,
             timeout_s=config.timeout_s,
+            request_rate=config.request_rate,
             warmup=config.warmup,
             disable_tqdm=config.disable_tqdm,
         )
@@ -224,6 +239,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
                 records,
                 judges,
                 timeout_s=config.timeout_s,
+                request_rate=config.request_rate,
                 disable_tqdm=config.disable_tqdm,
             )
             judge_wall_s = time.perf_counter() - judge_started
@@ -331,6 +347,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-samples", type=int)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--timeout-s", type=int, default=300)
+    parser.add_argument("--server-timeout", type=int, default=300)
+    parser.add_argument("--request-rate", type=float, default=float("inf"))
     parser.add_argument("--warmup", type=int, default=None)
     parser.add_argument("--disable-tqdm", action="store_true")
     parser.add_argument("--output-dir", default="benchmarks/results/socialomni")
@@ -345,7 +363,7 @@ def main() -> None:
         if server_url.endswith(suffix):
             server_url = server_url[: -len(suffix)]
             break
-    wait_for_service(server_url, timeout=config.timeout_s)
+    wait_for_service(server_url, timeout=config.server_timeout)
     output = asyncio.run(run_socialomni(config))
     commit = output["provenance"]["repository"]["commit"] or "unknown"
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())

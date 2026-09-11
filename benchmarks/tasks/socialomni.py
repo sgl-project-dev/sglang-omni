@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 
@@ -45,6 +46,26 @@ class JudgeSpec:
     max_concurrency: int
 
 
+def validate_endpoint_url(base_url: str) -> None:
+    try:
+        parts = urlsplit(base_url)
+        valid = (
+            parts.scheme in ("http", "https")
+            and bool(parts.hostname)
+            and parts.username is None
+            and parts.password is None
+            and not parts.query
+            and not parts.fragment
+        )
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ValueError(
+            "base_url must be an HTTP(S) URL without userinfo, query or fragment; "
+            "use api_key_env for judge credentials"
+        )
+
+
 def chat_completions_url(base_url: str) -> str:
     base = base_url.rstrip("/")
     if base.endswith("/chat/completions"):
@@ -70,6 +91,7 @@ def load_judge_config(path: str | Path) -> list[JudgeSpec]:
             if not isinstance(row.get(field), str) or not row[field].strip():
                 raise ValueError(f"judges[{index}].{field} must be non-empty")
         concurrency = row.get("max_concurrency", 1)
+        validate_endpoint_url(row["base_url"].strip())
         if type(concurrency) is not int or concurrency < 1:
             raise ValueError(f"judges[{index}].max_concurrency must be >= 1")
         api_key_env = row.get("api_key_env")
@@ -379,6 +401,7 @@ async def run_level2_model(
     prefix_cache_dir: str | Path,
     max_concurrency: int,
     timeout_s: int,
+    request_rate: float = float("inf"),
     warmup: int | None = None,
     disable_tqdm: bool = False,
 ) -> tuple[list[dict[str, Any]], list[RequestResult], float]:
@@ -447,6 +470,7 @@ async def run_level2_model(
         runner = BenchmarkRunner(
             RunConfig(
                 max_concurrency=max_concurrency,
+                request_rate=request_rate,
                 timeout_s=timeout_s,
                 warmup=warmup,
                 disable_tqdm=disable_tqdm,
@@ -477,6 +501,7 @@ async def run_judges(
     judges: Sequence[JudgeSpec],
     *,
     timeout_s: int,
+    request_rate: float = float("inf"),
     disable_tqdm: bool = False,
 ) -> tuple[list[RequestResult], list[dict[str, str]]]:
     """Score responses with each judge's configured concurrency limit."""
@@ -540,6 +565,7 @@ async def run_judges(
         runner = BenchmarkRunner(
             RunConfig(
                 max_concurrency=judge.max_concurrency,
+                request_rate=request_rate,
                 timeout_s=timeout_s,
                 warmup=0,
                 disable_tqdm=disable_tqdm,

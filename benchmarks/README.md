@@ -444,6 +444,16 @@ paid scoring requests. Model wall time sums the two measured runner phases
 and excludes media preparation, warmup, and judge scoring.
 Prefix preparation failures stay in the sample records and fixed denominator.
 
+`--server-timeout` controls startup readiness independently of the per-request
+`--timeout-s`; both default to 300 seconds. `--request-rate` sets the shared
+runner's request rate for each model phase and each judge independently. Its
+default `inf` sends a new request whenever a concurrency slot is available;
+a positive finite value sets the arrival rate in requests per second. The
+effective rate is saved in config and provenance. Model and judge endpoint
+URLs must not contain userinfo, query parameters or fragments. Configure judge
+authentication through `api_key_env` instead; URL credentials are rejected
+before evaluation results are written.
+
 Dataset preparation defaults to `benchmarks/cache/socialomni/`; `--local-dir`
 overrides it. Prefixes are cached in `benchmarks/cache/socialomni-prefixes/`;
 result JSON files go to `benchmarks/results/socialomni/`. All three directories
