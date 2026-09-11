@@ -219,7 +219,8 @@ async def test_video_loads_cancel_and_await_siblings(cancel):
 
 
 @pytest.mark.asyncio
-async def test_cancelled_decoder_is_drained_before_returning():
+@pytest.mark.parametrize("through_video_loader", [False, True])
+async def test_cancelled_decoder_is_drained_before_returning(through_video_loader):
     """A cancelled awaiter must not leave its decoder thread using request resources."""
     started = asyncio.Event()
     released = threading.Event()
@@ -231,7 +232,17 @@ async def test_cancelled_decoder_is_drained_before_returning():
         released.wait(timeout=5)
         finished.set()
 
-    task = asyncio.create_task(run_media_io(decode))
+    class Connector:
+        async def fetch_video_async(self, url, **kwargs):
+            return await run_media_io(decode)
+
+    task = asyncio.create_task(
+        video.ensure_video_list_async(
+            ["https://example/video.mp4"], resource_connector=Connector()
+        )
+        if through_video_loader
+        else run_media_io(decode)
+    )
     try:
         await asyncio.wait_for(started.wait(), timeout=5)
         task.cancel()

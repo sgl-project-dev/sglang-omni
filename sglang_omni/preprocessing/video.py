@@ -19,7 +19,7 @@ from torchvision.transforms import functional as tv_f
 
 from .base import MediaIO, _is_url
 from .cache_key import compute_media_cache_key
-from .resource_connector import run_media_io
+from .resource_connector import await_media_cleanup, run_media_io
 
 logger = logging.getLogger(__name__)
 
@@ -251,7 +251,9 @@ async def ensure_video_list_async(
             for task in coroutines:
                 if not task.done():
                     task.cancel()
-            await asyncio.gather(*coroutines, return_exceptions=True)
+            await await_media_cleanup(
+                asyncio.gather(*coroutines, return_exceptions=True)
+            )
         # Fill in the results at the correct indices
         for url_idx, (video, sample_fps, audio) in zip(url_indices, results):
             normalized[url_idx] = video

@@ -2104,6 +2104,79 @@ def test_preprocessing_stops_video_siblings_before_closing_connection(
     asyncio.run(run())
 
 
+def test_preprocessing_repeated_cancellation_drains_and_closes(
+    decoded_audio_preprocessor, monkeypatch
+):
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing.resource_connector import (
+        MultiModalResourceConnector,
+        run_media_io,
+    )
+    from sglang_omni.preprocessing.video import ensure_video_list_async
+
+    pre, _, _ = decoded_audio_preprocessor
+    monkeypatch.setattr(mod, "ensure_video_list_async", ensure_video_list_async)
+
+    async def run():
+        started = asyncio.Event()
+        release_decoder = threading.Event()
+        decoder_finished = threading.Event()
+        closing = asyncio.Event()
+        release_close = asyncio.Event()
+        closed = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def decode():
+            loop.call_soon_threadsafe(started.set)
+            release_decoder.wait(timeout=10)
+            decoder_finished.set()
+
+        async def fetch_video(connector, url, **kwargs):
+            return await run_media_io(decode)
+
+        async def close(connection):
+            assert decoder_finished.is_set()
+            closing.set()
+            await release_close.wait()
+            closed.set()
+
+        monkeypatch.setattr(
+            MultiModalResourceConnector, "fetch_video_async", fetch_video
+        )
+        monkeypatch.setattr(mod.ResourceHTTPConnection, "close", close)
+        task = asyncio.create_task(
+            pre(
+                make_qwen_payload(
+                    inputs={"messages": [], "videos": ["https://example/video.mp4"]}
+                )
+            )
+        )
+        try:
+            await asyncio.wait_for(started.wait(), timeout=5)
+            for _ in range(3):
+                task.cancel()
+                await asyncio.sleep(0)
+            assert not task.done()
+            assert not closing.is_set()
+            release_decoder.set()
+            await asyncio.wait_for(closing.wait(), timeout=5)
+            for _ in range(3):
+                task.cancel()
+                await asyncio.sleep(0)
+            assert not task.done()
+            assert not closed.is_set()
+            release_close.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=5)
+            assert closed.is_set()
+        finally:
+            release_decoder.set()
+            release_close.set()
+            await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(run())
+
+
 def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from io import BytesIO

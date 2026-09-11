@@ -874,7 +874,7 @@ that happened to contain an older version of the test.
   legacy input compatibility.
   `test_video.py` covers embedded-audio decoding, resampling, downmixing,
   absent/empty audio tracks, corrupt-media versus server errors, sibling-task
-  cancellation, and decoder-thread cleanup. Its small
+  cancellation, and decoder-thread cleanup under repeated cancellation. Its small
   video fixture uses the encoder provided by `imageio_ffmpeg` with a timeout.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived

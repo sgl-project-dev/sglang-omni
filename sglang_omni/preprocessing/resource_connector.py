@@ -11,7 +11,7 @@ import socket
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
@@ -28,6 +28,21 @@ global_thread_pool = ThreadPoolExecutor(max_workers=8)
 atexit.register(global_thread_pool.shutdown)
 
 
+async def await_media_cleanup(awaitable: Awaitable[_M]) -> _M:
+    """Finish cleanup before propagating cancellation of its caller."""
+    cleanup = asyncio.ensure_future(awaitable)
+    cancellation = None
+    while not cleanup.done():
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    result = cleanup.result()
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
 async def run_media_io(func: Callable[..., _M], *args: Any) -> _M:
     """Wait for decoder threads to finish even when the request is cancelled."""
     future = asyncio.get_running_loop().run_in_executor(global_thread_pool, func, *args)
@@ -35,12 +50,7 @@ async def run_media_io(func: Callable[..., _M], *args: Any) -> _M:
         return await asyncio.shield(future)
     except asyncio.CancelledError:
         # Running threads cannot be cancelled; drain them before closing the request.
-        cleanup = asyncio.gather(future, return_exceptions=True)
-        while not cleanup.done():
-            try:
-                await asyncio.shield(cleanup)
-            except asyncio.CancelledError:
-                continue
+        await await_media_cleanup(asyncio.gather(future, return_exceptions=True))
         raise
 
 

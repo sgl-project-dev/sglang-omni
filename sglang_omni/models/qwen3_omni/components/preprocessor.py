@@ -35,6 +35,7 @@ from sglang_omni.preprocessing import (
 from sglang_omni.preprocessing.resource_connector import (
     MultiModalResourceConnector,
     ResourceHTTPConnection,
+    await_media_cleanup,
 )
 from sglang_omni.profiler.event_recorder import emit as _emit_event
 from sglang_omni.proto import StagePayload
@@ -560,14 +561,20 @@ class Qwen3OmniPreprocessor:
                 ),
             ]
             tasks = [asyncio.create_task(loader) for loader in loaders]
-            try:
-                images, videos_result, audios_result = await asyncio.gather(*tasks)
-            finally:
+
+            async def cleanup():
                 for task in tasks:
                     if not task.done():
                         task.cancel()
-                await asyncio.gather(*tasks, return_exceptions=True)
-                await connection.close()
+                try:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                finally:
+                    await connection.close()
+
+            try:
+                images, videos_result, audios_result = await asyncio.gather(*tasks)
+            finally:
+                await await_media_cleanup(cleanup())
             videos, sampled_video_fps, extracted_audio_from_video = videos_result
 
             audios, audio_from_video = _merge_extracted_video_audio(
