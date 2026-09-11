@@ -32,7 +32,7 @@ from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio import load_audio
 from sglang_omni.utils.audio_payload import audio_waveform_payload
-from sglang_omni.utils.device import resolve_device_spec
+from sglang_omni.utils.device import resolve_concrete_device
 
 PERCEPTION_PREFIX = "stt_model.perception."
 SAMPLES_PER_FRAME = 1_280
@@ -71,8 +71,10 @@ def create_preprocessing_executor(model_path: str, **_):
     return SimpleScheduler(preprocess)
 
 
-def create_perception_executor(model_path: str, *, dtype=None, device=None):
-    device = resolve_device_spec(device)
+def create_perception_executor(
+    model_path: str, *, dtype=None, device=None, gpu_id=None
+):
+    device = resolve_concrete_device(device, gpu_id)
     module = AudioPerception(_perception_config(model_path))
     load_module(
         module,
@@ -154,8 +156,8 @@ def create_talker_executor(
     )
 
 
-def create_code2wav_executor(model_path, *, dtype=None, device=None):
-    device = resolve_device_spec(device)
+def create_code2wav_executor(model_path, *, dtype=None, device=None, gpu_id=None):
+    device = resolve_concrete_device(device, gpu_id)
     generation = _speech_generation_config(model_path)
     weights = load_weights_by_prefix(model_path, prefix=("tts_model.audio_codec.",))
     markers = {
