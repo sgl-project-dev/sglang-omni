@@ -54,6 +54,15 @@ on:
     branches: [main]
     types: [opened, labeled, synchronize, reopened, ready_for_review]
   workflow_dispatch:
+    inputs:
+      model_smoke:
+        description: "Also serve each XPU model and check one request (needs a warm Hub cache)"
+        type: boolean
+        default: false
+      model_smoke_selector:
+        description: "pytest -k selector for the model lane (default: the single-card models)"
+        type: string
+        default: "asr or tts"
 
 concurrency:
   group: xpu-ci-${{ github.event.pull_request.number || github.ref }}
@@ -82,6 +91,7 @@ jobs:
             xpu:
               - 'sglang_omni/**'
               - 'tests/unit_test/xpu/**'
+              - 'tests/test_ci/xpu_model/**'
               - 'pyproject_xpu.toml'
               - 'scripts/xpu/**'
               - 'docker/xpu.Dockerfile'
@@ -168,7 +178,11 @@ jobs:
     needs: [check-changes, preflight]
     if: needs.check-changes.outputs.xpu == 'true' && needs.preflight.result == 'success'
     runs-on: [self-hosted, intel-omni-bmg]
-    timeout-minutes: 120
+    # The longest path the steps below allow, not the usual one: a pull that times
+    # out at 30 then falls back to a 90 local build, plus unit 15 and model smoke
+    # 90, is 225 before cleanup, and only the model lane's label reaches the last
+    # of those. A warm runner finishes in about ten minutes.
+    timeout-minutes: 240
     env:
       IMAGE_TAG: sglang-omni-xpu-ci:${{ github.event.pull_request.number || github.run_id }}-${{ needs.preflight.outputs.exact_sha }}
       CONTAINER_NAME: ci_omni_xpu_${{ github.event.pull_request.number || github.run_id }}_${{ github.run_attempt }}
@@ -228,6 +242,13 @@ jobs:
         run: |
           set -euxo pipefail
           docker rm -f "${CONTAINER_NAME}" 2>/dev/null || true
+          # A cache, not a mirror: a checkpoint the runner never pulled leaves
+          # the model tests skipped rather than downloading inside a CI job. Only
+          # the snapshot subtree goes in, read-only: this container runs code from
+          # the pull request, the credential the CLI writes sits one level up in
+          # huggingface/token, and a writable cache could be poisoned or deleted
+          # for every later run on this host.
+          mkdir -p "${HOME}/.cache/huggingface/hub"
           docker run -dt \
             --name "${CONTAINER_NAME}" \
             --device /dev/dri \
@@ -236,6 +257,7 @@ jobs:
             --shm-size 32g \
             -v "${GITHUB_WORKSPACE}:/workspace/sglang-omni-pr" \
             -e ZE_AFFINITY_MASK="${ZE_AFFINITY_MASK}" \
+            -v "${HOME}/.cache/huggingface/hub:/root/.cache/huggingface/hub:ro" \
             "${IMAGE_TAG}" \
             sleep infinity
 
@@ -264,8 +286,37 @@ jobs:
           set -euxo pipefail
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
             pip install --no-cache-dir pytest pytest-asyncio
+          # The whole directory: it also holds the per-model contract. No -x, so
+          # several models regressing together are all named in one run.
           docker exec -w /workspace/sglang-omni-pr "${CONTAINER_NAME}" \
-            pytest tests/unit_test/xpu/test_device_layer.py -v -x
+            pytest tests/unit_test/xpu -v
+
+      - name: Run model smoke on the device
+        # Opt-in: real checkpoints on real cards, minutes per model, and nothing
+        # to run unless the runner's Hub cache is warm. Add the run-xpu-model-ci
+        # label or dispatch with model_smoke=true. Nothing downloads, so a cold
+        # runner skips -- read the skip list, not just the exit code.
+        # The inputs context exists only on workflow_dispatch, so the label is
+        # what a pull request has and github.event.inputs is what reads as null
+        # elsewhere.
+        if: >-
+          contains(fromJson(needs.preflight.outputs.labels), 'run-xpu-model-ci')
+          || (github.event_name == 'workflow_dispatch' && inputs.model_smoke)
+        # The default selector is three single-card models, each allowed 900 s to
+        # become ready and up to 600 s for its request, so the budget has to clear
+        # 75 minutes for the lane to fail on its own terms rather than be cut off.
+        timeout-minutes: 90
+        shell: bash
+        env:
+          # Single-card families by default; both Omni topologies want eight
+          # cards and ~20 min each, which is a dispatch decision.
+          SELECTOR: ${{ github.event.inputs.model_smoke_selector || 'asr or tts' }}
+        run: |
+          set -euxo pipefail
+          docker exec -w /workspace/sglang-omni-pr \
+            -e OMNI_XPU_SINGLE_CARD_WAIT=900 \
+            "${CONTAINER_NAME}" \
+            pytest tests/test_ci/xpu_model -v -rs -k "${SELECTOR}"
 
       - name: Cleanup container and image
         if: always()

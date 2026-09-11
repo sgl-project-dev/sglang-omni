@@ -8,11 +8,14 @@ import logging
 from typing import Any
 
 import torch
+from sglang.srt.arg_groups.model_override_base import resolved_view
 from sglang.srt.runtime_context import get_model, get_schedule
 
 from sglang_omni.models.qwen3_tts import CAPABILITIES, request_builders
 from sglang_omni.models.qwen3_tts import stages as qwen3_stages
 from sglang_omni.models.qwen3_tts.config import qwen3_tts_checkpoint_model_type
+from sglang_omni.models.qwen3_tts.sglang_model import predictor_graph_policy_enabled
+from sglang_omni.platforms import current_platform
 from sglang_omni.scheduling.engine_factory import TtsEngineBuilder
 from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
@@ -20,6 +23,20 @@ from sglang_omni.scheduling.generation_batch_policy import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _should_capture_predictor_graphs(*, server_args: Any, device: str) -> bool:
+    """Whether the startup predictor capture runs.
+
+    The same policy the per-step dispatch reads, so the capture is not paid for
+    graphs that would then never replay. `disable_cuda_graph` is declared rather
+    than written by SGLang's hooks, so it is read through the resolved view.
+    """
+    if not predictor_graph_policy_enabled():
+        return False
+    if bool(resolved_view(server_args).disable_cuda_graph):
+        return False
+    return current_platform.get_device_graph_backend(torch.device(device)) is not None
 
 
 def _is_truthy(value: Any) -> bool:
@@ -151,7 +168,7 @@ class Qwen3TtsEngineBuilder(TtsEngineBuilder):
             wrapper=self.wrapper,
             device=torch.device(device),
         )
-        if bool(server_args.disable_cuda_graph):
+        if not _should_capture_predictor_graphs(server_args=server_args, device=device):
             return
         # note(ratish): the bucket warmups also build cuDNN's attention plans,
         # which otherwise land inside the first serving step of each batch size.

@@ -13,6 +13,11 @@ tests/
 │   ├── test_tts_ci.py
 │   ├── test_asr_ci_multi_speaker.py
 │   └── test_asr_ci_seedtts.py
+├── test_ci/
+│   └── xpu_model/
+│       ├── conftest.py
+│       ├── model_table.py
+│       └── test_model_smoke.py
 └── unit_test/
     ├── benchmarks/
     │   ├── test_dataset_regressions.py
@@ -418,6 +423,45 @@ python3 -m pytest tests/test_model/test_ming_tp_parity_ci.py -q -s
 - CLI flag `--asr-ci-model {fun,qwen3,whisper}`: select the ASR CI model preset for
   `test_asr_ci_seedtts.py` without editing source. Defaults to the
   `ASR_CI_MODEL` environment variable, then `fun`.
+
+## `test_ci/xpu_model/`
+
+Minimal functional smoke for every model Intel XPU serves: launch the server on
+the accelerator, send one request, assert the response carries plausible content.
+No WER, no MOS, no throughput floors -- those live in `test_model/`. This lane
+answers only "does the model still work on this hardware".
+
+```bash
+pytest tests/test_ci/xpu_model -v                     # every model whose weights are local
+pytest tests/test_ci/xpu_model -v -k "asr or tts"     # single-card models only
+REQUIRE_FREE_GPU=0 pytest tests/test_ci/xpu_model -v  # ignore who else holds the card
+```
+
+Two host prerequisites, both of which fail inside the *stage* process where the
+message names torch or a signal rather than the cause (the fixture appends the
+explanation when it can see the server log):
+
+- **Activate the environment**, do not invoke its `python` by path. Without
+  `CCL_ROOT` set, oneCCL loads no plugin and the stage takes SIGFPE. The XPU
+  container is unaffected: its oneCCL comes from the `+xpu` wheels.
+- **Touch `torch.xpu` at interpreter start** on hosts where a spawned stage
+  process reports "No XPU devices are available" while the parent sees every
+  card. A `sitecustomize.py` on `PYTHONPATH` doing
+  `import torch; torch.xpu.device_count()` is enough. This is a host/runtime
+  interaction rather than a pipeline defect: the parent process enumerates every
+  card, and only the spawned stage sees none.
+
+The model set lives in `model_table.py` and is shared with
+`unit_test/xpu/test_model_support.py`, so a family cannot be covered by one lane
+and forgotten by the other. Checkpoints resolve from `<MODEL>_MODEL` env var,
+then a `MODEL_ROOTS` mirror, then the Hub cache; a checkpoint in none of them
+skips its test rather than downloading (set `OMNI_XPU_ALLOW_HF_DOWNLOAD=1` to opt
+in). Runs in `omni-xpu-ci.yaml` behind the `run-xpu-model-ci` label.
+
+Separate from `test_model/` because that directory's conftest declares
+`pytest_plugins = ["tests.utils"]`, which needs `jiwer` and `aiohttp`; neither is
+in `pyproject_xpu.toml`'s core scope, so collection would fail in the XPU
+container. A subdirectory cannot un-declare a parent's plugins.
 
 ## `unit_test/`
 
