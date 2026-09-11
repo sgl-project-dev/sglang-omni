@@ -19,8 +19,8 @@ MODEL_PATH="$(
 
 ### Apple Silicon (MLX)
 
-The Apple Silicon path requires macOS, Python 3.12, Homebrew, and SGLang's MLX
-runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
+The Apple Silicon path requires macOS 14 or newer, Python 3.12, Homebrew, and
+SGLang's MLX runtime. Audio decoding also requires Homebrew's versioned FFmpeg 7 formula:
 
 ```bash
 brew install ffmpeg@7
@@ -28,7 +28,7 @@ export DYLD_LIBRARY_PATH="$(brew --prefix ffmpeg@7)/lib${DYLD_LIBRARY_PATH:+:$DY
 ```
 
 Do not replace `ffmpeg@7` with the unversioned `ffmpeg` formula. The latter
-currently installs FFmpeg 9, while Apple installs `torchcodec==0.11.1`, which
+currently installs FFmpeg 9, while Apple installs `torchcodec==0.15.0`, which
 supports FFmpeg 4 through 8. Because `ffmpeg@7` is keg-only, its library
 directory must also be present in `DYLD_LIBRARY_PATH` whenever the server starts.
 
@@ -43,7 +43,7 @@ SGLang tag from source with its `all_mps` dependencies before installing
 SGLang-Omni:
 
 ```bash
-git clone --branch v0.5.18 https://github.com/sgl-project/sglang.git
+git clone --branch v0.5.19 https://github.com/sgl-project/sglang.git
 git clone https://github.com/sgl-project/sglang-omni.git
 
 uv venv -p 3.12 sglang-omni/.venv-apple
@@ -210,6 +210,70 @@ data: [DONE]
 Qwen3-ASR batches deltas for up to 50 ms by default. EOS and other terminal
 conditions flush any buffered text before the final transcript event.
 
+### Live PCM transcription
+
+The SSE mode above starts decoding after a complete multipart upload. For live
+audio ingestion, mount the realtime WebSocket endpoint:
+
+```bash
+sgl-omni serve \
+  --model-path "${MODEL_PATH}" \
+  --model-name Qwen/Qwen3-ASR-1.7B \
+  --enable-realtime \
+  --port 8000
+```
+
+Connect to `/v1/realtime?intent=transcription`, configure the session, and
+append base64-encoded mono 16 kHz PCM16 packets. `input_audio_buffer.commit`
+finalizes the active segment manually; server VAD also finalizes after the
+configured silence interval. Send `transcription.done` after the final packet
+to receive `transcription.completed`. `input_audio_buffer.clear` discards the
+current segment and any partial hypothesis derived from it while keeping the
+WebSocket session open for new audio.
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "language": "English",
+    "turn_detection": {
+      "type": "server_vad",
+      "threshold": 0.5,
+      "prefix_padding_ms": 300,
+      "silence_duration_ms": 500
+    }
+  }
+}
+```
+
+Each periodic decode is an ordinary stateless Qwen3-ASR request over all audio
+in the active segment. After the first two refreshes, the server rolls five
+tokens back from the prior hypothesis and uses the retained text as the next
+prompt prefix. No decoder KV cache or worker affinity is retained. Segments are
+also finalized at the configured `audio_chunking.max_audio_clip_s` boundary
+(30 seconds by default).
+
+Partial results are full replacements, not append-only deltas:
+
+```json
+{
+  "type": "transcription.segment",
+  "event_index": 7,
+  "segment_id": 0,
+  "text": "hello wor",
+  "is_final": false
+}
+```
+
+A later event for the same `segment_id` replaces this text. An event with
+`is_final=true` is immutable. `transcription.completed` contains the joined
+text from all final segments.
+
+Append events are not idempotent. After a transport failure, reconnect and
+restart the transcription rather than retrying packets on the old session.
+Reconnecting resets uncommitted audio, partial hypotheses, VAD state, and Qwen
+rollback state.
+
 ## Request Parameters
 
 | Parameter | Type | Default | Description |
@@ -217,11 +281,18 @@ conditions flush any buffered text before the final transcript event.
 | `file` | file | required | Audio file uploaded as multipart form data |
 | `model` | string | server default | Model identifier |
 | `language` | string | none | Optional language hint as a supported code or canonical name (case-insensitive); omit it for automatic detection |
-| `prompt` | string | none | Accepted for OpenAI compatibility; Qwen3-ASR currently ignores it |
+| `prompt` | string | none | Vocabulary biasing: terms likely to appear in the audio, such as names and jargon. See the note below the table |
 | `response_format` | string | `json` | `json`, `verbose_json`, or `text` |
 | `temperature` | float | `0` | Sampling temperature; `0` uses greedy decoding |
 | `max_new_tokens` | integer | server stage limit | Per-request generation-token limit |
 | `stream` | boolean | `false` | Return SSE transcript deltas; supports `json` or `text` response format |
+
+Biasing raises the model's preference for the supplied terms. It does not
+force them: a term the audio does not contain will not be inserted, and an
+irrelevant list biases the model toward words that were never spoken, which
+hurts accuracy. A short, relevant list works best — in testing, accuracy
+stopped improving past roughly 20 terms, while latency kept growing because
+the text is prefilled with every request.
 
 `verbose_json` uses the model adapter's verbose response schema and includes
 duration-based usage (rounded-up audio seconds) when duration probing succeeds.
@@ -388,10 +459,10 @@ sgl-omni serve --model-path Qwen/Qwen3-ASR-1.7B \
 
 ## Known Limitations
 
-- The endpoint accepts one uploaded file per request.
+- The HTTP endpoint accepts one uploaded file per request. Live PCM uses
+  `/v1/realtime?intent=transcription` and requires `--enable-realtime`.
 - Non-streaming uploads up to `max_total_audio_s` (default one hour) are
   transcribed in full via chunking; see Long Audio above. Streaming requests
   are limited to `max_native_clip_s` (1,200s) on MLX/CUDA; Torch MPS caps both
   native and whole-upload requests at 60 seconds.
-- `prompt` is accepted by the HTTP endpoint for OpenAI compatibility, but Qwen3-ASR currently ignores it.
 - Audio is resampled to 16 kHz before transcription.

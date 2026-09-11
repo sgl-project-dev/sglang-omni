@@ -26,11 +26,19 @@ class TurnDetectionType(str, Enum):
     SEMANTIC_VAD = "semantic_vad"
 
 
+class SemanticVADEagerness(str, Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    AUTO = "auto"
+
+
 class TurnDetection(EventBase):
     type: TurnDetectionType = TurnDetectionType.SERVER_VAD
     threshold: float | None = None
     prefix_padding_ms: int | None = None
     silence_duration_ms: int | None = None
+    eagerness: SemanticVADEagerness | None = None
     interrupt_response: bool | None = None
 
 
@@ -44,12 +52,14 @@ class SessionConfig(EventBase):
     turn_detection: TurnDetection | None = None
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
+    language: str | None = None
 
 
 class SessionObject(EventBase):
     id: str
     object: Literal["realtime.session"] = "realtime.session"
     model: str
+    capabilities: dict[str, Any] = Field(default_factory=dict)
     modalities: list[str] = Field(default_factory=lambda: ["text"])
     instructions: str = ""
     input_audio_format: str = "pcm16"
@@ -74,8 +84,16 @@ class InputAudioBufferAppend(ClientEvent):
     audio: str  # base64-encoded raw PCM16 (or g711) per session.input_audio_format
 
 
+class InputAudioBufferCommit(ClientEvent):
+    type: Literal["input_audio_buffer.commit"]
+
+
 class InputAudioBufferClear(ClientEvent):
     type: Literal["input_audio_buffer.clear"]
+
+
+class TranscriptionDone(ClientEvent):
+    type: Literal["transcription.done"]
 
 
 class ResponseCancel(ClientEvent):
@@ -103,7 +121,9 @@ def make_event(event_type: str, **fields: Any) -> dict[str, Any]:
 CLIENT_EVENT_TYPES: dict[str, type[ClientEvent]] = {
     "session.update": SessionUpdate,
     "input_audio_buffer.append": InputAudioBufferAppend,
+    "input_audio_buffer.commit": InputAudioBufferCommit,
     "input_audio_buffer.clear": InputAudioBufferClear,
+    "transcription.done": TranscriptionDone,
     "response.cancel": ResponseCancel,
     "conversation.item.truncate": ConversationItemTruncate,
 }
