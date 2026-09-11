@@ -347,6 +347,10 @@ class CoordinatorSessions:
                     bypass_admission=op in {"abort", "close"},
                 )
                 return await self._completion_futures[request_id]
+        except BaseException:
+            # Note (Junnan Li): Request abort can yield before the pump sees this fatal failure.
+            self._begin_session_close(session)
+            raise
         finally:
             self._session_stream_handlers.pop(request_id, None)
             if request_id in self._requests:
@@ -399,9 +403,12 @@ class CoordinatorSessions:
                 "session cleanup incomplete; capacity remains reserved"
             ) from session.cleanup_error
 
-    def _close_session_state(self, session: _Session) -> Coroutine[Any, Any, None]:
+    def _begin_session_close(self, session: _Session) -> None:
         session.closing = True
         session.wake.set()
+
+    def _close_session_state(self, session: _Session) -> Coroutine[Any, Any, None]:
+        self._begin_session_close(session)
         return self._finish_session_close(session)
 
     async def _finish_session_close(self, session: _Session) -> None:

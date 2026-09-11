@@ -100,18 +100,35 @@ async def test_unconfirmed_owner_release_blocks_new_sessions(tmp_path, reason):
 
 
 @pytest.mark.asyncio
-async def test_worker_failure_wakes_output_and_fails_session(tmp_path):
+async def test_worker_failure_wakes_output_and_fails_session(tmp_path, monkeypatch):
     async with pipeline(tmp_path) as (coordinator, events, processes):
         ref = await coordinator.open_session(
-            OmniRequest(None), stages=["source", "sink"]
+            OmniRequest(None, {"delay": 30}), stages=["source", "sink"]
         )
         output = coordinator.session_outputs(ref)
         waiting = asyncio.create_task(anext(output))
-        await asyncio.sleep(0)
+        await coordinator.append_session(ref, chunk(0))
+        for _ in range(100):
+            if any(e[:2] == ("append", "sink") for e in drain(events)):
+                break
+            await asyncio.sleep(0.05)
         processes[-1].kill()
         processes[-1].expected_exitcode = -9
         await asyncio.to_thread(processes[-1].join, 5)
-        await coordinator.fail_pending_requests("session worker exited")
+        futures = list(coordinator._completion_futures.values())
+        assert futures and not any(future.done() for future in futures)
+        # Note (Junnan Li): The pump is parked on the unit's completion future; cleanup waits
+        # for the pump, so request waiters must be failed before cleanup is entered.
+        entered, release, _ = block_async_call(
+            monkeypatch, coordinator, "_cleanup_session"
+        )
+        failing = asyncio.create_task(
+            coordinator.fail_pending_requests("session worker exited")
+        )
+        await asyncio.wait_for(entered.wait(), 5)
+        assert all(future.done() for future in futures)
+        release.set()
+        await asyncio.wait_for(failing, 5)
         with pytest.raises(RuntimeError, match="worker exited"):
             await asyncio.wait_for(waiting, 5)
         with pytest.raises(RuntimeError, match="worker exited"):
@@ -265,28 +282,46 @@ async def test_cross_modality_order_and_rejected_input_retry(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("trigger", ["close", "shutdown", "idle"])
+@pytest.mark.parametrize("trigger", ["close", "shutdown", "idle", "command_timeout"])
 async def test_closing_rejects_input_before_cleanup(tmp_path, monkeypatch, trigger):
     async with pipeline(tmp_path) as (coordinator, _, _):
+        params = (
+            {"ignore_cancel": True, "delay": 0.3}
+            if trigger == "command_timeout"
+            else {}
+        )
         ref = await coordinator.open_session(
-            OmniRequest(None),
+            OmniRequest(None, params),
             stages=["source", "sink"],
-            limits=SessionLimits(idle_timeout_s=0.2 if trigger == "idle" else 300),
+            limits=SessionLimits(
+                idle_timeout_s=0.2 if trigger == "idle" else 300,
+                command_timeout_s=0.1 if trigger == "command_timeout" else 30,
+            ),
         )
-        entered, release, _ = block_async_call(
-            monkeypatch, coordinator, "_cleanup_session"
-        )
+        # Note (Junnan Li): A failed command finalizes through request abort before the
+        # pump can start cleanup; admission must already be closed at that seam.
+        seam = "abort" if trigger == "command_timeout" else "_cleanup_session"
+        entered, release, _ = block_async_call(monkeypatch, coordinator, seam)
         task = None
         if trigger == "close":
             task = asyncio.create_task(coordinator.close_session(ref))
         elif trigger == "shutdown":
             task = asyncio.create_task(coordinator.shutdown_stages(["sink"]))
+        elif trigger == "command_timeout":
+            await coordinator.append_session(ref, chunk(0))
         try:
             await asyncio.wait_for(entered.wait(), 5)
             with pytest.raises(RuntimeError, match="closing"):
-                await coordinator.append_session(ref, chunk(0))
+                await coordinator.append_session(ref, chunk(1))
         finally:
             release.set()
-            await asyncio.wait_for(
-                task if task is not None else coordinator.close_session(ref), 5
-            )
+            if task is not None:
+                await asyncio.wait_for(task, 5)
+            elif trigger == "command_timeout":
+                # Note (Junnan Li): The non-preemptible hook outlives the command timeout, so
+                # this close reports an incomplete cleanup; wait for the hook before teardown.
+                with pytest.raises(RuntimeError, match="capacity remains reserved"):
+                    await asyncio.wait_for(coordinator.close_session(ref), 5)
+                await asyncio.sleep(0.4)
+            else:
+                await asyncio.wait_for(coordinator.close_session(ref), 5)

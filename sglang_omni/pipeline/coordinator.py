@@ -161,7 +161,6 @@ class Coordinator(CoordinatorSessions):
         self._running = False
         message = str(error)
         self._fatal_error = message
-        await self._fail_sessions(message)
         for request_id, info in list(self._requests.items()):
             info.state = RequestState.FAILED
             info.error = message
@@ -178,6 +177,8 @@ class Coordinator(CoordinatorSessions):
                 )
         self._requests.clear()
         self._partial_results.clear()
+        # Note (Junnan Li): Session pumps await request futures; wake them before waiting for cleanup.
+        await self._fail_sessions(message)
 
     async def shutdown_stages(self, stage_names: Sequence[str] | None = None) -> None:
         """Send shutdown to registered stages, or only to *stage_names*."""
