@@ -880,7 +880,10 @@ async def test_judges_preserve_raw_results(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_judges_preserve_invalid_raw_score_and_error(monkeypatch) -> None:
+@pytest.mark.parametrize("request_failed", [False, True])
+async def test_judges_preserve_failure_phase_and_error(
+    monkeypatch, request_failed
+) -> None:
     sample = _level2()
     record = {
         "sample_id": sample.sample_id,
@@ -897,7 +900,12 @@ async def test_judges_preserve_invalid_raw_score_and_error(monkeypatch) -> None:
     async def fake_request(*_args, request_id: str, **_kwargs):
         nonlocal calls
         calls += 1
-        return RequestResult(request_id=request_id, text="Score: 80", is_success=True)
+        return RequestResult(
+            request_id=request_id,
+            text="" if request_failed else "Score: 80",
+            is_success=not request_failed,
+            error="connection failed" if request_failed else None,
+        )
 
     monkeypatch.setattr(
         "benchmarks.tasks.socialomni.request_chat_completion", fake_request
@@ -905,11 +913,22 @@ async def test_judges_preserve_invalid_raw_score_and_error(monkeypatch) -> None:
     _, failures = await run_judges([sample], [record], judges, timeout_s=30)
     result = record["judge_results"]["gpt-4o"]
     assert len(failures) == 1
+    assert failures[0] == {
+        "request_id": result["request"]["request_id"],
+        "sample_id": str(sample.sample_id),
+        "judge": "gpt-4o",
+        "phase": "level2_judge",
+        "error": result["error"],
+    }
     assert result["score"] is None
-    assert result["raw_response"] == "Score: 80"
+    assert result["raw_response"] == ("" if request_failed else "Score: 80")
     assert result["is_success"] is False
-    assert "invalid judge score" in result["error"]
-    assert calls == JUDGE_PARSE_ATTEMPTS
+    if request_failed:
+        assert result["error"] == "connection failed"
+        assert calls == 1
+    else:
+        assert "invalid judge score" in result["error"]
+        assert calls == JUDGE_PARSE_ATTEMPTS
 
 
 @pytest.mark.asyncio

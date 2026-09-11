@@ -573,6 +573,7 @@ async def run_judges(
                         "request_id": result.request_id,
                         "sample_id": str(record["sample_id"]),
                         "judge": judge.name,
+                        "phase": "level2_judge",
                         "error": result.error,
                     }
                 )
