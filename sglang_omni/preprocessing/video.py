@@ -318,7 +318,7 @@ def _extract_audio_from_path(video_path: Path, target_sr: int) -> Any | None:
         return np.concatenate(chunks).astype(np.float32, copy=False)
     except VideoDecodeError:
         raise
-    except av.error.InvalidDataError as exc:
+    except (av.error.InvalidDataError, av.error.EOFError) as exc:
         raise VideoDecodeError(
             f"Invalid media data while extracting embedded audio from {video_path}: {exc}"
         ) from exc

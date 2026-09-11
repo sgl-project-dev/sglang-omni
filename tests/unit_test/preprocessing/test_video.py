@@ -81,13 +81,15 @@ def test_extract_audio_from_path_returns_none_without_audio(monkeypatch) -> None
     ("error", "bad_request"),
     [
         (video.av.error.InvalidDataError(1094995529, "broken stream"), True),
+        (video.av.error.EOFError(541478725, "broken stream"), True),
         (RuntimeError("broken stream"), False),
         (MemoryError("broken stream"), False),
         (PermissionError("broken stream"), False),
     ],
 )
+@pytest.mark.parametrize("stage", ["open", "decode"])
 def test_extract_audio_from_path_surfaces_decode_failure(
-    monkeypatch, error, bad_request
+    monkeypatch, error, bad_request, stage
 ) -> None:
     class Container:
         def __init__(self) -> None:
@@ -104,7 +106,12 @@ def test_extract_audio_from_path_surfaces_decode_failure(
             assert stream is self.audio_stream
             raise error
 
-    monkeypatch.setattr(video.av, "open", lambda _path: Container())
+    def open_media(_path):
+        if stage == "open":
+            raise error
+        return Container()
+
+    monkeypatch.setattr(video.av, "open", open_media)
 
     with pytest.raises(video.VideoDecodeError, match="broken stream") as exc_info:
         video._extract_audio_from_path(Path("broken.mp4"), 16_000)
