@@ -40,7 +40,7 @@ from sglang_omni.scheduling.pipeline_state import build_usage, load_state, store
 from sglang_omni.scheduling.simple_scheduler import SimpleScheduler
 from sglang_omni.utils.audio_payload import audio_waveform_payload
 from sglang_omni.utils.checkpoint import resolve_checkpoint
-from sglang_omni.utils.device import resolve_device_spec
+from sglang_omni.utils.device import resolve_concrete_device
 
 logger = logging.getLogger(__name__)
 
@@ -173,8 +173,8 @@ def create_conditioning_executor(
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler:
+    device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
-    device = torch.device(resolve_device_spec(device, gpu_id))
     encoder = AuKConditionEncoder(
         text_encoder_path, device=device, dtype=torch.bfloat16
     )
@@ -235,9 +235,9 @@ def create_auk_engine_executor(
     upstream-exact recipe; ``"bfloat16"`` stores the backbone in bf16 and skips
     autocast (see docs/cookbook/auk.md, Sampling).
     """
+    device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
     config = make_runtime_config(checkpoint)
-    device = torch.device(resolve_device_spec(device, gpu_id))
     flow = _load_flow(checkpoint, str(device))
     if weight_dtype not in (None, "float32"):
         # Backbone only: the conditioning stage shares this cached object for
@@ -305,8 +305,8 @@ def create_decode_executor(
     max_batch_size: int = 4,
     max_batch_wait_ms: int = 10,
 ) -> SimpleScheduler:
+    device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
-    device = torch.device(resolve_device_spec(device, gpu_id))
     vae = _load_vae(checkpoint, str(device))
     return _scheduler(
         lambda payloads: _decode_batch(payloads, vae, device),
