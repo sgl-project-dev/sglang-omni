@@ -261,15 +261,42 @@ class Attention(nn.Module):
     def _forward_self(
         self, x: torch.Tensor, mask: torch.Tensor | None, rope=None
     ) -> torch.Tensor:
-        query, key, value = self.to_qkv(x).chunk(3, dim=-1)
+        qkv = self.to_qkv(x)
+        query, key, value = qkv.chunk(3, dim=-1)
         head_dim = key.shape[-1] // self.heads
-        query = self._split_heads(query, self.heads, head_dim)
-        key = self._split_heads(key, self.heads, head_dim)
         value = self._split_heads(value, self.heads, head_dim)
+        freqs, scale = rope if rope is not None else (None, None)
 
-        query, key = self.q_norm(query), self.k_norm(key)
-        if rope is not None:
-            query, key = self._apply_rope(query, key, rope)
+        if (
+            qkv.is_cuda
+            and torch.version.hip is None
+            and not torch.is_grad_enabled()
+            and head_dim == 64
+            and (
+                qkv.dtype == torch.float32
+                or (qkv.dtype == torch.bfloat16 and torch.is_autocast_enabled("cuda"))
+            )
+            and self.q_norm.weight.dtype == self.k_norm.weight.dtype == torch.float32
+            and self.q_norm.eps is None
+            and self.k_norm.eps is None
+            and freqs is not None
+            and freqs.dtype == torch.float32
+            and freqs.shape[-1] == head_dim
+            and freqs.stride(-1) == 1
+            and isinstance(scale, (int, float))
+            and scale == 1.0
+        ):
+            from sglang_omni.models.auk.fused_qk_norm_rope import fused_norm_rope
+
+            query, key = fused_norm_rope(
+                qkv, self.q_norm.weight, self.k_norm.weight, freqs
+            )
+        else:
+            query = self._split_heads(query, self.heads, head_dim)
+            key = self._split_heads(key, self.heads, head_dim)
+            query, key = self.q_norm(query), self.k_norm(key)
+            if rope is not None:
+                query, key = self._apply_rope(query, key, rope)
 
         out = self._attend(query, key, value, mask).to(query.dtype)
         out = self.to_out[1](self.to_out[0](out))
