@@ -116,6 +116,9 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
     )
     validate_judge_credentials(judges)
     warmup = resolve_warmup(config.warmup, config.max_concurrency)
+    recorded_rate = (
+        "inf" if config.request_rate == float("inf") else config.request_rate
+    )
     dataset_identity = inspect_socialomni_dataset(config.dataset_root, levels)
     provenance = collect_benchmark_provenance(
         model_id=config.model,
@@ -134,8 +137,8 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "judge_warmup": 0,
             "timeout_s": config.timeout_s,
             "server_timeout": config.server_timeout,
-            "request_rate": config.request_rate,
-            "judge_request_rate": config.request_rate,
+            "request_rate": recorded_rate,
+            "judge_request_rate": recorded_rate,
             "temperature": 0.0,
             "use_audio_in_video": True,
             "trust_env": True,
@@ -144,6 +147,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
     output: dict[str, Any] = {
         "config": {
             **asdict(config),
+            "request_rate": recorded_rate,
             "dataset_root": str(Path(config.dataset_root).expanduser().resolve()),
             "judge_config": None,
             "dataset_id": SOCIALOMNI_DATASET_ID,
@@ -273,6 +277,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             ),
             "quality": None,
             "judge_status": {
+                "configured": bool(judges),
                 "complete": judges_complete,
                 "eligible_responses": required_judgments,
                 "completed_scores": sum(
@@ -339,7 +344,10 @@ def _parser() -> argparse.ArgumentParser:
         help="Server launch command to record in provenance; not executed.",
     )
     parser.add_argument("--level", choices=("level1", "level2", "both"), default="both")
-    parser.add_argument("--judge-config")
+    parser.add_argument(
+        "--judge-config",
+        help="Three fixed judges for quality scoring; omission produces incomplete model-only diagnostics.",
+    )
     parser.add_argument(
         "--prefix-cache-dir", default="benchmarks/cache/socialomni-prefixes"
     )

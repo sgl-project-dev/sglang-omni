@@ -52,6 +52,7 @@ def validate_endpoint_url(base_url: str) -> None:
         valid = (
             parts.scheme in ("http", "https")
             and bool(parts.hostname)
+            and (parts.port is None or 1 <= parts.port <= 65535)
             and parts.username is None
             and parts.password is None
             and not parts.query

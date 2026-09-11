@@ -298,6 +298,10 @@ def test_judge_config_rejects_invalid_concurrency(tmp_path, concurrency) -> None
         "https://example.com/v1?token=secret",
         "https://example.com/v1#secret",
         "file:///secret",
+        "http://localhost:99999",
+        "http://localhost:not-a-port",
+        "http://localhost:0",
+        "http://localhost:-1",
     ],
 )
 def test_endpoint_credentials_are_rejected_without_echoing_url(tmp_path, url):
@@ -845,7 +849,16 @@ def test_cli_checks_server_root_and_preserves_completion_url(
         server.server_close()
         thread.join(timeout=5)
     output = json.loads(capsys.readouterr().out)
-    saved = json.loads(Path(output["result"]).read_text())
+
+    def reject_constant(value):
+        raise AssertionError(f"Non-standard JSON constant: {value}")
+
+    saved = json.loads(
+        Path(output["result"]).read_text(), parse_constant=reject_constant
+    )
+    assert saved["config"]["request_rate"] == "inf"
+    assert saved["provenance"]["declared_server_config"]["request_rate"] == "inf"
+    assert saved["provenance"]["declared_server_config"]["judge_request_rate"] == "inf"
     assert routes == ["/health", "/v1/chat/completions"]
     assert saved["per_sample"]["level1"][0]["predicted_answer"] == "A"
     assert saved["config"]["dataset_root"] == str(tmp_path / "dataset")
@@ -1126,10 +1139,26 @@ async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
         timeout_s=30,
         output_dir="results",
     )
+    records[0].update(
+        gold_when="YES", gold_response="candidate", gold_response_success=True
+    )
+
+    async def unexpected_judges(*args, **kwargs):
+        pytest.fail("Model-only diagnostics must not call judges")
+
+    monkeypatch.setattr(entrypoint, "run_judges", unexpected_judges)
     result = await entrypoint.run_socialomni(config)
     assert result["paper_core_200"]["sample_count"] == 200
     assert result["paper_core_200"]["when"]["total_samples"] == 200
     assert result["summary"]["status"] == "incomplete"
+    metrics = result["summary"]["level2"]["metrics"]
+    assert metrics["quality"] is None
+    assert metrics["judge_status"]["configured"] is False
+    assert metrics["judge_status"]["complete"] is False
+    assert metrics["judge_status"]["completed_scores"] == 0
+    assert metrics["judge_status"]["required_scores"] == 3
+    assert result["paper_core_200"]["quality"] is None
+    assert result["paper_core_200"]["judges_complete"] is False
     assert provenance_args["dataset_revision"] == entrypoint.SOCIALOMNI_DATASET_REVISION
     assert provenance_args["model_revision"] is None
     speed = result["summary"]["level2"]["speed"]["model"]

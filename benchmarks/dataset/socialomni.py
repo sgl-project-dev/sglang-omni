@@ -10,9 +10,11 @@ import math
 import os
 import re
 import shutil
+import time
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path, PurePosixPath
 from typing import Any, TypeVar
 
@@ -84,6 +86,27 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _source_signature(path: Path) -> tuple[int, ...]:
+    stat = path.stat()
+    return (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+@lru_cache(maxsize=256)
+def _cached_source_digest(path: Path, signature: tuple[int, ...]) -> str:
+    digest = _sha256(path)
+    if _source_signature(path) != signature:
+        raise RuntimeError("Source video changed while computing its digest")
+    return digest
+
+
+def _source_digest(path: Path) -> str:
+    signature = _source_signature(path)
+    # Filesystems can coalesce timestamps for closely spaced writes.
+    if time.time_ns() - signature[-1] < 1_000_000_000:
+        return _cached_source_digest.__wrapped__(path, signature)
+    return _cached_source_digest(path, signature)
 
 
 def inspect_socialomni_dataset(
@@ -407,7 +430,7 @@ async def create_video_prefix(
     key = hashlib.sha256(
         json.dumps(
             {
-                "source_sha256": await asyncio.to_thread(_sha256, source),
+                "source_sha256": await asyncio.to_thread(_source_digest, source),
                 "timestamp_s": f"{timestamp_s:.6f}",
                 "encoding": PREFIX_ENCODING,
             },

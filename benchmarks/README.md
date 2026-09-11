@@ -426,6 +426,10 @@ on a correct YES decision and a non-empty response; `Cov+` is the fraction of
 gold-positive states meeting that condition; and `QEns_joint` is
 `Cov+ * QEns`. All three scores in `{0, 25, 50, 75, 100}` are mandatory for
 every non-empty eligible response. A judge failure makes the run incomplete.
+Omitting `--judge-config` runs model-only diagnostics: model responses, turn-entry
+metrics and performance are saved, but `summary.status` remains `incomplete`,
+`judge_status.configured` is false, and quality metrics remain null, including
+the first-200 view. This mode is not a complete SocialOmni quality evaluation.
 
 Each run writes one JSON file containing its configuration, environment,
 per-sample records, failures, performance summary, and paper metrics. The
@@ -449,7 +453,8 @@ Prefix preparation failures stay in the sample records and fixed denominator.
 runner's request rate for each model phase and each judge independently. Its
 default `inf` sends a new request whenever a concurrency slot is available;
 a positive finite value sets the arrival rate in requests per second. The
-effective rate is saved in config and provenance. Model and judge endpoint
+effective rate is saved in config and provenance. Infinite rates are written
+as the JSON string `"inf"`; finite rates remain numbers. Model and judge endpoint
 URLs must not contain userinfo, query parameters or fragments. Configure judge
 authentication through `api_key_env` instead; URL credentials are rejected
 before evaluation results are written.
@@ -458,6 +463,11 @@ Dataset preparation defaults to `benchmarks/cache/socialomni/`; `--local-dir`
 overrides it. Prefixes are cached in `benchmarks/cache/socialomni-prefixes/`;
 result JSON files go to `benchmarks/results/socialomni/`. All three directories
 are ignored by Git.
+Source video digests are reused within a process while device, inode, size,
+modification time and change time remain unchanged. Files changed within the
+last second bypass the cache to avoid timestamp collisions. The bounded cache
+is rebuilt for each process; a new invocation recomputes source digests before
+reusing encoded prefixes.
 The result records whether the local metadata matches the pinned revision. This
 is a metadata identity check; local media files are validated as samples are
 loaded, but are not hashed in full at startup.

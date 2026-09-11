@@ -2,8 +2,10 @@
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import av
@@ -210,6 +212,63 @@ def test_parse_timestamp_rejects_invalid_values(raw: object) -> None:
         parse_socialomni_timestamp(raw)
 
 
+@pytest.mark.parametrize("replace_file", [False, True])
+def test_source_digest_cache_invalidates_changed_media(
+    tmp_path, monkeypatch, replace_file
+):
+    path = tmp_path / "source.mp4"
+    path.write_bytes(b"first")
+    original_stat = path.stat()
+    time.sleep(1.1)
+    original_hash = socialomni._sha256
+    reads = []
+
+    def counted_hash(source):
+        reads.append(source)
+        return original_hash(source)
+
+    monkeypatch.setattr(socialomni, "_sha256", counted_hash)
+    first = socialomni._source_digest(path)
+    assert socialomni._source_digest(path) == first
+    assert len(reads) == 1
+    if replace_file:
+        replacement = tmp_path / "replacement.mp4"
+        replacement.write_bytes(b"other")
+        replacement.replace(path)
+    else:
+        path.write_bytes(b"other")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert socialomni._source_digest(path) != first
+    assert len(reads) == 2
+
+
+def test_recent_source_changes_bypass_digest_cache(tmp_path):
+    path = tmp_path / "source.mp4"
+    path.write_bytes(b"first")
+    original_stat = path.stat()
+    first = socialomni._source_digest(path)
+    path.write_bytes(b"other")
+    os.utime(path, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert socialomni._source_digest(path) != first
+
+
+def test_source_digest_rejects_changes_during_hashing(tmp_path, monkeypatch):
+    path = tmp_path / "source.mp4"
+    path.write_bytes(b"first")
+    original_hash = socialomni._sha256
+
+    def changing_hash(source):
+        digest = original_hash(source)
+        source.write_bytes(b"changed")
+        return digest
+
+    monkeypatch.setattr(socialomni, "_sha256", changing_hash)
+    with pytest.raises(RuntimeError, match="changed while computing"):
+        socialomni._source_digest(path)
+    monkeypatch.setattr(socialomni, "_sha256", original_hash)
+    assert socialomni._source_digest(path) == original_hash(path)
+
+
 def test_prefix_command_reencodes_video_and_audio(tmp_path: Path) -> None:
     command = build_ffmpeg_prefix_command(
         "ffmpeg", tmp_path / "source.mp4", 1.25, tmp_path / "prefix.mp4"
@@ -332,9 +391,15 @@ async def test_prefix_media_ends_at_query_time(tmp_path: Path, monkeypatch) -> N
         str(source),
     )
     assert await process.wait() == 0
+    await asyncio.sleep(1.1)
     monkeypatch.chdir(tmp_path)
     prefix = await create_video_prefix(source, 0.75, "cache")
     assert prefix.is_absolute()
+
+    def unexpected_hash(path):
+        pytest.fail("Cached source must not be read again")
+
+    monkeypatch.setattr(socialomni, "_sha256", unexpected_hash)
     monkeypatch.setattr(socialomni, "resolve_ffmpeg_executable", lambda: None)
     assert await socialomni.create_video_prefix(source, 0.75, "cache") == prefix
     server_dir = tmp_path / "server"
