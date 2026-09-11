@@ -362,6 +362,12 @@ class ModelWorker:
             },
         }
 
+    def _encoder_cuda_graph_info(self) -> dict[str, Any] | None:
+        model = getattr(self.model_runner, "model", None)
+        runner = getattr(model, "_encoder_graph_runner", None)
+        info = getattr(runner, "model_info", None)
+        return info() if callable(info) else None
+
     def model_info(self) -> dict[str, Any]:
         from sglang.srt.runtime_context import get_model, get_parallel, get_serving
 
@@ -375,6 +381,7 @@ class ModelWorker:
             "supports_weight_update": True,
             "supports_weight_checker": True,
             "prefill_cuda_graph": self._prefill_cuda_graph_info(),
+            "encoder_cuda_graph": self._encoder_cuda_graph_info(),
         }
 
     def update_weights_from_disk(self, payload: dict[str, Any]) -> tuple[bool, str]:
@@ -527,8 +534,7 @@ def _apply_model_worker_backend_common_policy(
     )
     if is_qwen3_omni_arch and cfg.ep_size != 1:
         raise ValueError(
-            "Qwen3-Omni ModelWorker does not support expert parallelism; "
-            "use ep_size=1."
+            "Qwen3-Omni ModelWorker does not support expert parallelism; use ep_size=1."
         )
 
 

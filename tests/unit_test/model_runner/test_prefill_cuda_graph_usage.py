@@ -137,3 +137,18 @@ def test_model_worker_reports_actual_prefill_graph_replays_by_bucket(
     assert stats["custom_eager_count"] == 1
     assert stats["replay_buckets"] == {"16": 1, "32": 1}
     assert json.loads(json.dumps(stats)) == stats
+
+
+def test_model_worker_exposes_encoder_graph_runner_info() -> None:
+    expected = {
+        "enabled": True,
+        "captured_graph_count": 2,
+        "replay_count": 7,
+    }
+    encoder_runner = SimpleNamespace(model_info=lambda: expected)
+    worker = object.__new__(ModelWorker)
+    worker.model_runner = SimpleNamespace(
+        model=SimpleNamespace(_encoder_graph_runner=encoder_runner)
+    )
+
+    assert ModelWorker._encoder_cuda_graph_info(worker) is expected

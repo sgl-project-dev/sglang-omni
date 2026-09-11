@@ -275,6 +275,29 @@ def test_execute_falls_back_to_standard_forward_after_before_hook(
     assert not hasattr(ModelRunner, "prepare_prefill")
 
 
+def test_standard_forward_holds_configured_device_execution_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_fake_forward_batch_module(monkeypatch)
+    calls: list[str] = []
+
+    class RecordingGuard:
+        @contextmanager
+        def hold(self):
+            calls.append("guard_enter")
+            try:
+                yield 0, 0
+            finally:
+                calls.append("guard_exit")
+
+    runner = _runner(calls, custom_result=None)
+    runner._device_execution_guard = RecordingGuard()
+    runner.execute(_scheduler_output(is_prefill=True))
+
+    assert calls.index("guard_enter") < calls.index("standard_forward")
+    assert calls.index("standard_forward") < calls.index("guard_exit")
+
+
 def _prefill_forward_batch() -> SimpleNamespace:
     return SimpleNamespace(
         input_embeds=None,

@@ -25,6 +25,7 @@ from sglang_omni.scheduling.generation_batch_policy import (
     CudaGraphBackend,
     get_decode_cuda_graph_bs,
 )
+from sglang_omni.utils.execution_guard import FairDeviceExecutionGuard
 from sglang_omni.utils.gpu_compat import get_visible_gpu_sm_version
 from sglang_omni.utils.gpu_memory import format_bytes_gib, get_process_gpu_memory_bytes
 
@@ -110,6 +111,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
         self.audio_encoder_service: Any = None
         self._torch_mps_model_runner: Any = None
         self._should_wait_for_encode: Callable[[], bool] | None = None
+        self._device_execution_guard: FairDeviceExecutionGuard | None = None
 
     def pre_infra_setup(self, checkpoint_dir: str) -> None:
         self.model_path = checkpoint_dir
@@ -226,7 +228,17 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 output_proc,
             )
             return self._torch_mps_model_runner
-        return super().make_model_runner(model_worker, output_proc)
+        from sglang_omni.model_runner.base import ModelRunner
+
+        # The pre-LM encoder and the generation graph run on different host
+        # threads; sharing this process-local guard serializes their device
+        # submissions on NPU. ``getattr`` keeps engine builders and test doubles
+        # that predate the guard working unchanged.
+        return ModelRunner(
+            model_worker,
+            output_proc,
+            device_execution_guard=getattr(self, "_device_execution_guard", None),
+        )
 
     def setup_model(
         self,
@@ -332,7 +344,20 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
             # shared multimodal routine still requires its cache singleton.
             init_mm_embedding_cache(self.mm_embedding_cache_size_bytes)
             return
-        del generation_cuda_graph_enabled
+        if (
+            current_platform.is_npu()
+            and generation_cuda_graph_enabled
+            and self.enable_pre_lm_encoder
+        ):
+            # The pre-LM encoder and the generation graph replay on different
+            # host threads; concurrent device submission of two captured graphs
+            # can hang on Ascend, so both sides share this FIFO guard.
+            self._device_execution_guard = FairDeviceExecutionGuard()
+            logger.info(
+                "[qwen3-asr] serializing NPU encoder and generation device execution"
+            )
+        else:
+            self._device_execution_guard = None
         self._log_memory_checkpoint("post_cuda_graph_capture")
         if self.enable_encoder_cuda_graph:
             from sglang_omni.models.qwen3_asr.audio_lengths import (
@@ -370,6 +395,7 @@ class Qwen3ASREngineBuilder(AsrEngineBuilder):
                 cache_max_bytes=self.pre_lm_cache_size_bytes,
                 max_batch_size=self.pre_lm_max_batch_size,
                 max_batch_wait_ms=self.pre_lm_max_batch_wait_ms,
+                device_execution_guard=self._device_execution_guard,
             )
 
     def should_wait_for_encode(self) -> bool:
