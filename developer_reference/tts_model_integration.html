@@ -59,7 +59,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.5" />
-    <meta name="docbuild:last-update" content="Sep 10, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 11, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -612,6 +612,12 @@ shared helpers do the heavy lifting:</p>
 from <code class="docutils literal notranslate"><span class="pre">sglang_omni.scheduling.bootstrap</span></code>, which returns the
 <code class="docutils literal notranslate"><span class="pre">(model_worker,</span> <span class="pre">tree_cache,</span> <span class="pre">req_to_token_pool,</span> <span class="pre">token_to_kv_pool_allocator,</span> <span class="pre">model_config)</span></code> tuple that <code class="docutils literal notranslate"><span class="pre">OmniScheduler</span></code> expects</p></li>
 </ul>
+<p>Every GPU stage factory you write — the engine as well as encoders and
+vocoders — declares <code class="docutils literal notranslate"><span class="pre">device:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None,</span> <span class="pre">gpu_id:</span> <span class="pre">int</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></code>
+and resolves them with <code class="docutils literal notranslate"><span class="pre">sglang_omni.utils.device.resolve_concrete_device</span></code>;
+never hard-code <code class="docutils literal notranslate"><span class="pre">&quot;cuda&quot;</span></code> or read <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> on its own. The contract and the
+sweep test that enforces it are described under “Device and GPU placement
+contract” in <a class="reference internal" href="config.html"><span class="std std-doc">config.md</span></a>.</p>
 <p>Two pieces of glue still have to be added by hand:</p>
 <ul class="simple">
 <li><p>Insert your SGLang model class into <code class="docutils literal notranslate"><span class="pre">ModelRegistry.models[...]</span></code> inside
@@ -804,7 +810,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 10, 2026.
+  Last updated on Sep 11, 2026.
   <br/>
 </p>
   </div>

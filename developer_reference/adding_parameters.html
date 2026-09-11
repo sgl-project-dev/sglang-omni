@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.5" />
-    <meta name="docbuild:last-update" content="Sep 10, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 11, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -706,6 +706,10 @@ validation split as everywhere else: static <code class="docutils literal notran
 (a TP stage’s <code class="docutils literal notranslate"><span class="pre">gpu</span></code> list must match <code class="docutils literal notranslate"><span class="pre">tp_size</span></code> and be unique).</p>
 <p>Do <strong>not</strong> re-check these rules downstream. The planner and topology walker
 trust a validated config; a constraint has exactly one site.</p>
+<p><code class="docutils literal notranslate"><span class="pre">device</span></code> and <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> are the special case of this rule: placement owns
+<code class="docutils literal notranslate"><span class="pre">gpu_id</span></code>, a factory may only receive a device <em>type</em>, and the factory resolves
+the pair through one shared helper. See “Device and GPU placement contract” in
+<a class="reference internal" href="config.html"><span class="std std-doc">config.md</span></a> before touching either.</p>
 </section>
 <section id="case-5-a-pipeline-level-setting">
 <h2>Case 5: a pipeline-level setting<a class="headerlink" href="#case-5-a-pipeline-level-setting" title="Link to this heading">#</a></h2>
@@ -924,7 +928,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 10, 2026.
+  Last updated on Sep 11, 2026.
   <br/>
 </p>
   </div>

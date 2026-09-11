@@ -61,7 +61,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
   <meta name="docsearch:version" content="0.1.5" />
-    <meta name="docbuild:last-update" content="Sep 10, 2026"/>
+    <meta name="docbuild:last-update" content="Sep 11, 2026"/>
   
     
     <script src="../_static/searchtools.js"></script>
@@ -503,7 +503,10 @@
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-fusion">Stage Fusion</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-values-reach-a-factory">How Values Reach a Factory</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-values-reach-a-factory">How Values Reach a Factory</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-and-gpu-placement-contract">Device and GPU placement contract</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-prep-and-runner">Runtime Prep and Runner</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
 </ul>
@@ -898,6 +901,38 @@ factory does not accept raises at construction. Standard kwargs
 (<code class="docutils literal notranslate"><span class="pre">model_path</span></code>, <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code>, <code class="docutils literal notranslate"><span class="pre">total_gpu_memory_fraction</span></code>) are injected only when
 the factory signature declares them; <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> is owned by placement and is
 rejected from the author channel.</p>
+<section id="device-and-gpu-placement-contract">
+<h3>Device and GPU placement contract<a class="headerlink" href="#device-and-gpu-placement-contract" title="Link to this heading">#</a></h3>
+<p>A stage’s card is placement’s decision, made in the parent process from
+<code class="docutils literal notranslate"><span class="pre">stage.gpu</span></code> (or <code class="docutils literal notranslate"><span class="pre">processes.&lt;name&gt;.replica_devices</span></code> for a replicated process)
+and handed to the factory as <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code>. The factory’s <code class="docutils literal notranslate"><span class="pre">device</span></code> argument is
+only ever a device type: <code class="docutils literal notranslate"><span class="pre">cpu</span></code> to keep a stage on the host, or a platform
+type such as <code class="docutils literal notranslate"><span class="pre">cuda</span></code>/<code class="docutils literal notranslate"><span class="pre">npu</span></code> that must match the host. It never carries an
+index. <code class="docutils literal notranslate"><span class="pre">cuda:1</span></code> in a config is refused, and so are <code class="docutils literal notranslate"><span class="pre">factory.gpu_id</span></code> and the
+two memory-fraction kwargs listed in <code class="docutils literal notranslate"><span class="pre">PLACEMENT_OWNED_FACTORY_KWARGS</span></code>
+(<code class="docutils literal notranslate"><span class="pre">sglang_omni/config/schema.py</span></code>), because those are injected by placement.</p>
+<p>Inside a factory the two values meet in one helper:</p>
+<ol class="arabic simple">
+<li><p>Declare both parameters, <code class="docutils literal notranslate"><span class="pre">device:</span> <span class="pre">str</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></code> and
+<code class="docutils literal notranslate"><span class="pre">gpu_id:</span> <span class="pre">int</span> <span class="pre">|</span> <span class="pre">None</span> <span class="pre">=</span> <span class="pre">None</span></code>. A GPU-placed stage whose factory has no
+<code class="docutils literal notranslate"><span class="pre">gpu_id</span></code> parameter is refused by name before any weight is loaded.</p></li>
+<li><p>Call <code class="docutils literal notranslate"><span class="pre">sglang_omni.utils.device.resolve_concrete_device(device,</span> <span class="pre">gpu_id)</span></code>.
+It checks the requested type against the host platform, takes the index
+from <code class="docutils literal notranslate"><span class="pre">gpu_id</span></code>, and only when neither side supplied one asks the host
+which card the process already sits on. Do not call <code class="docutils literal notranslate"><span class="pre">resolve_device_spec</span></code>
+from a factory and do not combine the two values by hand.</p></li>
+<li><p>A factory that builds SGLang <code class="docutils literal notranslate"><span class="pre">ServerArgs</span></code> itself writes the resolved
+type into <code class="docutils literal notranslate"><span class="pre">server_args_overrides[&quot;device&quot;]</span></code> through
+<code class="docutils literal notranslate"><span class="pre">sglang_omni.scheduling.sglang_backend.pin_resolved_device_type</span></code>, which
+also rejects an operator override that names a different device. The
+shared <code class="docutils literal notranslate"><span class="pre">SGLangGenerationEngineBuilder</span></code> already does this.</p></li>
+</ol>
+<p><code class="docutils literal notranslate"><span class="pre">tests/unit_test/test_stage_device_contract.py</span></code> sweeps every model, topology
+and stage in the repository against these rules; a new model is covered
+without registering anything. Because every GPU factory follows them, any
+GPU process can be given <code class="docutils literal notranslate"><span class="pre">num_replicas</span></code>/<code class="docutils literal notranslate"><span class="pre">replica_devices</span></code>
+(<code class="docutils literal notranslate"><span class="pre">basic_usage/process_topology.md</span></code>).</p>
+</section>
 </section>
 <section id="runtime-prep-and-runner">
 <h2>Runtime Prep and Runner<a class="headerlink" href="#runtime-prep-and-runner" title="Link to this heading">#</a></h2>
@@ -1009,7 +1044,10 @@ inside one pipeline.</p>
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#stage-fusion">Stage Fusion</a></li>
 </ul>
 </li>
-<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-values-reach-a-factory">How Values Reach a Factory</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#how-values-reach-a-factory">How Values Reach a Factory</a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#device-and-gpu-placement-contract">Device and GPU placement contract</a></li>
+</ul>
+</li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#runtime-prep-and-runner">Runtime Prep and Runner</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#tensor-parallelism">Tensor Parallelism</a></li>
 </ul>
@@ -1045,7 +1083,7 @@ By SGLang-Omni Team
   
   <div class="footer-item">
     <p class="last-updated">
-  Last updated on Sep 10, 2026.
+  Last updated on Sep 11, 2026.
   <br/>
 </p>
   </div>
