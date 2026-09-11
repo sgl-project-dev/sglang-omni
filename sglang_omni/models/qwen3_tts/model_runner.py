@@ -185,15 +185,16 @@ class Qwen3TTSModelRunner(ModelRunner):
         if isinstance(hidden, torch.Tensor) and hidden.ndim == 2:
             hidden = hidden.unsqueeze(1)
         semantic_positions = self._sample_positions(forward_batch, layer0_codes.device)
+        # The host only consumes the semantic token IDs. Fence their copy
+        # before launching the residual-code predictor so CPU bookkeeping can
+        # overlap its GPU work. Codec snapshots and their ready event are still
+        # recorded after the predictor in post_process_outputs on this stream.
+        self._stage_token_ids(result, result.next_token_ids)
         self.model.code_predictor_forward(
             layer0_codes,
             hidden,
             semantic_positions=semantic_positions,
         )
-        # Note: (Jiaxin Deng) stage the ids into pinned host memory now so the
-        # output processor's .tolist() waits on an event instead of issuing a
-        # blocking pageable copy inside the decode loop.
-        self._stage_token_ids(result, result.next_token_ids)
         self._has_pending_code_step = True
 
     def post_process_outputs(
