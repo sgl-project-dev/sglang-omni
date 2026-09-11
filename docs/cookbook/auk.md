@@ -88,7 +88,17 @@ Base AuK uses Euler integration with factory defaults `nfe=32`, `cfg_strength=2.
 
 `seed` initializes separate request-local generators for target noise and reference VAE posterior sampling, without changing the process RNG. Sampling is reproducible for fixed inputs; different batch shapes or compute backends can still produce numerical differences. Multiple structured references are rejected.
 
-Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them. Audio is returned after decoding completes; incremental audio streaming is not implemented.
+Conditioning and DiT sampling use dynamic batching, with default maximum batch sizes of 8 and 16. VAE decoding groups equal-length latents (up to 4 requests) to preserve boundary behavior. The stages can overlap on separate CUDA streams and share VAE weights within the same process/device. Set `--conditioning.factory.max_batch_size`, `--auk_engine.factory.max_batch_size`, or `--decode.factory.max_batch_size` to tune them.
+
+For throughput-oriented workloads, opt in to the configured 10 ms batch windows at both GPU-heavy stages:
+
+```bash
+python -m sglang_omni.cli serve --model-path tencent/AuK \
+  --conditioning.factory.batch_wait_when_idle true \
+  --auk_engine.factory.batch_wait_when_idle true
+```
+
+This can form fuller batches when the pipeline was idle, at the cost of adding the batch window to low-concurrency latency. Audio is returned after decoding completes; incremental audio streaming is not implemented.
 
 ## SeedTTS Evaluation
 

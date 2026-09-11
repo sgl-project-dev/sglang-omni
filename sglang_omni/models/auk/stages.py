@@ -77,7 +77,13 @@ def _load_flow(checkpoint: str, device: str):
     return flow.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
 
 
-def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
+def _scheduler(
+    compute_batch,
+    device,
+    max_batch_size,
+    max_batch_wait_ms,
+    batch_wait_when_idle=False,
+):
     stream = torch.cuda.Stream(device=device) if device.type == "cuda" else None
 
     @torch.inference_mode()
@@ -90,7 +96,7 @@ def _scheduler(compute_batch, device, max_batch_size, max_batch_wait_ms):
         batch_compute_fn=run,
         max_batch_size=max_batch_size,
         max_batch_wait_ms=max_batch_wait_ms,
-        batch_wait_when_idle=False,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
@@ -161,6 +167,7 @@ def create_conditioning_executor(
     text_encoder_path: str = C.DEFAULT_TEXT_ENCODER,
     max_batch_size: int = 8,
     max_batch_wait_ms: int = 10,
+    batch_wait_when_idle: bool = False,
 ) -> SimpleScheduler:
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
@@ -174,6 +181,7 @@ def create_conditioning_executor(
         device,
         max_batch_size,
         max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
@@ -216,6 +224,7 @@ def create_auk_engine_executor(
     max_seconds: float = C.MAX_SECONDS,
     max_batch_size: int = 16,
     max_batch_wait_ms: int = 10,
+    batch_wait_when_idle: bool = False,
 ) -> SimpleScheduler:
     device = resolve_concrete_device(device, gpu_id)
     checkpoint = resolve_checkpoint(model_path)
@@ -239,6 +248,7 @@ def create_auk_engine_executor(
         device,
         max_batch_size,
         max_batch_wait_ms,
+        batch_wait_when_idle=batch_wait_when_idle,
     )
 
 
