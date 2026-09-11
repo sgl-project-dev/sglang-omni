@@ -673,6 +673,8 @@ def test_cli_checks_server_root_and_preserves_completion_url(
             "~/dataset",
             "--model",
             "test",
+            "--model-revision",
+            "weights-commit",
             "--base-url",
             f"http://127.0.0.1:{server.server_port}{suffix}",
             "--level",
@@ -697,6 +699,10 @@ def test_cli_checks_server_root_and_preserves_completion_url(
     assert routes == ["/health", "/v1/chat/completions"]
     assert saved["per_sample"]["level1"][0]["predicted_answer"] == "A"
     assert saved["config"]["dataset_root"] == str(tmp_path / "dataset")
+    assert saved["config"]["model_revision"] == "weights-commit"
+    assert (
+        saved["provenance"]["artifacts"]["declared_model_revision"] == "weights-commit"
+    )
 
 
 @pytest.mark.asyncio
@@ -716,6 +722,29 @@ async def test_invalid_usage_becomes_a_request_failure(field, invalid_count) -> 
     assert not result.is_success
     assert result.request_id == "one"
     assert "invalid token usage" in result.error
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("usage", [None, [], [1], "", "invalid", 0, False])
+async def test_non_object_usage_is_a_request_failure(usage) -> None:
+    result = await request_chat_completion(
+        _Session(
+            _Response(
+                200,
+                json.dumps(
+                    {
+                        "choices": [{"message": {"content": "A"}}],
+                        "usage": usage,
+                    }
+                ),
+            )
+        ),
+        api_url="http://example/v1/chat/completions",
+        payload={},
+        request_id="usage",
+    )
+    assert not result.is_success
+    assert "usage must be an object" in result.error
 
 
 @pytest.mark.parametrize("api_key_env", ["", " ", " KEY", "KEY ", 1])
@@ -899,7 +928,15 @@ async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
     monkeypatch.setattr(entrypoint, "collect_benchmark_provenance", fake_provenance)
 
     async def fake_model(*_args, **_kwargs):
-        return records, [], 1.0
+        return (
+            records,
+            [
+                RequestResult(request_id="bad:prefix", error="no encoder"),
+                RequestResult(request_id="0:when", is_success=True),
+                RequestResult(request_id="1:when", error="server failure"),
+            ],
+            1.0,
+        )
 
     monkeypatch.setattr(entrypoint, "run_level2_model", fake_model)
     config = entrypoint.SocialOmniEvalConfig(
@@ -920,6 +957,11 @@ async def test_level2_automatically_derives_first_200_view(monkeypatch) -> None:
     assert result["paper_core_200"]["when"]["total_samples"] == 200
     assert result["summary"]["status"] == "incomplete"
     assert provenance_args["dataset_revision"] == entrypoint.SOCIALOMNI_DATASET_REVISION
+    assert provenance_args["model_revision"] is None
+    speed = result["summary"]["level2"]["speed"]["model"]
+    assert speed["total_requests"] == 2
+    assert speed["failed_requests"] == 1
+    assert any(f["request_id"] == "bad:prefix" for f in result["failures"])
 
 
 @pytest.mark.asyncio

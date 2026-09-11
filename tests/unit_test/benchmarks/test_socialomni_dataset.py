@@ -240,6 +240,17 @@ def test_system_ffmpeg_does_not_require_imageio_ffmpeg(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_missing_encoder_is_a_prefix_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setitem(sys.modules, "imageio_ffmpeg", None)
+    monkeypatch.setattr(socialomni.shutil, "which", lambda _: None)
+    assert socialomni.resolve_ffmpeg_executable() is None
+    source = tmp_path / "video.mp4"
+    source.touch()
+    with pytest.raises(RuntimeError, match="ffmpeg is required"):
+        await socialomni.create_video_prefix(source, 1, tmp_path / "cache")
+
+
+@pytest.mark.asyncio
 async def test_cancel_prefix_stops_process_and_removes_temporary(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -322,7 +333,8 @@ async def test_prefix_media_ends_at_query_time(tmp_path: Path, monkeypatch) -> N
     monkeypatch.chdir(tmp_path)
     prefix = await create_video_prefix(source, 0.75, "cache")
     assert prefix.is_absolute()
-    assert await create_video_prefix(source, 0.75, "cache") == prefix
+    monkeypatch.setattr(socialomni, "resolve_ffmpeg_executable", lambda: None)
+    assert await socialomni.create_video_prefix(source, 0.75, "cache") == prefix
     server_dir = tmp_path / "server"
     server_dir.mkdir()
     monkeypatch.chdir(server_dir)

@@ -195,10 +195,10 @@ async def request_chat_completion(
                                     latency_s=time.perf_counter() - request_started,
                                     error=f"invalid completion response: {exc}",
                                 )
-                            usage = body.get("usage") or {}
-                            if not isinstance(usage, dict):
-                                usage = {}
+                            usage = body.get("usage", {})
                             try:
+                                if not isinstance(usage, dict):
+                                    raise ValueError("usage must be an object")
                                 prompt_tokens = usage.get("prompt_tokens", 0)
                                 completion_tokens = usage.get("completion_tokens", 0)
                                 for count in (prompt_tokens, completion_tokens):

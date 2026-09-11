@@ -61,6 +61,7 @@ class SocialOmniEvalConfig:
     output_dir: str
     warmup: int | None = None
     disable_tqdm: bool = False
+    model_revision: str | None = None
 
 
 def _request_failure(result: RequestResult, phase: str) -> dict[str, str] | None:
@@ -107,7 +108,7 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
     dataset_identity = inspect_socialomni_dataset(config.dataset_root, levels)
     provenance = collect_benchmark_provenance(
         model_id=config.model,
-        model_revision=None,
+        model_revision=config.model_revision,
         dataset_id=SOCIALOMNI_DATASET_ID,
         dataset_revision=(
             SOCIALOMNI_DATASET_REVISION
@@ -270,7 +271,8 @@ async def run_socialomni(config: SocialOmniEvalConfig) -> dict[str, Any]:
             "metrics": selected,
             "speed": {
                 "model": compute_speed_metrics(
-                    model_requests, wall_clock_s=model_wall_s
+                    [r for r in model_requests if not r.request_id.endswith(":prefix")],
+                    wall_clock_s=model_wall_s,
                 ),
                 "judges": compute_speed_metrics(
                     judge_requests, wall_clock_s=judge_wall_s
@@ -309,6 +311,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dataset-root", required=True)
     parser.add_argument("--model", required=True)
+    parser.add_argument(
+        "--model-revision",
+        help="Declared model weight revision for provenance; not verified against the server.",
+    )
     parser.add_argument("--base-url", default="http://localhost:8000")
     parser.add_argument("--level", choices=("level1", "level2", "both"), default="both")
     parser.add_argument("--judge-config")

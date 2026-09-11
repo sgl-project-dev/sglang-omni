@@ -377,6 +377,10 @@ failure even when the server returns HTTP 200.
 
 Model requests use `--max-concurrency`; judge concurrency is configured per
 endpoint. Requests respect `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY`.
+Use `--model-revision` to record the served weight revision in the result
+configuration and provenance. This is a user declaration, not a server-verified
+identity; `--model` remains the serving name. Prefix preparation failures stay
+in per-sample results but are excluded from model request speed statistics.
 
 The public dataset downloader pins Hugging Face revision
 `3b76009b45090eaa54007454c93a831f3cc8e1e6`.

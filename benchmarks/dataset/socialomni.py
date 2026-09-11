@@ -353,7 +353,10 @@ def resolve_ffmpeg_executable() -> str | None:
     system = shutil.which("ffmpeg")
     if system:
         return system
-    import imageio_ffmpeg
+    try:
+        import imageio_ffmpeg
+    except ImportError:
+        return None
 
     bundled = Path(imageio_ffmpeg.get_ffmpeg_exe())
     return str(bundled) if bundled.is_file() and os.access(bundled, os.X_OK) else None
@@ -401,9 +404,6 @@ async def create_video_prefix(
     source = Path(input_path).resolve()
     if not source.is_file():
         raise FileNotFoundError(source)
-    ffmpeg = resolve_ffmpeg_executable()
-    if not ffmpeg:
-        raise RuntimeError("ffmpeg is required for SocialOmni Level 2")
     key = hashlib.sha256(
         json.dumps(
             {
@@ -419,6 +419,9 @@ async def create_video_prefix(
     output = cache / f"{key}.mp4"
     if output.is_file() and output.stat().st_size:
         return output
+    ffmpeg = resolve_ffmpeg_executable()
+    if not ffmpeg:
+        raise RuntimeError("ffmpeg is required for SocialOmni Level 2")
     temporary = cache / f".{key}.{uuid.uuid4().hex}.tmp.mp4"
     process = await asyncio.create_subprocess_exec(
         *build_ffmpeg_prefix_command(ffmpeg, source, timestamp_s, temporary),
