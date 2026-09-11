@@ -2048,6 +2048,62 @@ def test_preprocessing_stops_media_loaders_before_closing_connection(
     asyncio.run(run())
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+def test_preprocessing_stops_video_siblings_before_closing_connection(
+    decoded_audio_preprocessor, monkeypatch, cancel
+):
+    from sglang_omni.models.qwen3_omni.components import preprocessor as mod
+    from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+    from sglang_omni.preprocessing.video import (
+        VideoDecodeError,
+        ensure_video_list_async,
+    )
+
+    pre, _, _ = decoded_audio_preprocessor
+    monkeypatch.setattr(mod, "ensure_video_list_async", ensure_video_list_async)
+
+    async def run():
+        entered = asyncio.Event()
+        stopped = asyncio.Event()
+        closed = asyncio.Event()
+
+        async def fetch_video(connector, url, **kwargs):
+            if url.endswith("bad.mp4"):
+                await entered.wait()
+                if cancel:
+                    await asyncio.Event().wait()
+                raise VideoDecodeError("invalid video")
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        async def close(connection):
+            assert stopped.is_set()
+            closed.set()
+
+        monkeypatch.setattr(
+            MultiModalResourceConnector, "fetch_video_async", fetch_video
+        )
+        monkeypatch.setattr(mod.ResourceHTTPConnection, "close", close)
+        payload = make_qwen_payload(
+            inputs={
+                "messages": [],
+                "videos": ["https://example/slow.mp4", "https://example/bad.mp4"],
+            }
+        )
+        task = asyncio.create_task(pre(payload))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        if cancel:
+            task.cancel()
+        with pytest.raises(asyncio.CancelledError if cancel else VideoDecodeError):
+            await asyncio.wait_for(task, timeout=5)
+        assert closed.is_set()
+
+    asyncio.run(run())
+
+
 def test_threaded_preprocessing_loads_repeated_remote_images(monkeypatch):
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from io import BytesIO

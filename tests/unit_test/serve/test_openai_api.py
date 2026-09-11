@@ -2588,6 +2588,8 @@ def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
             "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
             500,
         ),
+        ("Failed to decode video path=/tmp/video.mp4: out of memory", 500),
+        ("Failed to decode video path=/tmp/video.mp4: permission denied", 500),
     ],
 )
 def test_chat_endpoint_classifies_embedded_audio_errors(error, expected_status) -> None:
@@ -2602,6 +2604,67 @@ def test_chat_endpoint_classifies_embedded_audio_errors(error, expected_status) 
     )
     assert response.status_code == expected_status
     assert error in response.text
+
+
+@pytest.mark.parametrize("source_kind", ["path", "file_uri", "data_uri", "http_url"])
+@pytest.mark.parametrize("use_audio_in_video", [False, True])
+def test_chat_endpoint_rejects_corrupt_video(
+    tmp_path, monkeypatch, source_kind, use_audio_in_video
+) -> None:
+    from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
+    from sglang_omni.preprocessing.video import ensure_video_list_async
+
+    corrupt_bytes = b"not a valid mp4 container"
+    video_path = tmp_path / "corrupt.mp4"
+    video_path.write_bytes(corrupt_bytes)
+    sources = {
+        "path": str(video_path),
+        "file_uri": video_path.as_uri(),
+        "data_uri": "data:video/mp4;base64,"
+        + base64.b64encode(corrupt_bytes).decode("ascii"),
+        "http_url": "https://example.com/corrupt.mp4",
+    }
+    connector = MultiModalResourceConnector(allowed_local_media_path=tmp_path)
+    if source_kind == "http_url":
+
+        async def download_video(url, **_kwargs):
+            assert url == sources["http_url"]
+            return corrupt_bytes, "video/mp4"
+
+        monkeypatch.setattr(connector, "_load_http_bytes_async", download_video)
+
+    class VideoDecodingCoordinator(FaultInjectingCoordinator):
+        async def _submit_request(self, request_id, request, *, stream_queue=None):
+            assert isinstance(request, OmniRequest)
+            assert request.inputs["use_audio_in_video"] is use_audio_in_video
+            try:
+                await ensure_video_list_async(
+                    request.inputs["videos"],
+                    extract_audio=request.inputs["use_audio_in_video"],
+                    resource_connector=connector,
+                )
+            except Exception as exc:
+                self.error = str(exc)
+            else:
+                pytest.fail("Corrupt video was accepted by the video loader")
+            await super()._submit_request(
+                request_id, request, stream_queue=stream_queue
+            )
+
+    coordinator = VideoDecodingCoordinator("code2wav")
+    with TestClient(create_app(Client(coordinator))) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3-omni",
+                "messages": [{"role": "user", "content": "Describe the video."}],
+                "videos": [sources[source_kind]],
+                "use_audio_in_video": use_audio_in_video,
+            },
+        )
+
+    assert response.status_code == 400
+    assert "Invalid media data" in response.json()["detail"]
 
 
 def test_transcription_endpoint_returns_text_json() -> None:
