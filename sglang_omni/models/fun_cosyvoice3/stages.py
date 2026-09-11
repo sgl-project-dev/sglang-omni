@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 import time
 from collections import defaultdict
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
+from functools import lru_cache
+from itertools import groupby
 from typing import Any, cast
 
 import torch
@@ -824,6 +827,225 @@ class _PreparedFlowRequest:
     index: int
     sample_rate: int
     flow_input: FlowBatchInput
+    total_mel_frames: int
+    baseline_bucket_key: int
+
+
+@dataclass(frozen=True)
+class _FlowSegment:
+    requests: tuple[_PreparedFlowRequest, ...]
+    padded_work: int
+    newly_merged_span: int
+
+
+def _validate_flow_batch_coalescing_config(
+    span_frames: int,
+    max_added_padding_pct: float,
+) -> None:
+    if span_frames < 0:
+        raise ValueError(
+            "flow_batch_coalesce_span_frames must be greater than or equal to zero"
+        )
+    if not math.isfinite(max_added_padding_pct) or max_added_padding_pct < 0:
+        raise ValueError(
+            "flow_batch_coalesce_max_added_padding_pct must be finite and "
+            "greater than or equal to zero"
+        )
+    if span_frames == 0 and max_added_padding_pct != 0:
+        raise ValueError(
+            "flow_batch_coalesce_max_added_padding_pct must be zero when "
+            "flow_batch_coalesce_span_frames is zero"
+        )
+
+
+def _precompute_flow_segments(
+    buckets: dict[int, list[_PreparedFlowRequest]],
+    *,
+    coalesce_span_frames: int,
+) -> tuple[
+    tuple[tuple[int, tuple[_PreparedFlowRequest, ...]], ...],
+    list[list[_FlowSegment | None]],
+]:
+    atomic_groups = tuple(
+        (bucket_key, tuple(requests))
+        for bucket_key, requests in sorted(buckets.items())
+    )
+    segment_matrix: list[list[_FlowSegment | None]] = [
+        [None] * (len(atomic_groups) + 1) for _ in range(len(atomic_groups) + 1)
+    ]
+
+    for start in range(len(atomic_groups)):
+        flattened: list[_PreparedFlowRequest] = []
+        minimum_total: int | None = None
+        maximum_total: int | None = None
+        for end in range(start + 1, len(atomic_groups) + 1):
+            _, atomic_requests = atomic_groups[end - 1]
+            flattened.extend(atomic_requests)
+            atomic_minimum = min(
+                request.total_mel_frames for request in atomic_requests
+            )
+            atomic_maximum = max(
+                request.total_mel_frames for request in atomic_requests
+            )
+            minimum_total = (
+                atomic_minimum
+                if minimum_total is None
+                else min(minimum_total, atomic_minimum)
+            )
+            maximum_total = (
+                atomic_maximum
+                if maximum_total is None
+                else max(maximum_total, atomic_maximum)
+            )
+            assert minimum_total is not None
+            assert maximum_total is not None
+            newly_merged_span = 0 if end - start == 1 else maximum_total - minimum_total
+            if newly_merged_span > coalesce_span_frames:
+                break
+            segment_matrix[start][end] = _FlowSegment(
+                requests=tuple(flattened),
+                padded_work=len(flattened) * maximum_total,
+                newly_merged_span=newly_merged_span,
+            )
+
+    return atomic_groups, segment_matrix
+
+
+def _minimum_flow_work_solver(
+    segments: Sequence[Sequence[_FlowSegment | None]],
+    *,
+    max_merged_span: int,
+) -> Callable[[int, int], int | None]:
+    """Return memoized minimum padded work for a suffix and solve count."""
+    atomic_count = len(segments) - 1
+
+    @lru_cache(maxsize=None)
+    def min_work(start: int, groups_left: int) -> int | None:
+        if groups_left == 0:
+            return 0 if start == atomic_count else None
+        if atomic_count - start < groups_left:
+            return None
+
+        best: int | None = None
+        last_end = atomic_count - groups_left + 1
+        for end in range(start + 1, last_end + 1):
+            segment = segments[start][end]
+            if segment is None or segment.newly_merged_span > max_merged_span:
+                continue
+            suffix_work = min_work(end, groups_left - 1)
+            if suffix_work is None:
+                continue
+            candidate = segment.padded_work + suffix_work
+            if best is None or candidate < best:
+                best = candidate
+        return best
+
+    return min_work
+
+
+def _within_flow_padding_cap(
+    padded_work: int,
+    baseline_work: int,
+    max_added_padding_pct: float,
+) -> bool:
+    return (padded_work / baseline_work - 1) * 100 <= max_added_padding_pct + 1e-9
+
+
+def _group_flow_requests(
+    buckets: dict[int, list[_PreparedFlowRequest]],
+    *,
+    coalesce_span_frames: int,
+    coalesce_max_added_padding_pct: float,
+) -> list[list[_PreparedFlowRequest]]:
+    """note(chenye): Coarsen contiguous Flow buckets by solve count, padded work,
+    merged span, then deterministic bucket-range order."""
+    _validate_flow_batch_coalescing_config(
+        coalesce_span_frames, coalesce_max_added_padding_pct
+    )
+    if coalesce_span_frames == 0:
+        return list(buckets.values())
+    if not buckets:
+        return []
+
+    atomic_groups, segment_matrix = _precompute_flow_segments(
+        buckets, coalesce_span_frames=coalesce_span_frames
+    )
+    baseline_groups = [list(requests) for _, requests in atomic_groups]
+    baseline_work = sum(
+        len(requests) * max(request.total_mel_frames for request in requests)
+        for _, requests in atomic_groups
+    )
+    if baseline_work == 0:
+        # note(chenye): Avoid division by zero; Flow validates empty inputs later.
+        return baseline_groups
+
+    minimum_work = _minimum_flow_work_solver(
+        segment_matrix, max_merged_span=coalesce_span_frames
+    )
+    solve_count: int | None = None
+    optimal_work: int | None = None
+    for count in range(1, len(atomic_groups) + 1):
+        work = minimum_work(0, count)
+        if work is not None and _within_flow_padding_cap(
+            work,
+            baseline_work,
+            coalesce_max_added_padding_pct,
+        ):
+            solve_count = count
+            optimal_work = work
+            break
+
+    assert solve_count is not None and optimal_work is not None
+
+    candidate_spans = sorted(
+        {
+            segment.newly_merged_span
+            for row in segment_matrix
+            for segment in row
+            if segment is not None
+        }
+    )
+    for optimal_max_merged_span in candidate_spans:
+        if (
+            _minimum_flow_work_solver(
+                segment_matrix, max_merged_span=optimal_max_merged_span
+            )(0, solve_count)
+            == optimal_work
+        ):
+            break
+    else:
+        raise AssertionError("atomic Flow partition must be reachable")
+
+    min_work = _minimum_flow_work_solver(
+        segment_matrix, max_merged_span=optimal_max_merged_span
+    )
+    reconstructed: list[list[_PreparedFlowRequest]] = []
+    start = 0
+    groups_left = solve_count
+    remaining_work = optimal_work
+    atomic_count = len(atomic_groups)
+    while groups_left > 0:
+        last_end = atomic_count - groups_left + 1
+        # note(chenye): Earliest feasible ends implement the deterministic range tie-break.
+        for end in range(start + 1, last_end + 1):
+            segment = segment_matrix[start][end]
+            if segment is None or segment.newly_merged_span > optimal_max_merged_span:
+                continue
+            suffix_work = min_work(end, groups_left - 1)
+            if (
+                suffix_work is not None
+                and segment.padded_work + suffix_work == remaining_work
+            ):
+                reconstructed.append(list(segment.requests))
+                start = end
+                groups_left -= 1
+                remaining_work = suffix_work
+                break
+        else:
+            raise AssertionError("optimal Flow partition reconstruction failed")
+
+    assert start == atomic_count and remaining_work == 0
+    return reconstructed
 
 
 def _group_by_padding_waste(
@@ -859,9 +1081,15 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         flow_batch_bucket_frames: int = 50,
         hift_compute_dtype: str = "float32",
         hift_max_padding_waste: float = 1.5,
+        flow_batch_coalesce_span_frames: int = 384,
+        flow_batch_coalesce_max_added_padding_pct: float = 20.0,
     ) -> None:
         if flow_batch_bucket_frames <= 0:
             raise ValueError("flow_batch_bucket_frames must be greater than zero")
+        _validate_flow_batch_coalescing_config(
+            flow_batch_coalesce_span_frames,
+            flow_batch_coalesce_max_added_padding_pct,
+        )
         if hift_max_padding_waste < 1.0:
             raise ValueError("hift_max_padding_waste must be at least 1.0")
         if hift_compute_dtype not in _AUTOCAST_DTYPES:
@@ -883,6 +1111,10 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         self._hift = hift
         self._compute_dtype = compute_dtype
         self._flow_batch_bucket_frames = flow_batch_bucket_frames
+        self._flow_batch_coalesce_span_frames = flow_batch_coalesce_span_frames
+        self._flow_batch_coalesce_max_added_padding_pct = (
+            flow_batch_coalesce_max_added_padding_pct
+        )
         self._hift_compute_dtype = _AUTOCAST_DTYPES[hift_compute_dtype]
         self._hift_max_padding_waste = hift_max_padding_waste
         self._hift_samples_per_mel_frame: int | None = None
@@ -908,36 +1140,57 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
     async def decode_batch(
         self, items: list[tuple[FunCosyVoice3State, torch.Tensor]]
     ) -> list[tuple[Any, int]]:
-        prepared = [
-            _PreparedFlowRequest(
+        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
+        for index, (state, codes) in enumerate(items):
+            flow_input = self._make_flow_input(state, codes)
+            total_mel_frames = self._flow_total_mel_frames(flow_input)
+            baseline_bucket_key = self._flow_bucket_key_for_total(total_mel_frames)
+            request = _PreparedFlowRequest(
                 index=index,
                 sample_rate=state.sample_rate,
-                flow_input=self._make_flow_input(state, codes),
+                flow_input=flow_input,
+                total_mel_frames=total_mel_frames,
+                baseline_bucket_key=baseline_bucket_key,
             )
-            for index, (state, codes) in enumerate(items)
-        ]
-        results: list[tuple[Any, int] | None] = [None] * len(prepared)
-        buckets: dict[int, list[_PreparedFlowRequest]] = defaultdict(list)
-        for request in prepared:
-            buckets[self._flow_bucket_key(request.flow_input)].append(request)
+            buckets[baseline_bucket_key].append(request)
 
-        for bucket in buckets.values():
+        results: list[tuple[Any, int] | None] = [None] * len(items)
+        flow_groups = _group_flow_requests(
+            buckets,
+            coalesce_span_frames=self._flow_batch_coalesce_span_frames,
+            coalesce_max_added_padding_pct=(
+                self._flow_batch_coalesce_max_added_padding_pct
+            ),
+        )
+
+        for flow_group in flow_groups:
             with torch.autocast(
                 device_type=current_platform.device_type,
                 dtype=self._compute_dtype,
                 enabled=self._compute_dtype is not None,
             ):
                 mel_list = self._flow.inference(
-                    [request.flow_input for request in bucket]
+                    [request.flow_input for request in flow_group]
                 )
 
-                pairs = list(zip(bucket, mel_list, strict=True))
-                for group in _group_by_padding_waste(
-                    pairs, max_waste=self._hift_max_padding_waste
+                pairs = list(zip(flow_group, mel_list, strict=True))
+
+                # note(chenye): Atomic buckets stay contiguous, so groupby restores HiFT groups.
+                for _, atomic_pairs_iter in groupby(
+                    pairs, key=lambda pair: pair[0].baseline_bucket_key
                 ):
-                    wavs = self._mel2wav_batch([mel for _, mel in group])
-                    for (request, _), wav in zip(group, wavs, strict=True):
-                        results[request.index] = (wav, request.sample_rate)
+                    atomic_pairs = list(atomic_pairs_iter)
+                    for group in _group_by_padding_waste(
+                        atomic_pairs,
+                        max_waste=self._hift_max_padding_waste,
+                    ):
+                        wavs = self._mel2wav_batch([mel for _, mel in group])
+                        for (request, _), wav in zip(group, wavs, strict=True):
+                            results[request.index] = (
+                                wav,
+                                request.sample_rate,
+                            )
+
             self._flow.log_last_solve()
 
         if any(result is None for result in results):
@@ -1082,7 +1335,9 @@ class _CosyVoice3Vocoder(BatchVocoderBase):
         )
 
     def _flow_bucket_key(self, item: FlowBatchInput) -> int:
-        total_mel = self._flow_total_mel_frames(item)
+        return self._flow_bucket_key_for_total(self._flow_total_mel_frames(item))
+
+    def _flow_bucket_key_for_total(self, total_mel: int) -> int:
         return (
             total_mel + self._flow_batch_bucket_frames - 1
         ) // self._flow_batch_bucket_frames
@@ -1172,6 +1427,8 @@ def create_vocoder_executor(
     max_batch_wait_ms: int = 30,
     flow_batch_bucket_frames: int = 50,
     flow_batch_admission_frames: int = _DEFAULT_FLOW_BATCH_ADMISSION_FRAMES,
+    flow_batch_coalesce_span_frames: int = 384,
+    flow_batch_coalesce_max_added_padding_pct: float = 20.0,
     enable_dit_torch_compile: bool = False,
     enable_flow_estimator_trt: bool = False,
     hift_dtype: str = "float32",
@@ -1186,6 +1443,11 @@ def create_vocoder_executor(
 
     if flow_batch_admission_frames <= 0:
         raise ValueError("flow_batch_admission_frames must be greater than zero")
+
+    _validate_flow_batch_coalescing_config(
+        flow_batch_coalesce_span_frames,
+        flow_batch_coalesce_max_added_padding_pct,
+    )
     reject_conflicting_dit_accelerators(
         enable_dit_torch_compile=enable_dit_torch_compile,
         enable_flow_estimator_trt=enable_flow_estimator_trt,
@@ -1212,6 +1474,10 @@ def create_vocoder_executor(
         hift,
         compute_dtype=compute_dtype,
         flow_batch_bucket_frames=flow_batch_bucket_frames,
+        flow_batch_coalesce_span_frames=flow_batch_coalesce_span_frames,
+        flow_batch_coalesce_max_added_padding_pct=(
+            flow_batch_coalesce_max_added_padding_pct
+        ),
         hift_compute_dtype=hift_dtype,
         hift_max_padding_waste=hift_max_padding_waste,
     )

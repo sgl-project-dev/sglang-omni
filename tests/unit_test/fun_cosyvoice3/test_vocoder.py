@@ -249,6 +249,30 @@ def _codes(length: int, value: int = 1) -> torch.Tensor:
     return torch.full((length,), value, dtype=torch.long)
 
 
+def _flow_buckets(
+    totals: list[int], *, bucket_frames: int
+) -> dict[int, list[stages._PreparedFlowRequest]]:
+    flow_input = stages.FlowBatchInput(
+        token=torch.empty((1, 0), dtype=torch.int32),
+        prompt_token=torch.empty((1, 0), dtype=torch.int32),
+        prompt_feat=torch.empty((1, 0, 80)),
+        embedding=torch.empty((1, 192)),
+    )
+    buckets: dict[int, list[stages._PreparedFlowRequest]] = {}
+    for index, total in enumerate(totals):
+        bucket_key = (total + bucket_frames - 1) // bucket_frames
+        buckets.setdefault(bucket_key, []).append(
+            stages._PreparedFlowRequest(
+                index=index,
+                sample_rate=24000,
+                flow_input=flow_input,
+                total_mel_frames=total,
+                baseline_bucket_key=bucket_key,
+            )
+        )
+    return buckets
+
+
 def _install_fake_batch_adapter(monkeypatch, calls: list[list]) -> None:
     def fake_infer(flow, inputs):
         del flow
@@ -319,6 +343,94 @@ def test_decode_batch_same_bucket_batches_flow_once(monkeypatch) -> None:
     # HiFT runs once over the padded batch rather than once per request.
     assert len(hift.calls) == 1
     assert hift.calls[0][0].shape[0] == 2
+
+
+def test_decode_batch_coalesces_flow_preserving_hift_groups_and_order(
+    monkeypatch,
+) -> None:
+    items = [
+        (_state(sample_rate=16003, prompt_tokens=0), _codes(26, 3)),
+        (_state(sample_rate=16001, prompt_tokens=0), _codes(24, 1)),
+        (_state(sample_rate=16004, prompt_tokens=0), _codes(27, 4)),
+        (_state(sample_rate=16002, prompt_tokens=0), _codes(25, 2)),
+    ]
+
+    flow = _BatchCapableFakeFlow()
+    hift = _FakeHiFT()
+    flow_calls: list[list] = []
+    _install_fake_batch_adapter(monkeypatch, flow_calls)
+    vocoder = stages._CosyVoice3Vocoder(
+        flow,
+        hift,
+        flow_batch_bucket_frames=50,
+        flow_batch_coalesce_span_frames=64,
+        flow_batch_coalesce_max_added_padding_pct=10,
+    )
+    results = asyncio.run(vocoder.decode_batch(items))
+    hift_memberships = [
+        tuple(int(value) for value in call[0][:, 0, 0].tolist()) for call in hift.calls
+    ]
+
+    assert [sample_rate for _, sample_rate in results] == [16003, 16001, 16004, 16002]
+    assert [[item.token.shape[1] for item in call] for call in flow_calls] == [
+        [24, 25, 26, 27]
+    ]
+    assert hift_memberships == [(1, 2), (3, 4)]
+
+
+@pytest.mark.parametrize(
+    ("totals", "bucket_frames", "span_frames", "padding_pct", "expected"),
+    [
+        pytest.param(
+            [10, 13, 30, 33],
+            10,
+            4,
+            5,
+            [[10], [13], [30, 33]],
+            id="global-padding-cap",
+        ),
+        pytest.param(
+            [10, 10, 10, 11, 13],
+            1,
+            3,
+            10,
+            [[10, 10, 10], [11, 13]],
+            id="minimum-padded-work",
+        ),
+        pytest.param(
+            [10, 10, 20, 40],
+            10,
+            40,
+            30,
+            [[10, 10, 20], [40]],
+            id="maximum-merged-span",
+        ),
+        pytest.param(
+            [450] + [500] * 15,
+            50,
+            384,
+            20,
+            [[450] + [500] * 15],
+            id="b16-production-regime",
+        ),
+    ],
+)
+def test_flow_coalescing_partition_policy(
+    totals: list[int],
+    bucket_frames: int,
+    span_frames: int,
+    padding_pct: float,
+    expected: list[list[int]],
+) -> None:
+    groups = stages._group_flow_requests(
+        _flow_buckets(totals, bucket_frames=bucket_frames),
+        coalesce_span_frames=span_frames,
+        coalesce_max_added_padding_pct=padding_pct,
+    )
+
+    assert [
+        [request.total_mel_frames for request in group] for group in groups
+    ] == expected
 
 
 def test_decode_batch_runs_hift_once_over_padded_mels(monkeypatch) -> None:
@@ -543,6 +655,8 @@ def test_create_vocoder_executor_defaults_batch_for_real_lengths(monkeypatch) ->
     ), "default admission budget no longer holds a useful batch"
     assert scheduler._max_batch_size == 16
     assert scheduler._max_batch_wait_s == pytest.approx(0.03)
+    assert scheduler._vocoder._flow_batch_coalesce_span_frames == 384
+    assert scheduler._vocoder._flow_batch_coalesce_max_added_padding_pct == 20.0
 
 
 def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> None:
@@ -578,6 +692,8 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
         max_batch_wait_ms=7,
         flow_batch_bucket_frames=100,
         flow_batch_admission_frames=200,
+        flow_batch_coalesce_span_frames=0,
+        flow_batch_coalesce_max_added_padding_pct=0,
     )
 
     assert isinstance(scheduler, FunCosyVoice3StreamingVocoderScheduler)
@@ -585,6 +701,8 @@ def test_create_vocoder_executor_threads_batch_configuration(monkeypatch) -> Non
     assert scheduler._max_batch_wait_s == pytest.approx(0.007)
     assert scheduler._max_batch_cost == 200
     assert callable(scheduler._request_cost_fn)
+    assert scheduler._vocoder._flow_batch_coalesce_span_frames == 0
+    assert scheduler._vocoder._flow_batch_coalesce_max_added_padding_pct == 0
     state = _state(prompt_tokens=1)
     state.audio_codes = _codes(2)
     assert scheduler._request_cost_fn(_payload(state)) == 100
@@ -815,6 +933,8 @@ def test_pipeline_config_sets_flow_batch_bucket_by_default() -> None:
         "dtype": "bfloat16",
         "flow_batch_bucket_frames": 50,
         "flow_batch_admission_frames": 8000,
+        "flow_batch_coalesce_span_frames": 384,
+        "flow_batch_coalesce_max_added_padding_pct": 20.0,
         "max_batch_size": 16,
         "max_batch_wait_ms": 30,
         "enable_flow_estimator_trt": False,

@@ -76,6 +76,8 @@ class FunCosyVoice3PipelineConfig(PipelineConfig):
                 dtype="bfloat16",
                 flow_batch_bucket_frames=50,
                 flow_batch_admission_frames=8000,
+                flow_batch_coalesce_span_frames=384,
+                flow_batch_coalesce_max_added_padding_pct=20.0,
                 max_batch_size=16,
                 max_batch_wait_ms=30,
                 # note (guozhihao-224, chenyang):

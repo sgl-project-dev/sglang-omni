@@ -206,6 +206,18 @@ The buffered vocoder batches requests through a two-stage pipeline. The schedule
 
 HiFT vocoding follows the same batching pattern. Mels from a Flow bucket are right-zero-padded into a single tensor, decoded in one HiFT call, and sliced back to each request's true length. The padding budget (`hift_max_padding_waste`, default 1.5) limits wasted computation; since right-padding matches HiFT's single-request behavior, batched output is equivalent to individual inference except on padded frames. This design trades off throughput against latency while maintaining output correctness.
 
+Adaptive Flow coalescing is enabled by default for buffered, non-streaming requests. The existing 50-frame Flow buckets remain atomic, while adjacent buckets may share one Flow solve when the merged raw mel-length span is at most `flow_batch_coalesce_span_frames` (default `384`) and the total added padded Flow work stays within `flow_batch_coalesce_max_added_padding_pct` (default `20`). Set both options to `0` to disable coalescing.
+
+Disable adaptive Flow coalescing:
+
+```bash
+sgl-omni serve \
+  --model-path FunAudioLLM/Fun-CosyVoice3-0.5B-2512 \
+  --port 8000 \
+  --vocoder.factory.flow_batch_coalesce_span_frames 0 \
+  --vocoder.factory.flow_batch_coalesce_max_added_padding_pct 0
+```
+
 Change the mel-frame bucket size, for example to 100 frames:
 
 ```bash
@@ -385,8 +397,7 @@ where `prompt_pad` (0–24) rounds the Flow prompt-token length up to a
 multiple of 25. Later hops grow 25 → 50 → 100 tokens like the upstream
 `CosyVoice3Model` (default; keep growth on). Each scheduler step runs at most
 one hop per request so a backlogged stream cannot monopolize the GPU.
-Non-streaming requests still decode the whole utterance in one Flow + HiFT
-pass.
+Non-streaming requests still use the buffered Flow + HiFT path for the whole utterance.
 
 Optional serving knobs (vocoder factory; keep `tts_engine.factory.token_hop_len`
 in sync if you change the hop):
