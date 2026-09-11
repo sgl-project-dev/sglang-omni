@@ -65,6 +65,9 @@ class Hooks(SessionHooks):
 
     def close(self, state):
         self.events.put(("close", self.name, state["id"]))
+        if state["params"].get("fail_close_once") == self.name:
+            state["params"]["fail_close_once"] = None
+            raise RuntimeError("close rejected")
 
     def usage(self, state):
         return ResourceUsage(bytes=state["n"])

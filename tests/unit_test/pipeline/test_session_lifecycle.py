@@ -11,6 +11,13 @@ from sglang_omni.proto.session import SessionLimits, TimedChunk
 from tests.unit_test.fixtures.session_pipeline import block_async_call, chunk, pipeline
 
 
+def drain(events):
+    log = []
+    while not events.empty():
+        log.append(events.get(timeout=1))
+    return log
+
+
 @pytest.mark.asyncio
 async def test_timeout_cancel_noop_waits_before_close(tmp_path):
     async with pipeline(tmp_path) as (coordinator, events, processes):
@@ -53,6 +60,43 @@ async def test_open_timeout_quarantines_and_worker_shutdown_releases(tmp_path):
         await asyncio.sleep(0.4)
         with pytest.raises(RuntimeError, match="capacity remains reserved"):
             await coordinator.close_session(coordinator._sessions["slow-open"].ref)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["close_rejected", "pump_unresponsive"])
+async def test_unconfirmed_owner_release_blocks_new_sessions(tmp_path, reason):
+    async with pipeline(tmp_path) as (coordinator, events, processes):
+        params = {"fail_close_once": "source"}
+        if reason == "pump_unresponsive":
+            params = {"ignore_cancel": True, "delay": 0.3}
+        ref = await coordinator.open_session(
+            OmniRequest(None, params), stages=["source", "sink"], session_id="held"
+        )
+        if reason == "pump_unresponsive":
+            coordinator._sessions["held"].limits = SessionLimits(command_timeout_s=0.1)
+            output = coordinator.session_outputs(ref)
+            await coordinator.append_session(ref, chunk(0))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(anext(output), 5)
+            await output.aclose()
+        else:
+            with pytest.raises(RuntimeError, match="cleanup incomplete"):
+                await coordinator.close_session(ref)
+        assert coordinator._sessions["held"].cleanup_error is not None
+        with pytest.raises(ValueError, match="unavailable owner"):
+            await coordinator.open_session(OmniRequest(None), stages=["source", "sink"])
+        with pytest.raises(ValueError, match="already reserved"):
+            await coordinator.open_session(
+                OmniRequest(None), stages=["source", "sink"], session_id="held"
+            )
+        with pytest.raises(RuntimeError, match="capacity remains reserved"):
+            await coordinator.close_session(ref)
+        if reason == "close_rejected":
+            # Note (Junnan Li): Only the owner whose close was rejected, and owners upstream of
+            # it, stay unconfirmed; the downstream owner acknowledged its close.
+            closed = [e[1] for e in drain(events) if e[0] == "close"]
+            assert closed == ["sink", "source"]
+        await asyncio.sleep(0.4)
 
 
 @pytest.mark.asyncio

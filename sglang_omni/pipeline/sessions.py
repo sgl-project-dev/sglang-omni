@@ -124,11 +124,12 @@ class CoordinatorSessions:
             )
             for stage in stages
         )
-        if any(
-            owner not in self._stages or owner in self._session_unavailable_stages
-            for owner in owners
-        ):
+        if any(owner not in self._stages for owner in owners):
             raise ValueError("session route contains an unregistered owner")
+        if self._session_unavailable_stages.intersection(owners):
+            raise ValueError(
+                "session route contains an unregistered owner or unavailable owner"
+            )
         session = _Session(
             SessionRef(session_id, secrets.randbelow((1 << 63) - 1) + 1),
             request,
@@ -419,6 +420,7 @@ class CoordinatorSessions:
                 )
             except asyncio.TimeoutError as exc:
                 session.cleanup_error = session.error = exc
+                self._session_unavailable_stages.update(session.opened)
                 session.pump.cancel()
                 await asyncio.gather(session.pump, return_exceptions=True)
                 session.closed = True
@@ -426,13 +428,16 @@ class CoordinatorSessions:
                 return
         session.pending.clear()
         session.pending_count = session.pending_bytes = 0
+        unconfirmed = list(session.opened)
         for owner in reversed(session.opened):
             try:
                 await self._session_command(session, "close", owner=owner)
+                unconfirmed.pop()
             except Exception as exc:
                 session.cleanup_error = exc
                 session.error = session.error or exc
                 # An unacknowledged downstream owner may still use upstream data.
+                self._session_unavailable_stages.update(unconfirmed)
                 break
         session.closed = True
         session.output_wake.set()
