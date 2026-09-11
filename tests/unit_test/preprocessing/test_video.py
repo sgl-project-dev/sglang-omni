@@ -4,49 +4,67 @@
 from __future__ import annotations
 
 import asyncio
-import subprocess
 import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-import imageio_ffmpeg
 import numpy as np
 import pytest
 
-from sglang_omni.preprocessing import video
+from sglang_omni.preprocessing import audio, image, video
 from sglang_omni.preprocessing.resource_connector import run_media_io
 from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 def _write_video_with_audio(path: Path) -> None:
-    subprocess.run(
-        [
-            imageio_ffmpeg.get_ffmpeg_exe(),
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "color=size=64x64:rate=10:duration=0.2",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=440:sample_rate=8000:duration=0.2",
-            "-shortest",
-            "-c:v",
-            "libx264",
-            "-c:a",
-            "aac",
-            "-ac",
-            "2",
-            "-y",
-            str(path),
-        ],
-        check=True,
-        stdin=subprocess.DEVNULL,
-        timeout=30,
-    )
+    with video.av.open(str(path), mode="w") as container:
+        frames = container.add_stream("mpeg4", rate=10)
+        frames.width = frames.height = 64
+        frames.pix_fmt = "yuv420p"
+        audio = container.add_stream("aac", rate=8000)
+        audio.layout = "stereo"
+        for _ in range(2):
+            frame = video.av.VideoFrame.from_ndarray(
+                np.zeros((64, 64, 3), dtype=np.uint8), format="rgb24"
+            )
+            for packet in frames.encode(frame):
+                container.mux(packet)
+        for packet in frames.encode():
+            container.mux(packet)
+        samples = np.sin(2 * np.pi * 440 * np.arange(1600) / 8000).astype(np.float32)
+        frame = video.av.AudioFrame.from_ndarray(
+            np.stack([samples, samples]), format="fltp", layout="stereo"
+        )
+        frame.sample_rate = 8000
+        frame.pts = 0
+        for packet in audio.encode(frame):
+            container.mux(packet)
+        for packet in audio.encode():
+            container.mux(packet)
+
+
+@pytest.mark.parametrize("has_frame", [False, True])
+def test_invalid_video_probe_is_bounded(monkeypatch, has_frame):
+    packets = []
+
+    class Container:
+        streams = [SimpleNamespace(type="video")]
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def demux(self, stream):
+            while True:
+                packets.append(1)
+                assert len(packets) <= 32
+                yield SimpleNamespace(decode=lambda: [object()] if has_frame else [])
+
+    monkeypatch.setattr(video.av, "open", lambda path: Container())
+    assert not video._is_invalid_video(Path("video.mp4"), RuntimeError("reader failed"))
+    assert len(packets) == (1 if has_frame else 32)
 
 
 def test_extract_audio_from_path_decodes_resamples_and_downmixes(
@@ -188,7 +206,8 @@ def test_video_reader_error_classification(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancel", [False, True])
-async def test_video_loads_cancel_and_await_siblings(cancel):
+@pytest.mark.parametrize("kind", ["video", "image", "audio"])
+async def test_media_loads_cancel_and_await_siblings(cancel, kind):
     """Both a failed video and request cancellation must finish sibling cleanup."""
     started = asyncio.Event()
     cleaned = asyncio.Event()
@@ -204,12 +223,18 @@ async def test_video_loads_cancel_and_await_siblings(cancel):
             finally:
                 cleaned.set()
 
+    Connector.fetch_image_async = Connector.fetch_video_async
+    Connector.fetch_audio_async = Connector.fetch_video_async
+    loader = {
+        "video": video.ensure_video_list_async,
+        "image": image.ensure_image_list_async,
+        "audio": audio.ensure_audio_list_async,
+    }[kind]
+    connector_arg = "media_connector" if kind == "image" else "resource_connector"
     urls = ["https://example/slow"]
     if not cancel:
         urls.append("https://example/bad")
-    task = asyncio.create_task(
-        video.ensure_video_list_async(urls, resource_connector=Connector())
-    )
+    task = asyncio.create_task(loader(urls, **{connector_arg: Connector()}))
     await asyncio.wait_for(started.wait(), timeout=5)
     if cancel:
         task.cancel()
@@ -219,7 +244,7 @@ async def test_video_loads_cancel_and_await_siblings(cancel):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("through_video_loader", [False, True])
+@pytest.mark.parametrize("through_video_loader", [False, "video", "image", "audio"])
 async def test_cancelled_decoder_is_drained_before_returning(through_video_loader):
     """A cancelled awaiter must not leave its decoder thread using request resources."""
     started = asyncio.Event()
@@ -236,9 +261,19 @@ async def test_cancelled_decoder_is_drained_before_returning(through_video_loade
         async def fetch_video_async(self, url, **kwargs):
             return await run_media_io(decode)
 
+    Connector.fetch_image_async = Connector.fetch_video_async
+    Connector.fetch_audio_async = Connector.fetch_video_async
+    loaders = {
+        "video": video.ensure_video_list_async,
+        "image": image.ensure_image_list_async,
+        "audio": audio.ensure_audio_list_async,
+    }
+    connector_arg = (
+        "media_connector" if through_video_loader == "image" else "resource_connector"
+    )
     task = asyncio.create_task(
-        video.ensure_video_list_async(
-            ["https://example/video.mp4"], resource_connector=Connector()
+        loaders[through_video_loader](
+            ["https://example/video.mp4"], **{connector_arg: Connector()}
         )
         if through_video_loader
         else run_media_io(decode)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from typing import Any
 
@@ -894,7 +895,7 @@ def test_admin_routes_forward_to_client() -> None:
     ]
 
 
-def test_chat_stream_failure_closes_without_done_sentinel() -> None:
+def test_chat_stream_failure_reports_error_before_done_sentinel() -> None:
     chunks: list[str] = []
     client = _fault_client("qwen3-omni")
     req = ChatCompletionRequest(
@@ -916,11 +917,15 @@ def test_chat_stream_failure_closes_without_done_sentinel() -> None:
         ):
             chunks.append(chunk)
 
-    with pytest.raises(RuntimeError, match="cuda out of memory"):
-        asyncio.run(_drive())
+    asyncio.run(_drive())
 
     assert chunks
-    assert all(chunk != "data: [DONE]\n\n" for chunk in chunks)
+    assert chunks[-1] == "data: [DONE]\n\n"
+    assert json.loads(chunks[-2][6:])["error"] == {
+        "message": "cuda out of memory",
+        "type": "server_error",
+        "code": 500,
+    }
 
 
 def test_chat_asgi_send_failure_aborts_backend_and_cleans_state() -> None:
@@ -2608,8 +2613,9 @@ def test_chat_endpoint_classifies_embedded_audio_errors(error, expected_status) 
 
 @pytest.mark.parametrize("source_kind", ["path", "file_uri", "data_uri", "http_url"])
 @pytest.mark.parametrize("use_audio_in_video", [False, True])
+@pytest.mark.parametrize("stream", [False, True])
 def test_chat_endpoint_rejects_corrupt_video(
-    tmp_path, monkeypatch, source_kind, use_audio_in_video
+    tmp_path, monkeypatch, source_kind, use_audio_in_video, stream
 ) -> None:
     from sglang_omni.preprocessing.resource_connector import MultiModalResourceConnector
     from sglang_omni.preprocessing.video import ensure_video_list_async
@@ -2658,13 +2664,64 @@ def test_chat_endpoint_rejects_corrupt_video(
             json={
                 "model": "qwen3-omni",
                 "messages": [{"role": "user", "content": "Describe the video."}],
+                "stream": stream,
                 "videos": [sources[source_kind]],
                 "use_audio_in_video": use_audio_in_video,
             },
         )
 
-    assert response.status_code == 400
-    assert "Invalid media data" in response.json()["detail"]
+    if stream:
+        assert response.status_code == 200
+        events = [
+            json.loads(line[6:])
+            for line in response.text.splitlines()
+            if line.startswith("data: ") and line != "data: [DONE]"
+        ]
+        error = next(event["error"] for event in events if "error" in event)
+        assert error["code"] == 400
+        assert "Invalid media data" in error["message"]
+        assert response.text.endswith("data: [DONE]\n\n")
+    else:
+        assert response.status_code == 400
+        assert "Invalid media data" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("partial", [False, True])
+@pytest.mark.parametrize(
+    "error,code",
+    [
+        (
+            "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
+            400,
+        ),
+        ("cuda out of memory", 500),
+    ],
+)
+def test_chat_stream_reports_error_and_terminates(partial, error, code):
+    class CoordinatorWithOptionalPartial(FaultInjectingCoordinator):
+        async def _handle_stream(self, message):
+            if partial:
+                await super()._handle_stream(message)
+
+    coordinator = CoordinatorWithOptionalPartial("code2wav", error)
+    with TestClient(create_app(Client(coordinator))) as client:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3-omni",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Describe the video."}],
+            },
+        )
+    assert response.status_code == 200
+    events = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    ]
+    assert events[-1]["error"]["code"] == code
+    assert events[-1]["error"]["message"] == error
+    assert response.text.count("data: [DONE]") == 1
 
 
 def test_transcription_endpoint_returns_text_json() -> None:

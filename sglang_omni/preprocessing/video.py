@@ -7,6 +7,7 @@ import asyncio
 import base64
 import logging
 import tempfile
+from itertools import islice
 from pathlib import Path
 from typing import Any
 
@@ -207,59 +208,57 @@ async def ensure_video_list_async(
     coroutines: list[asyncio.Task[tuple[Any, float, Any | None]]] = []
     url_indices: list[int] = []
 
-    # First pass: identify items that need loading
-    for idx, video_item in enumerate(items):
-        if isinstance(video_item, (str, Path)):
-            if _is_url(video_item):
-                # Create coroutine for async URL fetching with optional audio extraction
-                coro = _load_video_with_audio(video_item, is_url=True)
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder for video
-                sample_fps_list.append(0.0)  # Placeholder for fps
-                if extract_audio:
-                    extracted_audios.append(None)  # Placeholder for audio
-            elif Path(video_item).exists():
-                # Load from local path with optional audio extraction
-                coro = _load_video_with_audio(video_item, is_url=False)
-                task = asyncio.create_task(coro)
-                coroutines.append(task)
-                url_indices.append(idx)
-                normalized.append(None)  # Placeholder for video
-                sample_fps_list.append(0.0)  # Placeholder for fps
-                if extract_audio:
-                    extracted_audios.append(None)  # Placeholder for audio
+    try:
+        # First pass: identify items that need loading
+        for idx, video_item in enumerate(items):
+            if isinstance(video_item, (str, Path)):
+                if _is_url(video_item):
+                    # Create coroutine for async URL fetching with optional audio extraction
+                    coro = _load_video_with_audio(video_item, is_url=True)
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # Placeholder for video
+                    sample_fps_list.append(0.0)  # Placeholder for fps
+                    if extract_audio:
+                        extracted_audios.append(None)  # Placeholder for audio
+                elif Path(video_item).exists():
+                    # Load from local path with optional audio extraction
+                    coro = _load_video_with_audio(video_item, is_url=False)
+                    task = asyncio.create_task(coro)
+                    coroutines.append(task)
+                    url_indices.append(idx)
+                    normalized.append(None)  # Placeholder for video
+                    sample_fps_list.append(0.0)  # Placeholder for fps
+                    if extract_audio:
+                        extracted_audios.append(None)  # Placeholder for audio
+                else:
+                    # Path doesn't exist, treat as already processed
+                    normalized.append(video_item)
+                    all_paths = False
+                    if extract_audio:
+                        extracted_audios.append(None)
             else:
-                # Path doesn't exist, treat as already processed
+                # Already processed (torch Tensor, etc.)
                 normalized.append(video_item)
                 all_paths = False
                 if extract_audio:
                     extracted_audios.append(None)
-        else:
-            # Already processed (torch Tensor, etc.)
-            normalized.append(video_item)
-            all_paths = False
-            if extract_audio:
-                extracted_audios.append(None)
 
-    # Wait for all loads to complete
-    if coroutines:
-        try:
+        # Wait for all loads to complete
+        if coroutines:
             results = await asyncio.gather(*coroutines)
-        finally:
-            for task in coroutines:
-                if not task.done():
-                    task.cancel()
-            await await_media_cleanup(
-                asyncio.gather(*coroutines, return_exceptions=True)
-            )
-        # Fill in the results at the correct indices
-        for url_idx, (video, sample_fps, audio) in zip(url_indices, results):
-            normalized[url_idx] = video
-            sample_fps_list[url_idx] = sample_fps
-            if extract_audio:
-                extracted_audios[url_idx] = audio
+            # Fill in the results at the correct indices
+            for url_idx, (video, sample_fps, audio) in zip(url_indices, results):
+                normalized[url_idx] = video
+                sample_fps_list[url_idx] = sample_fps
+                if extract_audio:
+                    extracted_audios[url_idx] = audio
+    finally:
+        for task in coroutines:
+            if not task.done():
+                task.cancel()
+        await await_media_cleanup(asyncio.gather(*coroutines, return_exceptions=True))
 
     if all_paths:
         return (
@@ -321,10 +320,14 @@ def _is_invalid_video(path: Path, error: Exception) -> bool:
             stream = next((s for s in container.streams if s.type == "video"), None)
             if stream is None:
                 return True
-            decoded = False
-            for _frame in container.decode(stream):
-                decoded = True
-            return not decoded
+            packet_count = 0
+            for packet_count, packet in enumerate(
+                islice(container.demux(stream), 32), 1
+            ):
+                if packet.decode():
+                    return False
+            # An inconclusive probe must not reclassify a backend failure.
+            return packet_count < 32
     except (av.error.InvalidDataError, av.error.EOFError):
         return True
     except Exception:

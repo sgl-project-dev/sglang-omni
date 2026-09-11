@@ -875,7 +875,9 @@ that happened to contain an older version of the test.
   `test_video.py` covers embedded-audio decoding, resampling, downmixing,
   absent/empty audio tracks, corrupt-media versus server errors, sibling-task
   cancellation, and decoder-thread cleanup under repeated cancellation. Its small
-  video fixture uses the encoder provided by `imageio_ffmpeg` with a timeout.
+  video fixture uses PyAV, which is declared in all platform dependency sets.
+  Failure probes stop after 32 packets. Media-loader tests cover image, audio
+  and video sibling cleanup on failure and repeated cancellation.
 
 - `unit_test/sampling/`: Random, explicit, and deterministically derived
   per-row sampling-seed contracts.
