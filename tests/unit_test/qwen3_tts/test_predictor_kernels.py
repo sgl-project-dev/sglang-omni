@@ -7,9 +7,19 @@ import pytest
 import torch
 from torch.nn import functional as F
 
+from sglang_omni.models.qwen3_tts import predictor_kernels
 from sglang_omni.models.qwen3_tts.predictor_kernels import (
     gather_codec_embedding_and_add,
 )
+
+
+def test_predictor_triton_kernel_is_disabled_on_npu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(predictor_kernels, "triton", object())
+    monkeypatch.setattr(predictor_kernels, "_is_npu_runtime", lambda: True)
+
+    assert not predictor_kernels._has_triton_runtime()
 
 
 def test_gather_codec_embedding_and_add_cpu_falls_back_without_writes():
