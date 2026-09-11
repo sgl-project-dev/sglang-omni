@@ -65,11 +65,10 @@ class AuKFlowMatching(nn.Module):
     def __init__(self, transformer: AuKDit, num_llm_layers: int):
         super().__init__()
         self.transformer = transformer
+        # The checkpoint stores these next to the DiT, so a strict load needs them
+        # here; the conditioning stage reads its own copy of the same tensors.
         self.layer_weights = nn.Parameter(torch.zeros(num_llm_layers))
         self.layer_scale = nn.Parameter(torch.ones(1))
-
-    def fuse(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        return fuse_hidden_states(hidden_states, self.layer_weights, self.layer_scale)
 
     @torch.no_grad()
     def sample(
