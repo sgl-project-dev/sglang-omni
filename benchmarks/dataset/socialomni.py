@@ -61,6 +61,7 @@ class SocialOmniLevel2Sample:
 def _level_dir(root: Path, level: str, metadata: str) -> Path:
     candidates = [root / "data" / level, root / level]
     if root.name == level:
+        candidates = [root]
     for candidate in candidates:
         metadata_path = candidate / metadata
         if metadata_path.is_file():
