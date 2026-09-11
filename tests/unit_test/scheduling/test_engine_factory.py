@@ -10,7 +10,6 @@ from typing import Any
 import pytest
 
 import sglang_omni.platforms as platforms
-from tests.unit_test.fakes import FakeServerArgs
 
 TEST_MAX_TOTAL_TOKENS = 82000
 
@@ -140,9 +139,6 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
-    )
-    monkeypatch.setattr(
-        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
     )
 
     events: list[str] = []
@@ -390,7 +386,7 @@ def test_tts_engine_builder_phase_order_and_override_contract(monkeypatch) -> No
 
     scheduler = RecordingBuilder().build(
         "model",
-        device="cuda:0",
+        device="cuda",
         gpu_id=2,
         server_args_overrides={
             "cuda_graph_max_bs": 8,
@@ -454,9 +450,6 @@ def _build_minimal_tts_builder_harness(monkeypatch):
     monkeypatch.setattr(
         platforms.current_platform, "device_type", "cuda", raising=False
     )
-    monkeypatch.setattr(
-        "sglang.srt.utils.get_device", lambda device_id=None: f"cuda:{device_id}"
-    )
 
     build_kwargs: dict[str, Any] = {}
     consumed: list[int | None] = []
@@ -476,7 +469,7 @@ def _build_minimal_tts_builder_harness(monkeypatch):
         checkpoint_dir: str, *, context_length: int, **kwargs: Any
     ) -> Any:
         build_kwargs.update(kwargs)
-        return FakeServerArgs(
+        return SimpleNamespace(
             checkpoint_dir=checkpoint_dir,
             context_length=context_length,
             cuda_graph_bs=None,
@@ -560,7 +553,7 @@ def test_byte_budget_clears_builder_default_mem_fraction(monkeypatch, caplog) ->
 
     with caplog.at_level(logging.INFO, logger=engine_factory.logger.name):
         with stage_kv_cache_budget("tts_engine", 2 * 1024**3):
-            MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+            MinimalBuilder().build("model", device="cuda", gpu_id=0)
 
     assert "mem_fraction_static" not in build_kwargs
     assert consumed == [2 * 1024**3]
@@ -574,7 +567,7 @@ def test_without_byte_budget_builder_default_mem_fraction_is_kept(
         monkeypatch
     )
 
-    MinimalBuilder().build("model", device="cuda:0", gpu_id=0)
+    MinimalBuilder().build("model", device="cuda", gpu_id=0)
 
     assert build_kwargs["mem_fraction_static"] == 0.2
     assert consumed == [None]

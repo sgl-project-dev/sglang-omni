@@ -17,6 +17,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
+from sglang.srt.runtime_context import get_context
 
 from sglang_omni.config.runtime import resolve_stage_factory_kwargs
 from sglang_omni.model_runner.prefill_inputs import get_omni_prefill_inputs
@@ -6303,17 +6304,19 @@ def test_qwen3_tts_engine_reports_the_pool_against_the_admission_bound(
 
     scheduler = SimpleNamespace(
         max_total_num_tokens=pool_tokens,
-        server_args=SimpleNamespace(
-            max_running_requests=max_running_requests,
-            context_length=context_length,
-            mem_fraction_static=0.875,
-        ),
         tp_worker=SimpleNamespace(
             model_runner=SimpleNamespace(token_to_kv_pool=FakePool())
         ),
     )
 
-    with caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"):
+    with (
+        get_context().override_server_args(
+            max_running_requests=max_running_requests,
+            context_length=context_length,
+            mem_fraction_static=0.875,
+        ),
+        caplog.at_level("INFO", logger="sglang_omni.models.qwen3_tts.engine_builder"),
+    ):
         Qwen3TtsEngineBuilder().post_scheduler_setup(scheduler, model_runner=None)
 
     assert caplog.messages == [
@@ -6506,11 +6509,20 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
             torch_compile_max_bs=kwargs["torch_compile_max_bs"],
         )
 
+    published: list = []
+
     def fake_create_sglang_infrastructure(server_args, gpu_id, **kwargs):
         del gpu_id
         infrastructure_saw_deferred_capture.append(
             bool(kwargs.get("defer_cuda_graph_capture"))
         )
+        slot = get_context().override_server_args(
+            max_running_requests=server_args.max_running_requests,
+            context_length=server_args.context_length,
+            mem_fraction_static=server_args.mem_fraction_static,
+        )
+        slot.install()
+        published.append(slot)
         worker = FakeWorker(server_args)
         kwargs["before_memory_pool"](worker)
         events.append("memory_pool")
@@ -6548,16 +6560,20 @@ def test_qwen3_tts_engine_accepts_64_batch_policy_and_enables_cuda_graph(
         lambda **kwargs: SimpleNamespace(max_total_num_tokens=579894, **kwargs),
     )
 
-    scheduler = stages.create_sglang_tts_engine_executor(
-        "model",
-        device=None,
-        server_args_overrides={
-            "cuda_graph_max_bs": 64,
-            "torch_compile_max_bs": 64,
-            "mem_fraction_static": 0.7,
-            "max_running_requests": 64,
-        },
-    )
+    try:
+        scheduler = stages.create_sglang_tts_engine_executor(
+            "model",
+            device=None,
+            server_args_overrides={
+                "cuda_graph_max_bs": 64,
+                "torch_compile_max_bs": 64,
+                "mem_fraction_static": 0.7,
+                "max_running_requests": 64,
+            },
+        )
+    finally:
+        while published:
+            published.pop().restore()
 
     assert build_kwargs["disable_cuda_graph"] is False
     assert build_kwargs["cuda_graph_bs"] == expected_cuda_graph_bs
@@ -7183,6 +7199,61 @@ def test_qwen3_tts_config_loads_frontend_only_outside_engine_process() -> None:
         "load_frontend": True,
         "max_concurrency": 1,
     }
+
+
+def test_qwen3_tts_split_preprocessing_loads_the_frontend_on_the_placed_gpu(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The split recipe's `load_frontend=True` path is the only caller of the
+    standalone frontend loader; the default topology never reaches it."""
+    import transformers
+
+    from sglang_omni.models.qwen3_tts import prompt_frontend
+    from sglang_omni.platforms import current_platform
+
+    seen: dict[str, object] = {}
+
+    class FakeFrontend:
+        def load_speech_tokenizer(self, tokenizer) -> None:
+            seen["tokenizer"] = tokenizer
+
+    monkeypatch.setattr(current_platform, "device_type", "cuda", raising=False)
+    monkeypatch.setattr(qwen3_stages, "_register_qwen3_tts_hf_config", lambda: None)
+    monkeypatch.setattr(qwen3_stages, "_resolve_checkpoint", lambda model_path: "ckpt")
+    monkeypatch.setattr(
+        prompt_frontend,
+        "load_qwen3_tts_prompt_frontend",
+        lambda checkpoint_dir, *, device, dtype: seen.update(device=device, dtype=dtype)
+        or FakeFrontend(),
+    )
+    monkeypatch.setattr(
+        qwen3_stages,
+        "_load_qwen3_tts_tokenizer",
+        lambda checkpoint_dir, *, device, dtype, attn_implementation: ("tok", device),
+    )
+    monkeypatch.setattr(
+        qwen3_stages, "_load_qwen3_tts_generate_defaults", lambda ckpt: {}
+    )
+    monkeypatch.setattr(
+        transformers.AutoProcessor, "from_pretrained", lambda *a, **k: "processor"
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_tts",
+        types.SimpleNamespace(Qwen3TTSModel=lambda **kwargs: SimpleNamespace(**kwargs)),
+    )
+    monkeypatch.setattr(
+        qwen3_request_builders,
+        "set_qwen3_tts_preprocessing_context",
+        lambda **kwargs: seen.update(context=kwargs),
+    )
+
+    qwen3_stages.create_preprocessing_executor("model", gpu_id=1, load_frontend=True)
+
+    assert seen["device"] == "cuda:1"
+    assert seen["dtype"] is torch.bfloat16
+    assert seen["tokenizer"] == ("tok", "cuda:1")
+    assert seen["context"]["standalone"] is True
 
 
 def test_qwen3_tts_shared_gpu_layout_demands_no_preprocessing_fraction() -> None:

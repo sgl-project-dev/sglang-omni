@@ -75,7 +75,6 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
             # output budget. The request builder will scale the actual budget
             # with audio duration.
             factory=Qwen3ASRFactoryArgs(
-                device=None,
                 max_new_tokens=128,
                 enable_pre_lm_encoder=True,
                 pre_lm_cache_max_entries=4096,
@@ -102,7 +101,7 @@ class Qwen3ASRPipelineConfig(PipelineConfig):
 
     @property
     def resolved_audio_chunking(self) -> ResolvedAudioChunking:
-        from sglang.srt.utils.tensor_bridge import use_mlx
+        from sglang.srt.hardware_backend.mlx.runtime import use_mlx
 
         from sglang_omni.platforms import current_platform
 
