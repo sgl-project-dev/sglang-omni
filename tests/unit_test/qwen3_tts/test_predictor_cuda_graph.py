@@ -375,18 +375,18 @@ def _with_predictor_layers(talker: Qwen3TTSTalker, num_layers: int) -> Qwen3TTST
 def _predictor_one_token_out_of_place(
     talker: Qwen3TTSTalker, token_embeds: torch.Tensor, *, cache_len: int
 ) -> torch.Tensor:
-    """The predictor layer stack in the residual form on cloned operands.
+    """The predictor layer stack in the residual form without aliasing.
 
-    Same norm calls as the talker's forward, but every operand the fused add
-    and norm or the o_proj epilogue would overwrite is a fresh clone, so the
-    result carries no aliasing."""
+    Same calls as the talker's forward. The three calls that overwrite an
+    operand, the fused add and norm, the o_proj epilogue and the final fused
+    norm, get clones, so no tensor is ever read after it was overwritten."""
     batch_size, _, hidden_size = token_embeds.shape
     positions = talker._predictor_position_rows[cache_len, :batch_size]
-    residual = token_embeds.clone()
+    residual = token_embeds
     mlp_out = None
     for layer_idx, layer in enumerate(talker.code_predictor.model.layers):
         if mlp_out is None:
-            normed = layer.input_layernorm(residual.reshape(-1, hidden_size).clone())
+            normed = layer.input_layernorm(residual.reshape(-1, hidden_size))
         else:
             normed, residual = layer.input_layernorm(
                 mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
@@ -395,7 +395,7 @@ def _predictor_one_token_out_of_place(
         attn_input = talker._predictor_cached_self_attention(
             layer_idx=layer_idx,
             attn=layer.self_attn,
-            hidden_states=normed.reshape(batch_size, 1, hidden_size).clone(),
+            hidden_states=normed.reshape(batch_size, 1, hidden_size),
             positions=positions,
             batch_size=batch_size,
             cache_len=cache_len,
@@ -403,9 +403,7 @@ def _predictor_one_token_out_of_place(
         residual = talker._predictor_o_proj_add_residual(
             layer.self_attn.o_proj, attn_input, residual.clone()
         )
-        normed = layer.post_attention_layernorm(
-            residual.reshape(-1, hidden_size).clone()
-        )
+        normed = layer.post_attention_layernorm(residual.reshape(-1, hidden_size))
         mlp_out = layer.mlp(normed)
     normed, _ = talker.code_predictor.model.norm(
         mlp_out.clone(), residual.reshape(-1, hidden_size).clone()
