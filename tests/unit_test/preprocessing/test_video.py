@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from sglang_omni.preprocessing import video
+from sglang_omni.serve.openai_errors import is_bad_request_error
 
 
 def _write_video_with_audio(path: Path) -> None:
@@ -76,7 +77,18 @@ def test_extract_audio_from_path_returns_none_without_audio(monkeypatch) -> None
     assert video._extract_audio_from_path(Path("silent.mp4"), 16_000) is None
 
 
-def test_extract_audio_from_path_surfaces_decode_failure(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("error", "bad_request"),
+    [
+        (video.av.error.InvalidDataError(1094995529, "broken stream"), True),
+        (RuntimeError("broken stream"), False),
+        (MemoryError("broken stream"), False),
+        (PermissionError("broken stream"), False),
+    ],
+)
+def test_extract_audio_from_path_surfaces_decode_failure(
+    monkeypatch, error, bad_request
+) -> None:
     class Container:
         def __init__(self) -> None:
             self.audio_stream = SimpleNamespace(type="audio", index=2)
@@ -90,12 +102,26 @@ def test_extract_audio_from_path_surfaces_decode_failure(monkeypatch) -> None:
 
         def decode(self, stream):
             assert stream is self.audio_stream
-            raise RuntimeError("broken stream")
+            raise error
 
     monkeypatch.setattr(video.av, "open", lambda _path: Container())
 
-    with pytest.raises(video.VideoDecodeError, match="broken stream"):
+    with pytest.raises(video.VideoDecodeError, match="broken stream") as exc_info:
         video._extract_audio_from_path(Path("broken.mp4"), 16_000)
+
+    assert exc_info.value.__cause__ is error
+    assert is_bad_request_error(exc_info.value) is bad_request
+
+
+def test_extract_audio_from_path_rejects_corrupt_media(tmp_path: Path) -> None:
+    media = tmp_path / "corrupt.mp4"
+    media.write_bytes(b"not an mp4 file")
+
+    with pytest.raises(video.VideoDecodeError, match="Invalid media data") as exc_info:
+        video._extract_audio_from_path(media, 16_000)
+
+    assert isinstance(exc_info.value.__cause__, video.av.error.InvalidDataError)
+    assert is_bad_request_error(exc_info.value)
 
 
 def test_extract_audio_from_path_rejects_empty_audio_stream(monkeypatch) -> None:

@@ -352,63 +352,90 @@ def test_merge_extracted_video_audio_rejects_mixed_audio_presence(missing) -> No
         _merge_extracted_video_audio([], [np.ones(3), missing])
 
 
-def test_merge_extracted_video_audio_preserves_alignment() -> None:
+@pytest.mark.parametrize("sampled_fps", [[2.0, 2.0], [2.0, 4.0]])
+def test_qwen_preprocessor_two_videos_and_audio_with_real_processor(
+    monkeypatch, sampled_fps
+) -> None:
+    """Keep audio features and tokens aligned through the real processor call."""
+    from transformers import (
+        Qwen2Tokenizer,
+        Qwen2VLImageProcessor,
+        Qwen2VLVideoProcessor,
+        WhisperFeatureExtractor,
+    )
     from transformers.models.qwen3_omni_moe.processing_qwen3_omni_moe import (
         Qwen3OmniMoeProcessor,
     )
 
-    from sglang_omni.models.qwen3_omni.components.preprocessor import (
-        Qwen3OmniPreprocessor,
-        _merge_extracted_video_audio,
+    from sglang_omni.models.qwen3_omni.components import (
+        preprocessor as preprocessor_mod,
     )
 
-    explicit = [np.ones(2)]
-    embedded = [np.ones(3), np.ones(4)]
-    merged, enabled = _merge_extracted_video_audio(explicit, embedded)
-
-    assert enabled is True
-    assert len(merged) == 3
-    pre = object.__new__(Qwen3OmniPreprocessor)
-    messages = pre._build_multimodal_messages(
-        [{"role": "user", "content": "Describe the video and audio."}],
-        num_images=0,
-        num_audios=1,
-        num_videos=2,
-    )
-    processor = object.__new__(Qwen3OmniMoeProcessor)
-    processor.image_processor = SimpleNamespace(merge_size=1)
-    processor.video_processor = SimpleNamespace(merge_size=1)
-    processor.audio_token = "<audio>"
-    processor.image_token = "<image>"
-    processor.video_token = "<video>"
-    processor.vision_bos_token = "<vision_start>"
-    processor.vision_eos_token = "<vision_end>"
-    processor.audio_bos_token = "<audio_start>"
-    processor.audio_eos_token = "<audio_end>"
-    placeholders = {
-        "video": "<vision_start><video><vision_end>",
-        "audio": "<audio_start><audio><audio_end>",
+    tokens = {
+        "image_token": "<image>",
+        "audio_token": "<audio>",
+        "video_token": "<video>",
+        "vision_bos_token": "<vision_start>",
+        "vision_eos_token": "<vision_end>",
+        "audio_bos_token": "<audio_start>",
+        "audio_eos_token": "<audio_end>",
     }
-    prompt = "".join(
-        placeholders.get(part["type"], part.get("text", ""))
-        for part in messages[0]["content"]
+    tokenizer = Qwen2Tokenizer(extra_special_tokens=tokens)
+    template = (
+        "{% for message in messages %}{% for part in message['content'] %}"
+        "{% if part['type'] == 'video' %}<vision_start><video><vision_end>"
+        "{% elif part['type'] == 'audio' %}<audio_start><audio><audio_end>"
+        "{% else %}{{ part['text'] }}{% endif %}{% endfor %}{% endfor %}"
     )
-    expanded = processor.replace_multimodal_special_tokens(
-        [prompt],
-        audio_lengths=iter(len(audio) for audio in merged),
-        image_grid_thw=iter(()),
-        video_grid_thw=iter([np.array([1, 1, 1])] * 2),
-        video_second_per_grid=iter([1.0, 1.0]),
-        use_audio_in_video=True,
-        position_id_per_seconds=13.0,
-        seconds_per_chunk=2.0,
-    )[0]
+    processor = Qwen3OmniMoeProcessor(
+        tokenizer=tokenizer,
+        image_processor=Qwen2VLImageProcessor(),
+        video_processor=Qwen2VLVideoProcessor(),
+        feature_extractor=WhisperFeatureExtractor(feature_size=128),
+        chat_template=template,
+    )
+    embedded = [np.ones(3200, dtype=np.float32), np.ones(6400, dtype=np.float32)]
+    explicit = np.ones(9600, dtype=np.float32)
 
-    audio_spans = expanded.split(processor.audio_eos_token)[:3]
-    assert [span.count(processor.audio_token) for span in audio_spans] == [3, 4, 2]
-    assert all(
-        actual is expected for actual, expected in zip(merged, embedded + explicit)
+    async def decoded_videos(*_args, **_kwargs):
+        return [torch.zeros((4, 3, 28, 28))] * 2, sampled_fps, embedded
+
+    monkeypatch.setattr(preprocessor_mod, "ensure_video_list_async", decoded_videos)
+    pre = object.__new__(preprocessor_mod.Qwen3OmniPreprocessor)
+    pre.max_seq_len = None
+    pre.default_video_fps = None
+    pre.default_video_max_frames = None
+    pre.default_video_min_pixels = 28 * 28
+    pre.default_video_max_pixels = 28 * 28
+    pre.default_video_total_pixels = None
+    pre.processor = processor
+    payload = StagePayload(
+        request_id="two-videos-and-audio",
+        request=OmniRequest(
+            inputs={
+                "messages": [
+                    {"role": "user", "content": "Describe the video and audio."}
+                ],
+                "videos": ["first.mp4", "second.mp4"],
+                "audios": [explicit],
+                "use_audio_in_video": True,
+            }
+        ),
+        data={},
     )
+    if sampled_fps[0] != sampled_fps[1]:
+        with pytest.raises(ValueError, match="same sampled FPS"):
+            asyncio.run(pre._call_impl(payload))
+        return
+
+    state = Qwen3OmniPipelineState.from_dict(asyncio.run(pre._call_impl(payload)).data)
+    assert state.mm_inputs["video"]["video_second_per_grid"].tolist() == [1.0, 1.0]
+    assert state.mm_inputs["video"]["video_grid_thw"].shape[0] == 2
+    mask = state.encoder_inputs["audio_encoder"]["feature_attention_mask"]
+    assert mask.sum(-1).tolist() == [20, 40, 60]
+    decoded = tokenizer.decode(state.prompt["input_ids"])
+    spans = decoded.split(tokens["audio_eos_token"])[:3]
+    assert [span.count(tokens["audio_token"]) for span in spans] == [3, 5, 8]
 
 
 @pytest.mark.parametrize(
@@ -452,7 +479,7 @@ def test_qwen_preprocessor_passes_embedded_video_audio_to_processor(
                 result["input_features"] = torch.ones((len(kwargs["audio"]), 2, 3))
             return result
 
-    async def fake_images(_value):
+    async def fake_images(_value, **_kwargs):
         return []
 
     async def fake_videos(_value, **kwargs):
@@ -1871,7 +1898,7 @@ def test_qwen_audio_cache_key_tracks_decoded_content(
     assert after != before
     assert run(audio=audio, video=video, sr=8000) != after
     assert loaded["loads"] == 4
-    assert pre.processor.audio_calls[-1][-1] is track
+    assert pre.processor.audio_calls[-1][0] is track
 
 
 def test_qwen_audio_cache_key_distinguishes_unsampled_file_content(
@@ -1907,7 +1934,7 @@ def test_qwen_audio_cache_key_requires_complete_content(decoded_audio_preprocess
     forward = run()
     loaded["audio"] = [b, a]
     assert run() != forward
-    loaded["video"] = [object()]
+    loaded["video"] = [[object()]]
     assert run(video=True) is None
 
 

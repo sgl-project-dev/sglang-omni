@@ -14,6 +14,8 @@ _BAD_REQUEST_MARKERS = (
     "could not decode the uploaded audio",
     "use_audio_in_video requires every video in a multi-video request",
     "Embedded audio stream decoded no samples:",
+    "Invalid media data while extracting embedded audio from",
+    "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
     "max_new_tokens must be",
     "exceeds the maximum allowed length",
     "sequence exceeds max_length",

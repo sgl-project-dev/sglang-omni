@@ -107,6 +107,8 @@ Standard sampling parameters apply to the thinker stage. When `modalities` inclu
 
 ### Known Limitations
 
+- **Multiple videos must have the same sampled frame rate.** The processor accepts one frame rate for video token timestamps. Requests with different sampled frame rates are rejected with HTTP 400.
+
 - **`modalities: ["text", "audio"]` has no effect on a text-only server.** No error is raised — the response simply contains no audio. Use a speech-mode server (without `--text-only`) to get audio output.
 - **`content` must be `""` when the query is entirely in `audios`, `videos`, or `images`.** Leaving a text query in `content` alongside audio causes the model to process both, which is usually not what you want.
 - **Colocated topology does not support `--thinker.tp_size 2`.** The server raises a `ValueError` at startup ("Qwen Phase 1 colocation does not support thinker TP"). Use disaggregated topology for TP=2.

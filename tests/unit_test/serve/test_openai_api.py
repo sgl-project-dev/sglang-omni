@@ -2574,6 +2574,15 @@ def test_unprobeable_audio_with_chunking_enabled_stays_one_request() -> None:
             400,
         ),
         ("Embedded audio stream decoded no samples: /tmp/empty.mp4", 400),
+        (
+            "Qwen3-Omni requires all videos in a request to have the same sampled FPS",
+            400,
+        ),
+        (
+            "Invalid media data while extracting embedded audio from /tmp/corrupt.mp4: "
+            "Invalid data found when processing input",
+            400,
+        ),
         ("Failed to extract embedded audio from /tmp/video.mp4: out of memory", 500),
         (
             "Failed to extract embedded audio from /tmp/video.mp4: permission denied",
