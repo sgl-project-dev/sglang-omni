@@ -55,7 +55,7 @@ class _Session:
 
 
 class CoordinatorSessions:
-    """Opt-in session API; ordinary submit/stream keep their existing behavior."""
+    """Coordinator-owned sessions over fixed stage routes."""
 
     def _init_sessions(self, max_sessions: int) -> None:
         if max_sessions <= 0:
@@ -382,17 +382,6 @@ class CoordinatorSessions:
                 await self._cleanup_session(session)
                 raise
             return session.ref
-
-    async def clear_session_input(self, ref: SessionRef) -> list[TimedChunk]:
-        """Discard queued input only; accepted sequence, timing and EOS stay committed."""
-        session = self._session(ref)
-        if session.closing:
-            raise RuntimeError("session is closing")
-        discarded = [chunk for chunk, _ in session.pending]
-        session.pending_count -= len(discarded)
-        session.pending_bytes -= sum(size for _, size in session.pending)
-        session.pending.clear()
-        return discarded
 
     async def close_session(self, ref: SessionRef) -> None:
         """Close the referenced incarnation regardless of its current output epoch."""

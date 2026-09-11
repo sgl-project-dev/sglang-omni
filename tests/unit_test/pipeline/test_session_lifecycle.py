@@ -25,15 +25,14 @@ async def test_timeout_cancel_noop_waits_before_close(tmp_path):
         await coordinator.append_session(ref, chunk(0))
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(anext(output), 5)
-        # The close timeout quarantines ownership until process teardown; late
-        # non-preemptible work may finish, but capacity is not falsely returned.
+        # Note (Junnan Li): A failed close retains the session reservation until worker teardown.
         assert coordinator._sessions[ref.session_id].cleanup_error is not None
         await asyncio.sleep(0.4)
         log = []
         while not events.empty():
             log.append(events.get(timeout=1))
         finished = next(i for i, e in enumerate(log) if e[:2] == ("finished", "sink"))
-        # A timed-out queued close may be dropped by request abort. If it ran,
+        # Note (Junnan Li): A timed-out queued close may be dropped by request abort. If it ran,
         # it must follow completion; otherwise scheduler.stop owns reclamation.
         close_positions = [i for i, e in enumerate(log) if e[:2] == ("close", "sink")]
         assert all(i > finished for i in close_positions)
@@ -103,24 +102,34 @@ async def test_partial_open_releases_previously_opened_owner(tmp_path):
     async with pipeline(tmp_path) as (coordinator, events, processes):
         with pytest.raises(RuntimeError, match="open failed"):
             await coordinator.open_session(
-                OmniRequest(None, {"fail_open": "sink"}), stages=["source", "sink"]
+                OmniRequest(None, {"fail_open": "sink"}),
+                stages=["source", "sink"],
+                session_id="reused",
             )
-        assert not coordinator._sessions
         log = [await asyncio.to_thread(events.get, True, 1) for _ in range(3)]
         assert [entry[1] for entry in log if entry[0] == "close"] == ["source"]
+        reopened = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="reused"
+        )
+        await coordinator.close_session(reopened)
 
 
 @pytest.mark.asyncio
 async def test_cancel_failure_closes_owners_in_reverse_order(tmp_path):
     async with pipeline(tmp_path) as (coordinator, events, processes):
         ref = await coordinator.open_session(
-            OmniRequest(None, {"cannot_abort": True}), stages=["source", "sink"]
+            OmniRequest(None, {"cannot_abort": True}),
+            stages=["source", "sink"],
+            session_id="reused",
         )
         with pytest.raises(RuntimeError, match="cannot be retained"):
             await coordinator.abort_session(ref)
-        assert not coordinator._sessions
         log = [await asyncio.to_thread(events.get, True, 1) for _ in range(5)]
         assert [entry[1] for entry in log if entry[0] == "close"] == ["sink", "source"]
+        reopened = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="reused"
+        )
+        await coordinator.close_session(reopened)
 
 
 @pytest.mark.asyncio
@@ -173,11 +182,15 @@ async def test_idle_timeout_closes_session_and_wakes_reader(tmp_path):
             OmniRequest(None),
             stages=["source", "sink"],
             limits=SessionLimits(idle_timeout_s=0.3),
+            session_id="reused",
         )
         output = coordinator.session_outputs(ref)
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(anext(output), 5)
-        assert ref.session_id not in coordinator._sessions
+        reopened = await coordinator.open_session(
+            OmniRequest(None), stages=["source", "sink"], session_id="reused"
+        )
+        await coordinator.close_session(reopened)
 
 
 @pytest.mark.asyncio

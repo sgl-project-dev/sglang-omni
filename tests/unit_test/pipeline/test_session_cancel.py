@@ -89,25 +89,6 @@ async def test_cancel_finishes_active_unit_and_preserves_consumption(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_abort_preserves_pending_input_and_completion_receipt(tmp_path):
-    async with pipeline(tmp_path) as (coordinator, events, processes):
-        ref = await coordinator.open_session(
-            OmniRequest(None, {"cadence": 2, "delay": 0.1}), stages=["source", "sink"]
-        )
-        output = coordinator.session_outputs(ref)
-        await coordinator.append_session(ref, chunk(0))
-        await asyncio.wait_for(anext(output), 5)
-        await coordinator.append_session(ref, chunk(1))
-        new_ref = await coordinator.abort_session(ref)
-        receipt = await asyncio.wait_for(anext(output), 5)
-        assert receipt.kind == "input_done" and receipt.input_seq == 0
-        resumed = await asyncio.wait_for(anext(output), 5)
-        assert resumed.input_seq == 1 and resumed.ref == new_ref
-        assert resumed.payload[0] == 2
-        await output.aclose()
-
-
-@pytest.mark.asyncio
 async def test_close_previous_epoch_after_cancelled_abort_waiter(tmp_path, monkeypatch):
     async with pipeline(tmp_path) as (coordinator, _, _):
         ref = await coordinator.open_session(

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Persistent stage state using the existing scheduler inbox/outbox contract."""
+"""Persistent state for session-aware pipeline stages."""
 from __future__ import annotations
 
 import queue
@@ -148,9 +148,9 @@ class SessionScheduler(SimpleScheduler):
         ref = command["ref"]
         key = (ref["session_id"], ref["incarnation"])
         with self._session_lock:
-            ticket = self._tickets.get(payload.request_id)
+            ticket = self._tickets[payload.request_id]
         try:
-            predecessor = ticket[1] if ticket is not None else None
+            predecessor = ticket[1]
             while predecessor is not None:
                 predecessor[2].wait()
                 predecessor = predecessor[1]

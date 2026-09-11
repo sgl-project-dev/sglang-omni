@@ -99,11 +99,10 @@ class SessionLimits:
 
 
 def wire_size(value: Any) -> int:
-    """Inputs/outputs use the existing control plane's msgpack value domain."""
+    """Return the msgpack wire size without copying a binary payload."""
     if isinstance(value, dict) and isinstance(value.get("payload"), bytes):
         size = len(value["payload"])
-        # Note (Junnan Li): Account for the larger bin header without serializing
-        # the full payload just to measure its wire size.
+        # Note (Junnan Li): Msgpack bin headers grow by 1 byte at 256 bytes and 3 bytes at 65536.
         header_growth = 0 if size < 256 else 1 if size < 65536 else 3
         return (
             len(msgpack.packb({**value, "payload": b""}, use_bin_type=True))

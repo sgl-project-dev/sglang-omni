@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Deterministic shutdown handoff tests without model or accelerator dependencies."""
+"""Shutdown handoff at hook completion and owner unlock."""
 from __future__ import annotations
 
 import inspect
@@ -12,6 +12,7 @@ import pytest
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.proto.session import SESSION_METADATA_KEY, SessionRef, TimedChunk
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from tests.unit_test.fixtures.session_pipeline import compute_registered
 
 
 def command(op):
@@ -59,7 +60,7 @@ def run_command(scheduler, op, trace=None):
         if trace is not None:
             sys.settrace(trace)
         try:
-            scheduler._compute(command(op))
+            compute_registered(scheduler, command(op))
         except BaseException as exc:
             errors.append(exc)
         finally:
@@ -74,7 +75,7 @@ def run_command(scheduler, op, trace=None):
 def test_stop_hands_cleanup_to_active_hook_completion(op):
     hooks = Hooks(block=op)
     scheduler = SessionScheduler(hooks)
-    scheduler._compute(command("open"))
+    compute_registered(scheduler, command("open"))
     thread, errors = run_command(scheduler, op)
     try:
         assert hooks.entered.wait(5)
@@ -95,7 +96,7 @@ def test_stop_after_last_hook_check_before_owner_unlock(op):
     hooks = Hooks()
     scheduler = SessionScheduler(hooks)
     if op != "open":
-        scheduler._compute(command("open"))
+        compute_registered(scheduler, command("open"))
     lines, first_line = inspect.getsourcelines(scheduler._compute_session)
     if op == "open":
         pause_line = max(

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Real multiprocess session lifecycle; only the model hooks are synthetic."""
+"""Multiprocess stage fixture with synthetic session hooks."""
 from __future__ import annotations
 
 import asyncio
@@ -187,3 +187,12 @@ def block_async_call(monkeypatch, obj, name):
 
     monkeypatch.setattr(obj, name, blocked)
     return entered, release, completed
+
+
+def compute_registered(scheduler, payload):
+    """Run one session command on an unstarted scheduler through its inbox registration."""
+    from sglang_omni.scheduling.messages import IncomingMessage
+
+    scheduler.inbox.put(IncomingMessage(payload.request_id, "new_request", payload))
+    message = scheduler.inbox.get_nowait()
+    return scheduler._compute(message.data)

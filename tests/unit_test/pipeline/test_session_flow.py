@@ -24,7 +24,6 @@ async def test_interleaved_cadences_input_during_output_eos_and_disconnect(tmp_p
         await coordinator.append_session(a, chunk(0))
         first = await asyncio.wait_for(anext(output_a), 5)
         assert first.payload == [1, 0]
-        # Accept while unit zero still emits its remaining two outputs.
         await coordinator.append_session(a, chunk(1, eos=True))
         await coordinator.append_session(b, chunk(0))
         receipt = await asyncio.wait_for(anext(output_b), 5)
@@ -108,32 +107,36 @@ async def test_replica_owner_survives_units_abort_and_scoped_shutdown(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_clear_preserves_input_clock_and_copies_discarded_payload(tmp_path):
-    async with pipeline(tmp_path) as (coordinator, events, processes):
+async def test_accepted_input_snapshots_mutable_payload(tmp_path, monkeypatch):
+    async with pipeline(tmp_path) as (coordinator, _, _):
+        submitted = []
+        original = coordinator.control_plane.submit_to_stage
+
+        async def submit(stage, endpoint, message):
+            command = message.data.request.metadata.get("omni_session", {})
+            if command.get("op") == "append":
+                submitted.append(command["chunk"]["payload"])
+            return await original(stage, endpoint, message)
+
+        monkeypatch.setattr(coordinator.control_plane, "submit_to_stage", submit)
         ref = await coordinator.open_session(
-            OmniRequest(None, {"cadence": 2, "delay": 0.1}), stages=["source", "sink"]
+            OmniRequest(None), stages=["source", "sink"]
         )
-        output = coordinator.session_outputs(ref)
-        await coordinator.append_session(ref, chunk(0))
-        await asyncio.wait_for(anext(output), 5)
+        outputs = coordinator.session_outputs(ref)
         payload = {"values": [1]}
-        await coordinator.append_session(ref, TimedChunk("audio", 20, 20, 1, payload))
-        payload["values"].append(2)
-        discarded = await coordinator.clear_session_input(ref)
-        assert [c.seq for c in discarded] == [1]
-        assert discarded[0].payload == {"values": [1]}
-        assert sum(c.duration_ms for c in discarded) == 20
-        with pytest.raises(ValueError, match="contiguous"):
-            await coordinator.append_session(ref, chunk(1))
-        await coordinator.append_session(ref, chunk(2, eos=True))
-        receipts = []
-        while len(receipts) < 2:
-            item = await asyncio.wait_for(anext(output), 5)
-            if item.kind == "input_done":
-                receipts.append(item)
-        assert [r.input_seq for r in receipts] == [0, 2]
-        assert receipts[-1].eos
-        await output.aclose()
+        try:
+            await coordinator.append_session(
+                ref, TimedChunk("audio", 0, 20, 0, payload, eos=True)
+            )
+            payload["values"].append(2)
+            async with asyncio.timeout(5):
+                async for output in outputs:
+                    if output.kind == "input_done":
+                        break
+            assert submitted and all(value == {"values": [1]} for value in submitted)
+        finally:
+            await outputs.aclose()
+            await coordinator.close_session(ref)
 
 
 @pytest.mark.asyncio

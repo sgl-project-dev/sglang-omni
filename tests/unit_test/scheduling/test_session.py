@@ -13,6 +13,7 @@ from sglang_omni.proto.session import (
     TimedChunk,
 )
 from sglang_omni.scheduling.session import SessionHooks, SessionScheduler
+from tests.unit_test.fixtures.session_pipeline import compute_registered
 
 
 class Hooks(SessionHooks):
@@ -54,7 +55,7 @@ def test_open_usage_failure_releases_state():
         },
     )
     with pytest.raises(RuntimeError, match="usage failed"):
-        scheduler._compute(StagePayload("one-open", request, {}))
+        compute_registered(scheduler, StagePayload("one-open", request, {}))
     assert not scheduler._sessions
     assert events.get_nowait()[0] == "open"
     assert events.get_nowait()[0] == "close"
@@ -77,7 +78,7 @@ def test_stage_capacity_is_aggregate_and_unknown_commands_fail():
             None,
             metadata={SESSION_METADATA_KEY: {"op": op, "ref": asdict(SessionRef(sid))}},
         )
-        return scheduler._compute(StagePayload(sid + op, request, {}))
+        return compute_registered(scheduler, StagePayload(sid + op, request, {}))
 
     invoke("one", "open")
     with pytest.raises(QueueFullError):
