@@ -868,3 +868,30 @@ lane(2,3 / 4,5 / 6,7)在跑作业时各有 reaper 会 SIGKILL 外来 GPU 进程�
 临时降到 2(备份 `omni-autoscaler.yaml.bak-luojiaxuan-pfull-20260910T2249Z`),**但降 cap 不绑定
 lane**——runner 仍可占任一 lane,我在 GPU 4 上还是被杀过一次,换到当时无 reaper 的 GPU 3 才跑完。
 测完已把 max_runners 恢复为 3、容器删除、map 清理。
+
+### 第十六轮:给 TTS CI 加 CustomVoice 臂(PR #2094,2026-09-10 17:20 PT)
+
+**为什么需要**:排查 #1998 的覆盖时发现缺口比"CustomVoice 默认没被测"更宽——
+`tests/test_model/tts_ci_config.py` 的 `qwen3-tts` preset 服务的是
+`Qwen3-TTS-12Hz-1.7B-Base`,而 Base 在 `server_args_builder.py` 里把
+`cuda_graph_backend_prefill` 解析为 `disabled`;prefill 图的默认只对 CustomVoice
+checkpoint 生效(#1900 的 breakable、#1998 的 full)。stage 4(serving)又硬编码
+`TTS_CI_PRESETS["higgs"]`。所以**Qwen3-TTS 的 prefill 图路径从来没有任何 CI 作业跑过**,
+breakable 和 full 都没有。#1997 的跨进程回退能带着全绿的 check 进 main,就是这个缺口。
+
+**PR #2094 做了什么**:`TtsCiModelPreset` 增 `voice` / `voice_clone` 两个字段(benchmark
+侧 `benchmark_tts_seedtts.py` 早就支持 `--no-ref-audio --voice`,所以只是接线);新 preset
+`qwen3-tts-custom-voice` 用 CustomVoice checkpoint + 具名音色;相似度 stage 对具名音色
+跳过(它是拿生成音频与请求里的参考片段比,没有参考就无意义);**本臂暂不 gate**
+(thresholds 标 `calibrated=False`、`gate_thresholds=False`),stage 1-3 照常跑并打印,
+留给下一条 PR 在 CI 主机上做重复观测标定;新增三条契约测试(只有标定过的 preset 才能
+gate、具名音色必须带 voice 而克隆臂必须不带、workflow 的 rotation 与 preset 注册表必须
+同名)。标签 `run-qwen3-tts-custom-voice`(新建)+ dispatch 值 + 互斥检查一并接好。
+
+**代价与备选**:第四个 rotation 成员把每个模型从 1/3 摊到 1/4。备选是让 `qwen3-tts` 这个
+槽位内部再二选(Base / CustomVoice),higgs 与 moss 保持 1/3、CustomVoice 拿 1/6。我选了
+显式第四成员,因为选择逻辑本身就是最容易被误读的地方(这次的教训),标签与 dispatch 也
+能直接点名;PR 正文写明了这条取舍,评审若偏好 sub-pick 我就改。权重已在 runner 缓存里
+(`/data/cache/huggingface` 下 4.3GB),不额外下载。
+
+**收尾**:测试用的 CPU 容器已删、map 已清;`max_runners` 保持 3。
